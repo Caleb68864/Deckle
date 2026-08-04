@@ -13,3 +13,10 @@
 - Surfaces: Any retry of a sub-spec whose prior dispatch wrote files but failed a gate before committing. The worker sees correct code already present, has nothing to write, reports success, and never reaches its commit step — so the gate that failed the first time fails again for a different reason.
 - Watch: `worker-success-without-commit` immediately following a gate-failure deferral. Check `git status` for untracked files matching the sub-spec's declared Files list before assuming the worker did nothing. Run the test suite before committing stranded output — do not assume it is good just because it exists.
 - Commit: (this commit)
+
+## 2026-08-04 — SS-06 stranded output committed (same root cause as SS-05)
+- Symptom: `deckle/core/printing.py`, `deckle/core/profiles.py`, and `tests/test_printing.py` sat untracked after two dispatch attempts — first deferred by the negative-assertion gate defect, then by `worker-success-without-commit`.
+- Fix: Committed under the SS-06 factory tag after verifying independently — 63/63 tests pass and `! grep -rn "PySide6" deckle/core/printing.py deckle/core/profiles.py` exits 0.
+- Surfaces: Identical to the SS-05 entry above; both sub-specs failed the same gate in the same run for the same reason.
+- Watch: The decision-log hook appends a fresh scaffold on every commit *attempt*, so a blocked multi-commit recovery accumulates unfilled scaffolds that each block the next commit. Two traps: strip stale scaffolds before retrying, and never write the hook's placeholder token literally in prose — the hook string-matches it and will block on your own documentation.
+- Commit: (this commit)
