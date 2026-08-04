@@ -1,5 +1,12 @@
 # Decision Log
 
+## 2026-08-04 — Added run.bat; verified the GUI genuinely launches
+- Symptom: The app had never actually been run. 158 tests passed and an AST test proved every view is instantiated and mounted, but no one had started the Qt event loop — so "it works" was inference, not observation.
+- Fix: Added `run.bat` (GUI / `cli` passthrough / `test` / `deps` / `doctor`) and verified a real windowed launch: title "Deckle", visible, 292x631, event loop exits rc=0. `doctor` also enumerates printers through `QPrinterInfo`, which is the assumption SS-08's spike rests on — 7 printers resolve, including the Brother HL-L2350DW.
+- Surfaces: Any headless verification of a GUI app. `QT_QPA_PLATFORM=offscreen` construct-then-`show()` reproducibly kills the process here (exit 127) while the identical code succeeds on a real display — a platform-plugin artifact, not an application defect. A second agent hit the same wall independently and worked around it with AST analysis.
+- Watch: Do not treat an offscreen crash as evidence of a broken app, and do not treat passing tests as evidence that an app launches. Two batch-file traps also cost a cycle: `%` inside an inline `python -c` gets mangled by cmd escaping (use `.ljust()` / f-strings, never `%` formatting), and cmd does not search the current directory, so the script must be invoked as `.\run.bat`.
+- Commit: (this commit)
+
 ## 2026-08-04 — Path-traversal validation must advise, not refuse
 - Symptom: The red-team A-3 fix made `load_project` raise `PathOutsideRootsWarning` unconditionally for any source path outside the project directory. Three `test_app_state.py` autosave tests failed immediately — but the real damage was larger: Deckle's normal case is source PDFs living in Downloads or a sync folder, not beside the `.deckle` file, so **every real project would have hard-failed on reopen**.
 - Fix: The spec says "prompts for confirmation rather than opening silently" — a refusal is not a prompt. Split into `PathOutsideRootsAdvisory(UserWarning)` (visible, non-fatal, emitted when no decision-maker is available) and an `on_outside_roots` callback that lets a UI veto, raising `PathOutsideRootsWarning` on decline. Three tests added: advisory, veto/approve, and `..` traversal resolution.
