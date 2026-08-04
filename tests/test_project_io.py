@@ -54,7 +54,7 @@ def _make_project(source_path: str, content: bytes) -> Project:
         paper=(612.0, 792.0),
         gutter_pt=36.0,
         binding_edge="left",
-        scale_mode="fixed_gutter",
+        scale_mode="fit",
         start_on_recto=True,
         landscape_policy="rotate",
     )

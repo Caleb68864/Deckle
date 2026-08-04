@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-08-04 — Rebuilt the placement math on one rule for both axes
+- Symptom: Reported from use — "the math is all over the place", height mode leaving no gutter and fixed mode misbehaving. Correct diagnosis: the horizontal axis **anchored** to the gutter (all slack to the fore-edge) while the vertical axis **centred** (slack split). Two different rules in one function, so identical inputs behaved differently per axis and neither matched intuition.
+- Fix: One rule, both axes. **Margins are minimums**; spare space inside the content box is shared equally between opposing margins so their difference is preserved exactly; when content *overflows* there is no slack to share, so the specified margin is held and the overflow lands on the opposite edge — the gutter is never eaten by content that does not fit. Expressed as `offset = max(0, slack) / 2` applied identically to x and y. Added `actual_margins_pt()` returning measured `(inner, outer, top, bottom)` so tests and UI read the same numbers the exporter uses.
+- Also renamed the modes: `fixed_gutter`→**`fit`** (fits both dimensions, never clips, now the default) and `fit_height`→**`fill_height`** (fills box height, may overflow). The old names described implementation, and the old default could silently push content off the page.
+- Surfaces: Verified on the real Traveller Core Rulebook — `fit` yields inner 0.750in and outer 0.250in exactly as requested, with leftover shared top/bottom; `fill_height` holds the gutter and reports the fore-edge overflow rather than hiding it.
+- Watch: The old suite asserted raw `tx`/`ty` on one edge of one page, which is how a verso-only bug survived it. The rewritten suite (49 tests) measures **all four margins of both sides**, parametrised over 4 aspect ratios x 2 binding edges x 2 modes, plus degenerate cases (margins exceeding the sheet, negative margins, zero gutter). Assert measured margins, not coordinates.
+- Commit: (this commit)
+
 ## 2026-08-04 — The gutter was derived from leftover width, not from the setting
 - Symptom: Reported from use — "gutter ends up with extra from margin". In `fit_height`, `gutter = paper_w - margin - scaled_w`, so the gutter was whatever width happened to remain. Asking for 0.75in on the Traveller page box silently produced 1.17in; `gutter_pt` was effectively ignored in that mode.
 - Fix: The gutter is now honoured exactly in both modes and any slack lands on the **fore-edge**, never the spine. Also split the single `margin_pt` into `margin_top_pt` / `margin_bottom_pt` / `margin_outer_pt` — with `gutter_pt` as the inner margin, that describes all four page edges — plus a persisted `margins_linked` flag driving a "Link margins" toggle in the panel.

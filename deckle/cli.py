@@ -130,8 +130,8 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
         help="paper size: a preset (letter, a4, legal) or WxH[unit] (default: letter)",
     )
     parser.add_argument(
-        "--scale-mode", choices=["fit_height", "fixed_gutter"], default="fit_height",
-        help="how source content is scaled onto the sheet (default: fit_height)",
+        "--scale-mode", choices=["fill_height", "fit"], default="fill_height",
+        help="how source content is scaled onto the sheet (default: fill_height)",
     )
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",

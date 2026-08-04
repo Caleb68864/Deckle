@@ -94,7 +94,18 @@ class LayoutSettings:
     paper: tuple[float, float]
     gutter_pt: float
     binding_edge: Literal["left", "right"]
-    scale_mode: Literal["fit_height", "fixed_gutter"] = "fit_height"
+    scale_mode: Literal["fit", "fill_height"] = "fit"
+    """How source content is scaled into the content box.
+
+    ``fit`` -- largest scale fitting BOTH box dimensions. Never overflows,
+    so it is the default.
+    ``fill_height`` -- fill the box height exactly; the width falls where it
+    falls and may overflow, which the clipping detector reports.
+
+    Renamed from ``fit_height``/``fixed_gutter``, which described how the
+    code worked rather than what you get, and whose default could silently
+    push content off the page.
+    """
     start_on_recto: bool = True
     landscape_policy: Literal["rotate", "scale", "letterbox"] = "rotate"
     margin_top_pt: float = 0.0

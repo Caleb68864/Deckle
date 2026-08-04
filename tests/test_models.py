@@ -98,8 +98,12 @@ def test_layout_settings_defaults():
         gutter_pt=18.0,
         binding_edge="left",
     )
-    assert settings.scale_mode == "fit_height"
+    assert settings.scale_mode == "fit"  # safe default: never clips
     assert settings.start_on_recto is True
+    assert settings.margin_top_pt == 0.0
+    assert settings.margin_bottom_pt == 0.0
+    assert settings.margin_outer_pt == 0.0
+    assert settings.margins_linked is True
     assert settings.landscape_policy == "rotate"
 
 

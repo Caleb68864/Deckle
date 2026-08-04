@@ -9,7 +9,7 @@ exactly reproduce a placement's own ``scale_x``/``scale_y`` -- ``shrink``/
 ``expand`` permission is granted only in the single direction (if any)
 actually needed to hit that exact scale, so pikepdf reproduces
 ``Placement`` verbatim rather than substituting its own best-fit: when a
-placement's scale is already 1.0 (the common ``fixed_gutter`` case), that
+placement's scale is already 1.0 (the common ``fit`` case), that
 means neither is granted and the result is a pure translation with no
 scale factor at all.
 
