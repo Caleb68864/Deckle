@@ -12,11 +12,20 @@ from __future__ import annotations
 from deckle.app.state import AppState
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
+from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
+from deckle.app.views.preview_view import PreviewView
+from deckle.app.views.print_dialog import PrintDialog
 from deckle.core.models import LayoutSettings, Project
+from deckle.core.profiles import BUILTIN_PRESETS
 
 LETTER_PT = (612.0, 792.0)
 
 NO_PRINTERS_MESSAGE = "No printers installed -- connect a printer to enable printing."
+
+# Used to seed PreviewView before any printer/profile has been chosen -- the
+# same fallback resolve_profile() reaches for when a printer has no saved
+# PrinterProfile yet (see deckle/app/views/print_dialog.py).
+DEFAULT_PROFILE = next(iter(BUILTIN_PRESETS.values()))
 
 
 def available_printer_names() -> list[str]:
@@ -61,6 +70,14 @@ class MainWindow:
         self.arrange_view = ArrangeView(self.state, central)
         layout.addWidget(self.arrange_view.widget)
 
+        self.layout_panel = LayoutPanel(self.state, central)
+        layout.addWidget(self.layout_panel.widget)
+
+        self.preview_view = PreviewView(
+            recompute_plan(self.state.project), DEFAULT_PROFILE, central
+        )
+        layout.addWidget(self.preview_view.widget)
+
         self.print_button = QPushButton("Print...", central)
         layout.addWidget(self.print_button)
 
@@ -68,10 +85,15 @@ class MainWindow:
         self.status_bar = QStatusBar(self.window)
         self.window.setStatusBar(self.status_bar)
 
-        self.import_view.imported.connect(lambda pages, warnings: self.arrange_view.refresh())
+        self.import_view.imported.connect(self._on_imported)
+        self.layout_panel.layout_changed.connect(self.preview_view.on_layout_changed)
         self.print_button.clicked.connect(self._on_print_clicked)
 
         self.refresh_printers()
+
+    def _on_imported(self, pages, warnings) -> None:
+        self.arrange_view.refresh()
+        self.preview_view.on_layout_changed(recompute_plan(self.state.project))
 
     def refresh_printers(self) -> None:
         """Re-check available printers and disable Print when there are none."""
@@ -93,8 +115,9 @@ class MainWindow:
             # slot is reached some other way.
             self.status_bar.showMessage(NO_PRINTERS_MESSAGE)
             return
-        # Full print-pass submission wiring (SS-08/SS-11/SS-12) is out of
-        # scope here; this is the shell's hook point for it.
+        plan = self.preview_view.plan
+        self.print_dialog = PrintDialog(plan, self.window, printer_names=printers)
+        self.print_dialog.widget.exec()
         self.status_bar.showMessage(f"{len(printers)} printer(s) available.")
 
     def show(self) -> None:
