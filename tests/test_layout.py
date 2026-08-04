@@ -278,36 +278,97 @@ def test_negative_margins_are_clamped_to_zero():
 # ------------------------------------------------------ per-page geometry (defect 1)
 
 
-def test_each_page_uses_its_own_media_box():
+def test_scale_is_uniform_across_the_document():
+    """One scale for every page, so body text never changes size mid-book.
+
+    Per-page scaling would let each page fill its own box, but differing
+    source widths would then be reproduced at differing scales. On the real
+    Traveller book that made the cover's text 2.5% larger than the body's.
+    """
     pages = [
         make_page(0, size=(400.0, 600.0)),
         make_page(1, size=(400.0, 600.0)),
         make_page(2, size=(300.0, 900.0)),
     ]
     plan = impose(pages, settings(gutter_pt=18.0))
+    # Fillers are blank, so their scale is meaningless -- exclude them.
+    scales = {
+        round(p.placement.scale_x, 9)
+        for p in flat_output_pages(plan)
+        if not p.is_filler
+    }
+    assert len(scales) == 1, f"expected one document scale, got {scales}"
+
+
+def test_filler_scale_is_not_mistaken_for_a_content_scale():
+    """A filler carries a neutral 1.0 scale; it has no content to size."""
+    plan = impose(make_pages(3, size=DIGEST), settings())
+    fillers = [p for p in flat_output_pages(plan) if p.is_filler]
+    assert len(fillers) == 1
+    assert fillers[0].placement.scale_x == 1.0
+    assert fillers[0].source_ref is None
+
+
+def test_uniform_scale_is_the_largest_that_fits_every_page():
+    from deckle.core.layout import content_box_size, document_scale
+
+    pages = [make_page(0, size=(400.0, 600.0)), make_page(1, size=(300.0, 900.0))]
+    s = settings(gutter_pt=18.0)
+    box_w, box_h = content_box_size(s)
+    expected = min(min(box_w / 400.0, box_h / 600.0), min(box_w / 300.0, box_h / 900.0))
+    assert document_scale(pages, s) == pytest.approx(expected)
+
+
+def test_each_page_still_uses_its_own_geometry():
+    """Uniform *scale*, per-page *geometry*.
+
+    The predecessor script's defect was applying page 0's aspect ratio to
+    every page's geometry. That stays fixed: each page's own media box
+    determines its scaled size and therefore its slack and placement -- only
+    the scale factor is shared.
+    """
+    pages = [make_page(0, size=(400.0, 600.0)), make_page(1, size=(300.0, 600.0))]
+    plan = impose(pages, settings(gutter_pt=18.0, margin_outer_pt=18.0))
     flat = flat_output_pages(plan)
-    assert flat[2].placement.scale_x == pytest.approx(LETTER[1] / 900.0)
-    assert flat[2].placement.scale_x != pytest.approx(flat[0].placement.scale_x)
+    w0 = 400.0 * flat[0].placement.scale_x
+    w1 = 300.0 * flat[1].placement.scale_x
+    assert w0 != pytest.approx(w1), "each page keeps its own width"
+    # The narrower page carries more slack, so its placement differs.
+    assert margins(plan, 0)[0] != pytest.approx(margins(plan, 1)[0])
 
 
-def test_mixed_widths_keep_their_gutter():
-    """The real Traveller case: page widths vary (506.88 / 519.36 / 527.28),
-    so each page scales differently -- but every one keeps the same gutter."""
+def test_mixed_widths_share_one_scale_and_keep_their_minimums():
+    """The real Traveller distribution: 264 pages at 519.36pt, a 506.88pt
+    cover, one 527.28pt page. All three render at one scale, and every page
+    still honours the requested minimums."""
     pages = [
         make_page(0, size=(506.88, 672.0)),
         make_page(1, size=(519.36, 672.0)),
         make_page(2, size=(527.28, 672.0)),
-        make_page(3, size=(506.88, 672.0)),
+        make_page(3, size=(519.36, 672.0)),
     ]
     s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(pages, s)
-    scales = {round(p.placement.scale_x, 6) for p in flat_output_pages(plan)}
-    assert len(scales) > 1, "differing widths should scale differently"
+    scales = {round(p.placement.scale_x, 9) for p in flat_output_pages(plan)}
+    assert len(scales) == 1, "text must be the same size on every page"
     for i in range(4):
-        inner, outer, _, _ = margins(plan, i)
+        inner, outer, top, bottom = margins(plan, i)
         assert inner >= 54.0 - 1e-6
         assert outer >= 18.0 - 1e-6
+        assert top >= 18.0 - 1e-6
+        assert bottom >= 18.0 - 1e-6
+
+
+def test_widest_page_binds_the_document_scale():
+    """The most constraining page sets the scale, so nothing overflows."""
+    narrow = make_page(0, size=(400.0, 672.0))
+    wide = make_page(1, size=(560.0, 672.0))
+    s = settings(gutter_pt=18.0, margin_outer_pt=18.0)
+    plan = impose([narrow, wide], s)
+    for i in range(2):
+        for m in margins(plan, i):
+            assert m >= 0.0
 
 
 # --------------------------------------------------------------- parity (defect 2)

@@ -78,12 +78,71 @@ def _source_dims(page: SourcePage) -> tuple[float, float]:
     return width, height
 
 
+def content_box_size(settings: LayoutSettings) -> tuple[float, float]:
+    """The content box's ``(width, height)`` in points, after all four margins.
+
+    Falls back to the bare sheet when the margins would consume it entirely;
+    ``_place_page`` warns about that case, this function stays silent so it
+    can be called from the scale pass without duplicating warnings.
+    """
+    paper_w, paper_h = settings.paper
+    box_w = paper_w - max(0.0, settings.gutter_pt) - max(0.0, settings.margin_outer_pt)
+    box_h = paper_h - max(0.0, settings.margin_top_pt) - max(0.0, settings.margin_bottom_pt)
+    if box_w <= 0.0 or box_h <= 0.0:
+        return (paper_w, paper_h)
+    return (box_w, box_h)
+
+
+def _rotates_to_portrait(src_w: float, src_h: float, settings: LayoutSettings) -> bool:
+    paper_w, paper_h = settings.paper
+    return settings.landscape_policy == "rotate" and paper_h >= paper_w and src_w > src_h
+
+
+def _fitted_dims(slot: SourcePage, settings: LayoutSettings) -> tuple[float, float]:
+    """A page's upright dimensions after any landscape rotation."""
+    src_w, src_h = _source_dims(slot)
+    if _rotates_to_portrait(src_w, src_h, settings):
+        src_w, src_h = src_h, src_w
+    return src_w, src_h
+
+
+def document_scale(pages: Sequence[SourcePage], settings: LayoutSettings) -> float:
+    """One scale for the WHOLE document -- the largest that fits every page.
+
+    Scaling each page independently would let every page fill its own box,
+    but a book is not a pile of independent pages: differing source widths
+    would then be reproduced at differing scales, so body text would change
+    size from page to page. On the Traveller Core Rulebook (264 pages at
+    519.36pt, a 506.88pt cover, one 527.28pt page) per-page scaling made the
+    cover's text 2.5% larger than the body's.
+
+    Taking the minimum means no page overflows and every page is reproduced
+    at identical scale; narrower pages simply carry more slack, which the
+    margin rules then distribute.
+
+    Note this is distinct from the predecessor script's defect, which applied
+    page 0's *aspect ratio* to every page's geometry. Per-page geometry is
+    correct; per-page scale is not.
+    """
+    box_w, box_h = content_box_size(settings)
+    scales = []
+    for slot in pages:
+        if slot is None or slot.skipped:
+            continue
+        src_w, src_h = _fitted_dims(slot, settings)
+        if src_w <= 0 or src_h <= 0:
+            continue
+        scales.append(min(box_w / src_w, box_h / src_h))
+    return min(scales) if scales else 1.0
+
+
 def _place_page(
     slot: SourcePage | None,
     output_index: int,
     settings: LayoutSettings,
     sheet_index: int,
     warnings: list[LayoutWarning],
+    scale: float,
 ) -> OutputPage:
     paper_w, paper_h = settings.paper
     is_recto = _is_recto(output_index)
@@ -142,15 +201,10 @@ def _place_page(
         gutter = outer = top = bottom = 0.0
         box_w, box_h = paper_w, paper_h
 
-    # ------------------------------------------------------------------
-    # Scale: the largest that fits BOTH box dimensions. This fills the page
-    # height whenever height is the binding constraint and scales down when
-    # width is, so it never overflows. There is no alternative mode --
-    # "fill the height, then shrink until it fits" IS this, and a mode that
-    # fills the height *without* shrinking only produces unprintable output.
-    # ------------------------------------------------------------------
-    scale = min(box_w / src_w, box_h / src_h)
-
+    # `scale` is computed ONCE for the whole document by `document_scale` --
+    # the largest that fits every page -- so body text is reproduced at
+    # identical size throughout. Narrower pages carry more slack, which the
+    # margin rules below distribute.
     scaled_w = src_w * scale
     scaled_h = src_h * scale
 
@@ -277,13 +331,19 @@ class GutterShiftStrategy:
 
         warnings: list[LayoutWarning] = []
         sheets: list[Sheet] = []
+        # One scale for every page, so text does not change size mid-book.
+        scale = document_scale(active, settings)
         for sheet_index in range(0, len(slots), 2):
             front_slot = slots[sheet_index]
             back_slot = slots[sheet_index + 1] if sheet_index + 1 < len(slots) else None
 
-            front = _place_page(front_slot, sheet_index, settings, sheet_index // 2, warnings)
+            front = _place_page(
+                front_slot, sheet_index, settings, sheet_index // 2, warnings, scale
+            )
             back = (
-                _place_page(back_slot, sheet_index + 1, settings, sheet_index // 2, warnings)
+                _place_page(
+                    back_slot, sheet_index + 1, settings, sheet_index // 2, warnings, scale
+                )
                 if sheet_index + 1 < len(slots)
                 else None
             )
