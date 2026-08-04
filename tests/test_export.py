@@ -67,7 +67,7 @@ def _plan_from_source(
         for i in range(n_pages)
     ]
     settings = settings or LayoutSettings(
-        paper=LETTER, gutter_pt=18.0, binding_edge="left", scale_mode="fit"
+        paper=LETTER, gutter_pt=18.0, binding_edge="left"
     )
     return GutterShiftStrategy().impose(pages, settings)
 
@@ -115,10 +115,10 @@ def test_export_sheet_cached_invalidates_on_layout_change(tmp_path):
         for i in range(4)
     ]
     settings_a = LayoutSettings(
-        paper=LETTER, gutter_pt=18.0, binding_edge="left", scale_mode="fit"
+        paper=LETTER, gutter_pt=18.0, binding_edge="left"
     )
     settings_b = LayoutSettings(
-        paper=LETTER, gutter_pt=36.0, binding_edge="left", scale_mode="fit"
+        paper=LETTER, gutter_pt=36.0, binding_edge="left"
     )
     plan_a = GutterShiftStrategy().impose(pages, settings_a)
     plan_b = GutterShiftStrategy().impose(pages, settings_b)
@@ -142,7 +142,7 @@ def test_export_receives_placements_identical_to_imposer_output(tmp_path):
         for i in range(4)
     ]
     settings = LayoutSettings(
-        paper=LETTER, gutter_pt=18.0, binding_edge="left", scale_mode="fit"
+        paper=LETTER, gutter_pt=18.0, binding_edge="left"
     )
     plan = GutterShiftStrategy().impose(pages, settings)
 
@@ -172,7 +172,7 @@ def test_fit_already_fits_emits_pure_translation(tmp_path):
         1,
         page_size=page_size,
         settings=LayoutSettings(
-            paper=LETTER, gutter_pt=18.0, binding_edge="left", scale_mode="fit"
+            paper=LETTER, gutter_pt=18.0, binding_edge="left"
         ),
     )
     out_path = os.path.join(str(tmp_path), "out.pdf")

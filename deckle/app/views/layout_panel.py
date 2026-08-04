@@ -9,8 +9,8 @@ panel then emits that plan via ``layout_changed`` so a listening
 ``PreviewView`` can re-render just the sheet currently on screen; see
 ``deckle/app/views/preview_view.py``.
 
-``LayoutPanel`` exposes both entries in ``SCALE_MODES`` with ``fit``
-preselected, matching ``LayoutSettings.scale_mode``'s own default.
+There is deliberately no scale-mode control: content is always fitted to
+the content box, which fills the page height whenever geometry allows.
 """
 
 from __future__ import annotations
@@ -22,22 +22,11 @@ from deckle.app.state import AppState
 from deckle.core.layout import GutterShiftStrategy
 from deckle.core.models import LayoutSettings, Project, SheetPlan
 
-# The only two scale modes GutterShiftStrategy understands in the MVP.
-# Order matters: index 0 is what the panel preselects.
-SCALE_MODES: tuple[str, ...] = ("fit", "fill_height")
-
 BINDING_EDGES: tuple[str, ...] = ("left", "right")
 
 LANDSCAPE_POLICIES: tuple[str, ...] = ("rotate", "scale", "letterbox")
 
-assert SCALE_MODES[0] == LayoutSettings.__dataclass_fields__["scale_mode"].default
-
-
 # -- pure layout-settings mutators, each routed through AppState.mutate ----
-
-
-def set_scale_mode(project: Project, scale_mode: Literal["fit", "fill_height"]) -> Project:
-    return replace(project, layout=replace(project.layout, scale_mode=scale_mode))
 
 
 def set_gutter_pt(project: Project, gutter_pt: float) -> Project:
@@ -187,18 +176,6 @@ class LayoutPanel:
         self.widget = QWidget(parent)
         form = QFormLayout(self.widget)
 
-        # -- scale mode: both offered, fit preselected (it never clips) -----
-        self.fit_radio = QRadioButton("Fit (never clips)", self.widget)
-        self.fill_height_radio = QRadioButton("Fill height (may clip)", self.widget)
-        self.scale_mode_group = QButtonGroup(self.widget)
-        self.scale_mode_group.addButton(self.fit_radio)
-        self.scale_mode_group.addButton(self.fill_height_radio)
-        current_mode = state.project.layout.scale_mode
-        self.fill_height_radio.setChecked(current_mode == "fill_height")
-        self.fit_radio.setChecked(current_mode == "fit")
-        form.addRow("Scale mode:", self.fit_radio)
-        form.addRow("", self.fill_height_radio)
-
         # Lengths are stored in points but entered in whatever unit suits the
         # job -- inches for a US letter binder, cm for metric stock.
         self.unit_combo = QComboBox(self.widget)
@@ -252,7 +229,6 @@ class LayoutPanel:
         self.landscape_policy_combo.setCurrentText(state.project.layout.landscape_policy)
         form.addRow("Landscape policy:", self.landscape_policy_combo)
 
-        self.fit_radio.toggled.connect(self._on_scale_mode_toggled)
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
         for field, box in self.margin_spinboxes.items():
             box.valueChanged.connect(
@@ -263,11 +239,6 @@ class LayoutPanel:
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
-
-    def _on_scale_mode_toggled(self, checked: bool) -> None:
-        mode = "fit" if checked else "fill_height"
-        plan = apply_layout_change(self.state, lambda project: set_scale_mode(project, mode))
-        self.layout_changed.emit(plan)
 
     def _on_gutter_changed(self, value: float) -> None:
         points = to_points(value, self._unit)

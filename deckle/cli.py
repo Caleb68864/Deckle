@@ -116,7 +116,6 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         paper=args.paper,
         gutter_pt=args.gutter,
         binding_edge=args.binding_edge,
-        scale_mode=args.scale_mode,
     )
 
 
@@ -128,10 +127,6 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--paper", type=_parse_paper, default=LETTER_PT,
         help="paper size: a preset (letter, a4, legal) or WxH[unit] (default: letter)",
-    )
-    parser.add_argument(
-        "--scale-mode", choices=["fill_height", "fit"], default="fill_height",
-        help="how source content is scaled onto the sheet (default: fill_height)",
     )
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",

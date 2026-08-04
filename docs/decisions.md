@@ -1,5 +1,12 @@
 # Decision Log
 
+## 2026-08-04 — Deleted the scale mode; there is one scale rule
+- Symptom: Asked "can't fill height just scale down until the book doesn't clip?" — and the answer is yes, but that operation *is* `fit`. Making `fill_height` scale down would make the two modes byte-for-byte identical, leaving a control that changes nothing.
+- Fix: Removed `LayoutSettings.scale_mode`, `SCALE_MODES`, `set_scale_mode`, the CLI `--scale-mode` flag and the radio buttons. Content is always scaled to the largest size fitting the content box in both dimensions — which fills the page height whenever height is the binding constraint, and scales down when width is. `fill_height`'s only distinct behaviour was overflowing the page, i.e. producing output that cannot be printed.
+- Surfaces: Concretely for the Traveller book — at full letter height content is 597.4pt wide, and the widest box achievable is 558pt even with a **zero** outer margin (612 − 54 gutter). It is 39pt too wide no matter what; scaling down is the only option, so the mode offered a choice that was never real.
+- Watch: The mode predated the margin model. It existed because "fill the height" was once the only way to get a large page; once four margins and a fit rule existed it was redundant, but it survived because it had tests and a UI control. A feature having tests is not evidence it should exist.
+- Commit: (this commit)
+
 ## 2026-08-04 — Rebuilt the placement math on one rule for both axes
 - Symptom: Reported from use — "the math is all over the place", height mode leaving no gutter and fixed mode misbehaving. Correct diagnosis: the horizontal axis **anchored** to the gutter (all slack to the fore-edge) while the vertical axis **centred** (slack split). Two different rules in one function, so identical inputs behaved differently per axis and neither matched intuition.
 - Fix: One rule, both axes. **Margins are minimums**; spare space inside the content box is shared equally between opposing margins so their difference is preserved exactly; when content *overflows* there is no slack to share, so the specified margin is held and the overflow lands on the opposite edge — the gutter is never eaten by content that does not fit. Expressed as `offset = max(0, slack) / 2` applied identically to x and y. Added `actual_margins_pt()` returning measured `(inner, outer, top, bottom)` so tests and UI read the same numbers the exporter uses.

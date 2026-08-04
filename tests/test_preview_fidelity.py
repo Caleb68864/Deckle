@@ -189,7 +189,7 @@ def test_preview_view_module_never_uses_a_modal_dialog():
 def test_gutter_change_recomputes_plan_arithmetically_without_rendering(monkeypatch, tmp_path):
     src = _write_source_pdf(tmp_path, n_pages=4)
     pages = [SourcePage(ref=_ref(src, i), rotate_deg=0, skipped=False) for i in range(4)]
-    settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left", scale_mode="fit")
+    settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left")
     project = Project(pages=pages, layout=settings, printer=None)
 
     render_calls = []
@@ -212,7 +212,7 @@ def replace_gutter(project: Project, gutter_pt: float) -> Project:
 def test_visible_sheet_render_after_gutter_change_only_rasterizes_that_sheet(tmp_path, monkeypatch):
     src = _write_source_pdf(tmp_path, n_pages=4)
     pages = [SourcePage(ref=_ref(src, i), rotate_deg=0, skipped=False) for i in range(4)]
-    settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left", scale_mode="fit")
+    settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left")
     project = replace_gutter(Project(pages=pages, layout=settings, printer=None), 54.0)
     plan = layout_panel.recompute_plan(project)
 
@@ -230,28 +230,13 @@ def test_visible_sheet_render_after_gutter_change_only_rasterizes_that_sheet(tmp
     assert calls == [[1]]
 
 
-# -- [STRUCTURAL] LayoutPanel offers both scale modes, fill_height default -
+# -- [STRUCTURAL] LayoutPanel controls: units, gutter, margins ------------
 
 
-def test_scale_modes_include_fill_height_and_fit():
-    assert set(layout_panel.SCALE_MODES) == {"fill_height", "fit"}
 
 
-def test_fit_is_the_preselected_default():
-    assert layout_panel.SCALE_MODES[0] == "fit"
-    assert LayoutSettings.__dataclass_fields__["scale_mode"].default == "fit"
 
 
-def test_set_scale_mode_updates_project_layout():
-    settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left")
-    project = Project(pages=[], layout=settings, printer=None)
-    assert project.layout.scale_mode == "fit"
-
-    updated = layout_panel.set_scale_mode(project, "fill_height")
-
-    assert updated.layout.scale_mode == "fill_height"
-    # original untouched -- frozen dataclasses, no in-place mutation.
-    assert project.layout.scale_mode == "fit"
 
 
 # -- imageable_rect_pt geometry --------------------------------------------

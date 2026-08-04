@@ -98,7 +98,7 @@ def test_layout_settings_defaults():
         gutter_pt=18.0,
         binding_edge="left",
     )
-    assert settings.scale_mode == "fit"  # safe default: never clips
+    assert not hasattr(settings, "scale_mode"), "there is one scale rule, not a mode"
     assert settings.start_on_recto is True
     assert settings.margin_top_pt == 0.0
     assert settings.margin_bottom_pt == 0.0

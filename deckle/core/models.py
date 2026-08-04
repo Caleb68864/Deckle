@@ -94,18 +94,12 @@ class LayoutSettings:
     paper: tuple[float, float]
     gutter_pt: float
     binding_edge: Literal["left", "right"]
-    scale_mode: Literal["fit", "fill_height"] = "fit"
-    """How source content is scaled into the content box.
-
-    ``fit`` -- largest scale fitting BOTH box dimensions. Never overflows,
-    so it is the default.
-    ``fill_height`` -- fill the box height exactly; the width falls where it
-    falls and may overflow, which the clipping detector reports.
-
-    Renamed from ``fit_height``/``fixed_gutter``, which described how the
-    code worked rather than what you get, and whose default could silently
-    push content off the page.
-    """
+    # There is deliberately no scale mode. Content is always scaled to the
+    # largest size fitting the content box in BOTH dimensions -- which fills
+    # the page height whenever height is the binding constraint, and scales
+    # down when width is. The earlier "fill height" mode differed from this
+    # only by overflowing the page, and once margins existed its sole
+    # distinct behaviour was producing output that could not be printed.
     start_on_recto: bool = True
     landscape_policy: Literal["rotate", "scale", "letterbox"] = "rotate"
     margin_top_pt: float = 0.0

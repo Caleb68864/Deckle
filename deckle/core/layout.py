@@ -143,17 +143,13 @@ def _place_page(
         box_w, box_h = paper_w, paper_h
 
     # ------------------------------------------------------------------
-    # Scale. Exactly two modes:
-    #   fit         -- largest scale fitting BOTH box dimensions; never
-    #                  overflows, so it is the safe default.
-    #   fill_height -- fill the box height exactly; width falls where it
-    #                  falls and may overflow, which the clipping detector
-    #                  then reports rather than the layout hiding it.
+    # Scale: the largest that fits BOTH box dimensions. This fills the page
+    # height whenever height is the binding constraint and scales down when
+    # width is, so it never overflows. There is no alternative mode --
+    # "fill the height, then shrink until it fits" IS this, and a mode that
+    # fills the height *without* shrinking only produces unprintable output.
     # ------------------------------------------------------------------
-    if settings.scale_mode == "fill_height":
-        scale = box_h / src_h
-    else:  # "fit"
-        scale = min(box_w / src_w, box_h / src_h)
+    scale = min(box_w / src_w, box_h / src_h)
 
     scaled_w = src_w * scale
     scaled_h = src_h * scale

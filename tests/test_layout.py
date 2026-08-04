@@ -15,7 +15,8 @@ The rules under test, stated once:
 3. When content OVERFLOWS, there is no spare space to share: the specified
    margin is held and the overflow lands on the opposite edge. The gutter is
    never eaten by content that does not fit.
-4. ``fit`` never overflows. ``fill_height`` fills the box height and may.
+4. There is one scale rule: fit the content box in both dimensions. It
+   fills the page height whenever height is the binding constraint.
 """
 
 from __future__ import annotations
@@ -51,7 +52,7 @@ def make_pages(n, size=LETTER, **kw):
 
 
 def settings(**kw):
-    base = dict(paper=LETTER, gutter_pt=54.0, binding_edge="left", scale_mode="fit")
+    base = dict(paper=LETTER, gutter_pt=54.0, binding_edge="left")
     base.update(kw)
     return LayoutSettings(**base)
 
@@ -110,7 +111,7 @@ def test_fit_never_violates_any_requested_margin(size, edge):
     """`fit` must never produce a margin smaller than requested, on any edge,
     for any source aspect ratio, on either binding edge."""
     s = settings(
-        binding_edge=edge, scale_mode="fit", gutter_pt=54.0,
+        binding_edge=edge, gutter_pt=54.0,
         margin_outer_pt=18.0, margin_top_pt=36.0, margin_bottom_pt=9.0,
     )
     plan = impose(make_pages(4, size=size), s)
@@ -124,7 +125,7 @@ def test_fit_never_violates_any_requested_margin(size, edge):
 
 @pytest.mark.parametrize("size", [TRAVELLER, DIGEST, SQUARE, TALL])
 def test_fit_content_always_lands_on_the_page(size):
-    s = settings(scale_mode="fit", gutter_pt=54.0, margin_outer_pt=18.0,
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(make_pages(2, size=size), s)
     for i in range(2):
@@ -137,7 +138,7 @@ def test_fit_content_always_lands_on_the_page(size):
 
 def test_opposing_margin_difference_is_preserved():
     """Slack is shared equally, so top-bottom keeps its requested delta."""
-    s = settings(scale_mode="fit", margin_top_pt=36.0, margin_bottom_pt=9.0,
+    s = settings(margin_top_pt=36.0, margin_bottom_pt=9.0,
                  margin_outer_pt=18.0)
     plan = impose(make_pages(2, size=TRAVELLER), s)
     _, _, top, bottom = margins(plan, 0)
@@ -145,7 +146,7 @@ def test_opposing_margin_difference_is_preserved():
 
 
 def test_inner_outer_difference_is_preserved():
-    s = settings(scale_mode="fit", gutter_pt=72.0, margin_outer_pt=18.0,
+    s = settings(gutter_pt=72.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(make_pages(2, size=TALL), s)
     inner, outer, _, _ = margins(plan, 0)
@@ -153,7 +154,7 @@ def test_inner_outer_difference_is_preserved():
 
 
 def test_equal_margins_centre_the_content():
-    s = settings(scale_mode="fit", gutter_pt=18.0, margin_outer_pt=18.0,
+    s = settings(gutter_pt=18.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(make_pages(2, size=DIGEST), s)
     inner, outer, top, bottom = margins(plan, 0)
@@ -161,64 +162,26 @@ def test_equal_margins_centre_the_content():
     assert round(top, 6) == round(bottom, 6)
 
 
-# ------------------------------------------- rule 3: overflow protects the gutter
+# ------------------------------- rule 3: overflow only via degenerate settings
 
 
-def test_fill_height_overflow_preserves_the_gutter_exactly():
-    """Traveller at full letter height is ~597pt wide; with a 54pt gutter it
-    needs 651pt on a 612pt sheet. The gutter must survive intact and the
-    overflow must land on the fore-edge."""
-    s = settings(scale_mode="fill_height", gutter_pt=54.0, margin_outer_pt=18.0,
-                 margin_top_pt=0.0, margin_bottom_pt=0.0)
-    plan = impose(make_pages(2, size=TRAVELLER), s)
-    inner, outer, _, _ = margins(plan, 0)
-    assert round(inner, 6) == 54.0     # gutter held exactly
-    assert outer < 0.0                 # overflow on the fore-edge only
 
 
-def test_overflow_mirrors_correctly_on_the_verso():
-    s = settings(scale_mode="fill_height", gutter_pt=54.0, margin_top_pt=0.0,
-                 margin_bottom_pt=0.0, margin_outer_pt=0.0)
-    plan = impose(make_pages(2, size=TRAVELLER), s)
-    r_inner, r_outer, _, _ = margins(plan, 0)
-    v_inner, v_outer, _, _ = margins(plan, 1)
-    assert round(r_inner, 6) == round(v_inner, 6) == 54.0
-    assert round(r_outer, 6) == round(v_outer, 6)
 
 
-def test_fill_height_that_fits_behaves_like_fit():
-    """A source narrow enough not to overflow gets the same shared-slack
-    treatment, so the modes agree wherever both are valid."""
-    s_fit = settings(scale_mode="fit", gutter_pt=18.0, margin_outer_pt=18.0,
-                     margin_top_pt=18.0, margin_bottom_pt=18.0)
-    s_fill = settings(scale_mode="fill_height", gutter_pt=18.0, margin_outer_pt=18.0,
-                      margin_top_pt=18.0, margin_bottom_pt=18.0)
-    pages = make_pages(2, size=TALL)  # 300x900 -- height-limited, fits easily
-    assert margins(impose(pages, s_fit), 0) == pytest.approx(
-        margins(impose(pages, s_fill), 0)
-    )
 
 
-# ----------------------------------------------------- rule 4: mode semantics
+# --------------------------------------------------- rule 4: one scale rule
 
 
-def test_fit_is_the_default_mode():
-    assert LayoutSettings(paper=LETTER, gutter_pt=0.0, binding_edge="left").scale_mode == "fit"
 
 
-def test_fill_height_fills_the_vertical_box_exactly():
-    s = settings(scale_mode="fill_height", gutter_pt=0.0, margin_outer_pt=0.0,
-                 margin_top_pt=36.0, margin_bottom_pt=18.0)
-    plan = impose(make_pages(2, size=DIGEST), s)
-    _, _, top, bottom = margins(plan, 0)
-    assert round(top, 6) == 36.0
-    assert round(bottom, 6) == 18.0
 
 
 def test_fit_is_limited_by_whichever_dimension_binds():
     """A very tall source is height-limited; a square one is width-limited
     once the gutter eats into the width."""
-    s = settings(scale_mode="fit", gutter_pt=108.0, margin_outer_pt=0.0,
+    s = settings(gutter_pt=108.0, margin_outer_pt=0.0,
                  margin_top_pt=0.0, margin_bottom_pt=0.0)
     tall = impose(make_pages(2, size=TALL), s)
     _, _, top, bottom = margins(tall, 0)
@@ -234,15 +197,14 @@ def test_fit_is_limited_by_whichever_dimension_binds():
 
 
 @pytest.mark.parametrize("size", [TRAVELLER, DIGEST, SQUARE, TALL])
-@pytest.mark.parametrize("mode", ["fit", "fill_height"])
-def test_recto_and_verso_are_exact_mirrors(size, mode):
-    s = settings(scale_mode=mode, gutter_pt=54.0, margin_outer_pt=18.0,
+def test_recto_and_verso_are_exact_mirrors(size):
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
                  margin_top_pt=27.0, margin_bottom_pt=9.0)
     plan = impose(make_pages(4, size=size), s)
     for pair in (0, 2):
         recto = margins(plan, pair)
         verso = margins(plan, pair + 1)
-        assert recto == pytest.approx(verso), f"{mode} {size} pages {pair}/{pair+1}"
+        assert recto == pytest.approx(verso), f"{size} pages {pair}/{pair+1}"
 
 
 @pytest.mark.parametrize("size", [TRAVELLER, DIGEST, TALL])
@@ -259,9 +221,9 @@ def test_left_and_right_binding_are_exact_mirrors(size):
 def test_binding_edge_selects_the_physical_side():
     """Left binding puts the recto's gutter on its left; right binding on its right."""
     left = impose(make_pages(2), settings(binding_edge="left", gutter_pt=54.0,
-                                          margin_outer_pt=0.0, scale_mode="fit"))
+                                          margin_outer_pt=0.0))
     right = impose(make_pages(2), settings(binding_edge="right", gutter_pt=54.0,
-                                           margin_outer_pt=0.0, scale_mode="fit"))
+                                           margin_outer_pt=0.0))
     assert flat_output_pages(left)[0].placement.tx > flat_output_pages(right)[0].placement.tx
 
 
@@ -269,7 +231,7 @@ def test_binding_edge_selects_the_physical_side():
 
 
 def test_zero_gutter_and_zero_margins_fill_the_sheet():
-    s = settings(scale_mode="fill_height", gutter_pt=0.0, margin_outer_pt=0.0,
+    s = settings(gutter_pt=0.0, margin_outer_pt=0.0,
                  margin_top_pt=0.0, margin_bottom_pt=0.0)
     plan = impose(make_pages(2, size=LETTER), s)
     inner, outer, top, bottom = margins(plan, 0)
@@ -278,7 +240,7 @@ def test_zero_gutter_and_zero_margins_fill_the_sheet():
 
 
 def test_zero_gutter_still_honours_the_other_margins():
-    s = settings(scale_mode="fit", gutter_pt=0.0, margin_outer_pt=36.0,
+    s = settings(gutter_pt=0.0, margin_outer_pt=36.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(make_pages(2, size=DIGEST), s)
     inner, outer, top, bottom = margins(plan, 0)
@@ -293,7 +255,7 @@ def test_zero_gutter_still_honours_the_other_margins():
 
 def test_margins_larger_than_the_sheet_warn_and_fall_back():
     """Rather than a negative-size box and a nonsense scale."""
-    s = settings(scale_mode="fit", gutter_pt=400.0, margin_outer_pt=400.0,
+    s = settings(gutter_pt=400.0, margin_outer_pt=400.0,
                  margin_top_pt=500.0, margin_bottom_pt=500.0)
     plan = impose(make_pages(2), s)
     assert any(w.kind == "clipped_by_page" for w in plan.warnings)
@@ -302,7 +264,7 @@ def test_margins_larger_than_the_sheet_warn_and_fall_back():
 
 
 def test_negative_margins_are_clamped_to_zero():
-    s = settings(scale_mode="fit", gutter_pt=-50.0, margin_outer_pt=-10.0,
+    s = settings(gutter_pt=-50.0, margin_outer_pt=-10.0,
                  margin_top_pt=-10.0, margin_bottom_pt=-10.0)
     plan = impose(make_pages(2), s)
     for m in margins(plan, 0):
@@ -318,7 +280,7 @@ def test_each_page_uses_its_own_media_box():
         make_page(1, size=(400.0, 600.0)),
         make_page(2, size=(300.0, 900.0)),
     ]
-    plan = impose(pages, settings(scale_mode="fill_height", gutter_pt=18.0))
+    plan = impose(pages, settings(gutter_pt=18.0))
     flat = flat_output_pages(plan)
     assert flat[2].placement.scale_x == pytest.approx(LETTER[1] / 900.0)
     assert flat[2].placement.scale_x != pytest.approx(flat[0].placement.scale_x)
@@ -333,7 +295,7 @@ def test_mixed_widths_keep_their_gutter():
         make_page(2, size=(527.28, 672.0)),
         make_page(3, size=(506.88, 672.0)),
     ]
-    s = settings(scale_mode="fit", gutter_pt=54.0, margin_outer_pt=18.0,
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(pages, s)
     scales = {round(p.placement.scale_x, 6) for p in flat_output_pages(plan)}
@@ -378,7 +340,7 @@ def test_landscape_page_is_rotated_and_warned():
 
 
 def test_rotated_landscape_still_honours_margins():
-    s = settings(landscape_policy="rotate", scale_mode="fit", gutter_pt=54.0,
+    s = settings(landscape_policy="rotate", gutter_pt=54.0,
                  margin_outer_pt=18.0, margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose([make_page(0, size=WIDE), make_page(1, size=WIDE)], s)
     inner, outer, top, bottom = margins(plan, 0)
