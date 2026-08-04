@@ -1,35 +1,121 @@
 # Deckle
 
-Deckle is a desktop application for imposing and printing booklets from PDF
-and image sources. It takes a stack of source pages, arranges them into
-printer sheets according to a chosen binding and paper layout, and produces
-a print-ready output — without needing a commercial print shop or a
-dedicated imposition tool.
+Prepare PDFs and image folders for hand bookbinding, and print them on a
+printer that has no duplexer.
 
-## Status
+Deckle adds an alternating binding gutter, shows you the exact physical
+sheets before you commit paper, and drives the printer directly — splitting a
+double-sided job into two passes with a reload instruction derived from your
+printer's own calibrated behaviour.
 
-**Not yet released.** Deckle is under active development and does not yet
-have a packaged build. Expect breaking changes.
+**Status: not yet released.** The MVP works. The calibration wizard and
+signature imposition do not exist yet. Expect breaking changes.
 
-## The page model
+## Why it exists
 
-Deckle's core reasons about pages at four distinct levels, and keeps them
-strictly separate so layout logic stays pure and testable:
+Every imposition tool surveyed produces a PDF and then abandons you at the
+print dialog. None of them can control a printer — Bookbinder JS is sandboxed
+in a browser, Stirling PDF is a server, PDF Arranger has two controls and an
+open orientation bug. `QtPrintSupport` fills exactly that gap.
 
-1. **Source page** — a page as it exists in an input file (PDF page or
-   image), before any placement decision is made.
-2. **Output page** — a source page (or a blank filler) after it has been
-   assigned a placement transform (scale, translation, rotation) for a
-   specific position on a sheet.
-3. **Sheet** — one physical piece of paper, with an optional front and
-   back output page, ready to be printed as a duplex or single-sided pass.
-4. **Pass** — the ordered sequence of sheets sent to the printer to
-   produce the finished, foldable/bindable booklet.
+Manual duplex on its own is well served elsewhere; your printer's own driver
+is often the best option. What is *not* served is doing the gutter, the
+preview and the printing in one place, with the preview showing the artifact
+that actually reaches the paper.
 
-This separation lets the imposition logic (which pages go where) be
-implemented as pure functions over these data models, independent of PDF
-I/O, rasterization, or the Qt-based UI.
+## The four-level page model
 
-## License
+The vocabulary the whole codebase uses. Most tools conflate these, which is
+why they cannot express "reprint sheet 7".
 
-Deckle is released under the [MIT License](LICENSE).
+| Level | What it is |
+|---|---|
+| **Source page** | Imported content — a PDF page or image, before any placement decision |
+| **Output page** | A source page (or blank filler) with a placement transform, bound for one side of a sheet |
+| **Sheet** | One physical piece of paper, with a front and a back |
+| **Print pass** | The order sheets are *fed*, per pass, for manual duplex |
+
+## What it does
+
+- Import PDFs and image folders together; natural filename ordering, EXIF
+  orientation, lossless embedding via `img2pdf`
+- Reorder, rotate, skip and insert blanks, with undo and continuous autosave
+- Four independent margins — gutter (spine), fore-edge, head, tail — entered
+  in pt / in / cm / mm
+- One document-wide scale, so body text never changes size between pages
+- Preview the real exported PDF, with fit-to-window, zoom, and a side-by-side
+  front/back spread
+- Two guides drawn distinctly: the printer's **imageable area** (a hardware
+  limit) and your **content box** (your margins)
+- Warnings that distinguish *why* content is clipped — off the page, versus
+  inside the printer's non-printable border
+- Save the imposed PDF, or print it with manual-duplex pass splitting,
+  test-one-sheet, and sheet-granular resume
+- A headless CLI: `impose`, `export`, `info`
+
+## Not built yet
+
+- **Calibration wizard** — printing uses built-in printer presets rather than
+  a profile measured from your own printer
+- **Signature imposition** — folding, nesting, saddle stitch. Design at
+  `docs/plans/2026-08-04-deckle-signatures-v2-design.md`
+- Packaging and installers; macOS support
+
+## Running it
+
+```
+run.bat                  launch the GUI
+run.bat cli <args...>    headless CLI
+run.bat test [args]      pytest, with arg passthrough
+run.bat deps             install/refresh dependencies
+run.bat doctor           interpreter, dependency versions, visible printers
+```
+
+From a terminal use `.\run.bat` — cmd does not search the current directory.
+Double-clicking from Explorer works as-is.
+
+```
+python -m deckle                                    GUI
+python -m deckle.cli info book.pdf
+python -m deckle.cli export book.pdf -o out.pdf --gutter 0.75in
+```
+
+## Architecture
+
+`deckle.core` is pure Python and **imports no Qt** — enforced by an automated
+test. Imposition and print planning are pure functions over data, so they are
+testable without a display or a printer, and the app layer stays replaceable.
+
+```
+deckle/core/    models, loader, layout, export, render, printing,
+                profiles, print_session, project_io, session_log
+deckle/app/     PySide6 shell, views, Qt print backend
+deckle/cli.py   headless entry point
+```
+
+The preview **rasterises the exported PDF** rather than re-drawing the layout.
+Two implementations of imposition can share a bug and agree with each other; a
+rasterised artifact cannot lie about what will print.
+
+## Licensing
+
+MIT. Every dependency is permissive or weak-copyleft, and **no AGPL component
+is permitted** — enforced by a license-audit test. That rules out PyMuPDF,
+pdfimpose, cpdf, Poppler and Ghostscript, all of which are otherwise
+attractive for this problem.
+
+| Package | License | Role |
+|---|---|---|
+| `pikepdf` | MPL-2.0 | All PDF manipulation and composition |
+| `pypdfium2` | BSD-3 / Apache-2.0 | Rasterisation for preview and print |
+| `img2pdf` | LGPL-3.0 | Lossless image → PDF at ingestion |
+| `PySide6` | LGPLv3 | UI and printing |
+| `natsort`, `Pillow` | MIT | Filename ordering, image metadata |
+
+Deckle itself is released under the [MIT License](LICENSE).
+
+## Documentation
+
+- `docs/plans/` — design documents
+- `docs/specs/` — the MVP spec and its phase specs
+- `docs/decisions.md` — defects found, and what each one generalises to

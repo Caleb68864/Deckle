@@ -1,5 +1,19 @@
 # Decision Log
 
+## 2026-08-04 — Printer enumeration blocked the UI thread on launch
+- Symptom: With the internet down, `python -m pytest -q` took **81 minutes** instead of 7 seconds. Same 231 tests, all passing.
+- Fix: `QPrinterInfo.availablePrinters()` enumerates **network** printers, and the Windows spooler blocks per printer until it times out when one is unreachable. `MainWindow.refresh_printers()` ran synchronously inside `__init__`, so **Deckle hung on launch whenever a networked printer was offline** — measured at 21ms with the network up and effectively unbounded without it. Moved to a background `_PrinterQueryWorker`; the window now constructs in 338ms with Print disabled and a "Checking for printers..." message, enabling when the query returns. `_on_print_clicked` reads the cached list rather than re-enumerating.
+- Surfaces: Any OS-level enumeration that can reach the network — printers, drives, fonts, Bluetooth. It is fast enough to look synchronous-safe on a healthy machine and unbounded on an unhealthy one.
+- Watch: A **slow test suite was the only symptom**. Nothing failed, so nothing drew attention to it; the duration was the signal. Treat a large unexplained change in suite runtime as a defect report, not an environment quirk.
+- Commit: (this commit)
+
+## 2026-08-04 — Superseded background renders raced and leaked
+- Symptom: `PreviewView.refresh()` and `ArrangeView.request_visible_thumbnails()` each spawned a `QThread` per user action and overwrote `self._thread` without stopping the previous one. Three consequences: the **last thread to finish won**, which is not necessarily the sheet being viewed; threads accumulated for the life of the widget, one per sheet scrubbed past; and the `cancel` token that `render_sheet` already accepted was never created or passed, so superseded renders ran to completion.
+- Fix: Both workers now own a `threading.Event`, cancelled when superseded and threaded into `render_sheet`. `_on_frame_ready` ignores any worker that is not the current one. Threads get `deleteLater` on finish. Verified live: 20 rapid sheet changes leave exactly one live worker, on the sheet actually displayed.
+- Surfaces: Any "fire a background job per user action" pattern. The bug is invisible when jobs are fast — it only appears under a large document, which is when it matters.
+- Watch: **`ThumbnailWorker` had zero test coverage**, which is how a missing `import threading` in `arrange_view.py` passed a fully green suite. A class with no direct test can absorb a `NameError` silently as long as nothing constructs it. `tests/test_view_workers.py` now covers both workers' cancellation contract.
+- Commit: (this commit)
+
 ## 2026-08-04 — slack_to replaces the maximize_gutter boolean
 - Symptom: Asked for a toggle so the gutter could vary by default but be held constant on demand. A toggle already existed — `maximize_gutter` — but its two positions were "slack to the gutter" and "slack split evenly". **Neither produced a constant gutter**, which was the option actually wanted.
 - Fix: Replaced the boolean with `slack_to: Literal["gutter", "outer", "split"]`, default `"gutter"`. It names the real question — when source pages differ in width, which margin absorbs the difference, and therefore which one stays identical through the book. `gutter`: fore-edge exact, gutter varies. `outer`: gutter exact, fore-edge varies. `split`: both vary, requested difference preserved.

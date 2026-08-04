@@ -11,7 +11,6 @@ import pytest
 from deckle.core import export as export_module
 from deckle.core import render
 from deckle.core.models import (
-    LayoutSettings,
     OutputPage,
     Placement,
     Sheet,

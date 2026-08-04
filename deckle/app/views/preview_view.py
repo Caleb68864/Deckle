@@ -328,13 +328,25 @@ class PreviewWorker:
         self.sides = sides or (side,)
         self.frame: PreviewFrame | None = None
         self.frames: list[PreviewFrame] = []
+        # Set when a newer request supersedes this one. Checked between
+        # sides and threaded into render_sheet, so a scrubbed-past sheet
+        # stops rasterizing instead of finishing work nobody will see.
+        self.cancel = threading.Event()
 
     def run(self) -> None:
-        self.frames = [
-            build_preview_frame(self.plan, self.profile, self.sheet_index, s)
-            for s in self.sides
-        ]
-        self.frame = self.frames[0] if self.frames else None
+        frames = []
+        for s in self.sides:
+            if self.cancel.is_set():
+                return
+            frames.append(
+                build_preview_frame(
+                    self.plan, self.profile, self.sheet_index, s, cancel=self.cancel
+                )
+            )
+        if self.cancel.is_set():
+            return
+        self.frames = frames
+        self.frame = frames[0] if frames else None
 
 
 class PreviewView:
@@ -478,7 +490,15 @@ class PreviewView:
     # -- rendering -----------------------------------------------------------
 
     def refresh(self) -> None:
-        """Kick off a background render of exactly the visible sheet/side."""
+        """Kick off a background render of exactly the visible sheet/side.
+
+        Supersedes any render still in flight. Without that, scrubbing
+        sheets quickly left several threads racing and the *last to finish*
+        won -- which is not necessarily the one the user is looking at.
+        """
+        if self._worker is not None:
+            self._worker.cancel.set()
+
         sides = ("front", "back") if self._spread else (self.side,)
         worker = PreviewWorker(
             self.plan, self.profile, self.sheet_index, self.side, sides=sides
@@ -486,11 +506,18 @@ class PreviewView:
         thread = self._QThread(self.widget)
         thread.run = worker.run
         thread.finished.connect(lambda: self._on_frame_ready(worker))
+        # Threads are parented to the widget, so without this they pile up
+        # for the life of the view -- one per sheet scrubbed past.
+        thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
         thread.start()
 
     def _on_frame_ready(self, worker: PreviewWorker) -> None:
+        # Ignore anything a superseded render produces: a slow earlier job
+        # must never repaint over a newer one.
+        if worker is not self._worker or worker.cancel.is_set():
+            return
         frames = worker.frames or ([worker.frame] if worker.frame else [])
         if not frames:
             return

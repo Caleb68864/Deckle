@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 
-import pytest
 
 from deckle.app import backend as backend_mod
 from deckle.app.backend import DEFAULT_CHUNK_SIZE, QtPrintBackend, _chunked
-from deckle.core.printing import PrintPass, PrintResult
+from deckle.core.printing import PrintPass
 from deckle.core.profiles import PrinterProfile
 
 

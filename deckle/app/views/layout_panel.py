@@ -20,7 +20,7 @@ from typing import Literal
 
 from deckle.app.state import AppState
 from deckle.core.layout import GutterShiftStrategy
-from deckle.core.models import LayoutSettings, Project, SheetPlan
+from deckle.core.models import Project, SheetPlan
 
 BINDING_EDGES: tuple[str, ...] = ("left", "right")
 

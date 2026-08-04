@@ -13,6 +13,8 @@ sub-spec boundary on purpose.
 
 from __future__ import annotations
 
+import ast
+
 import importlib
 import os
 import pkgutil
@@ -91,7 +93,6 @@ def test_orphaned_views_every_view_module_is_imported_by_main():
 # printers being available) -- it is checked separately below by the same
 # AST technique, tolerant of being inside any method, not just __init__.
 
-import ast
 
 
 def _main_window_init_ast() -> ast.FunctionDef:

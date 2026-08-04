@@ -23,6 +23,7 @@ without a display.
 
 from __future__ import annotations
 
+import threading
 from typing import Sequence
 
 from deckle.app.state import AppState, insert_blank, reorder_pages, set_rotation, toggle_skip
@@ -93,11 +94,18 @@ class ThumbnailWorker:
         self.viewport_count = viewport_count
         self.start = 0
         self.rendered: list[RenderedPage] = []
+        # Set when a newer scroll position supersedes this fetch.
+        self.cancel = threading.Event()
 
     def run(self) -> None:
-        self.start, self.rendered = request_visible_thumbnails(
+        if self.cancel.is_set():
+            return
+        start, rendered = request_visible_thumbnails(
             self.pages, self.scroll_index, self.viewport_count
         )
+        if self.cancel.is_set():
+            return
+        self.start, self.rendered = start, rendered
 
 
 # -- Qt wiring -----------------------------------------------------------
@@ -201,17 +209,30 @@ class ArrangeView:
         self.request_visible_thumbnails(0)
 
     def request_visible_thumbnails(self, scroll_index: int) -> None:
-        """Kick off a background thumbnail fetch for the visible window."""
+        """Kick off a background thumbnail fetch for the visible window.
+
+        Supersedes any fetch still in flight -- scrolling a 266-page grid
+        otherwise queues a thread per scroll step, each parented to the
+        widget and so never freed, with the slowest painting last.
+        """
+        if self._worker is not None:
+            self._worker.cancel.set()
+
         pages = self.state.project.pages
         worker = ThumbnailWorker(pages, scroll_index, self.VIEWPORT_COUNT)
         thread = self._QThread(self.widget)
         thread.run = worker.run
         thread.finished.connect(lambda: self._on_thumbnails_ready(worker))
+        thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
         thread.start()
 
     def _on_thumbnails_ready(self, worker: ThumbnailWorker) -> None:
+        # Ignore a superseded fetch: stale thumbnails must not land on top
+        # of the window the user actually scrolled to.
+        if worker is not self._worker or worker.cancel.is_set():
+            return
         for offset, rendered in enumerate(worker.rendered):
             index = worker.start + offset
             if index < self.list_widget.count() and rendered.width and rendered.height:

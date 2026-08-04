@@ -12,11 +12,9 @@ import inspect
 import os
 
 import pikepdf
-import pytest
 
 from deckle.app.views import layout_panel, preview_view
 from deckle.core import export as export_module
-from deckle.core.layout import GutterShiftStrategy
 from deckle.core.models import (
     LayoutSettings,
     OutputPage,

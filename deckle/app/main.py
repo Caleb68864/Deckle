@@ -31,6 +31,26 @@ NO_PRINTERS_MESSAGE = "No printers installed -- connect a printer to enable prin
 DEFAULT_PROFILE = next(iter(BUILTIN_PRESETS.values()))
 
 
+class _PrinterQueryWorker:
+    """Enumerates printers on a background thread.
+
+    Plain class, not a ``QObject`` -- same shape as ``ThumbnailWorker`` and
+    ``PreviewWorker``. Exists because printer enumeration can block for the
+    OS spooler's timeout when a network printer is unreachable.
+    """
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def run(self) -> None:
+        try:
+            self.names = available_printer_names()
+        except Exception:
+            # A spooler failure must not take the window down; the app is
+            # fully usable for Save PDF with no printers at all.
+            self.names = []
+
+
 def available_printer_names() -> list[str]:
     """The names of printers Qt currently knows about.
 
@@ -103,6 +123,10 @@ class MainWindow:
         self.print_button.clicked.connect(self._on_print_clicked)
         self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
 
+        # Known-empty until the background query returns, so nothing reads
+        # an undefined attribute if the user clicks Print immediately.
+        self._printers: list[str] = []
+        self._printer_thread = None
         self.refresh_printers()
 
     def _on_layout_changed(self, plan) -> None:
@@ -114,9 +138,38 @@ class MainWindow:
         self.arrange_view.refresh()
         self.preview_view.on_layout_changed(recompute_plan(self.state.project))
 
-    def refresh_printers(self) -> None:
-        """Re-check available printers and disable Print when there are none."""
-        printers = available_printer_names()
+    def refresh_printers(self, *, blocking: bool = False) -> None:
+        """Re-check available printers, off the UI thread.
+
+        ``QPrinterInfo.availablePrinters()`` enumerates **network** printers
+        too, and the Windows spooler blocks per printer until it times out
+        when one is unreachable. Run synchronously from ``__init__`` -- as
+        this was -- that means Deckle hangs on launch whenever a networked
+        printer is offline. Enumeration measures ~21ms with the network up
+        and unbounded without it, so it does not belong on the UI thread.
+
+        ``blocking=True`` keeps a synchronous path for tests and the CLI,
+        where there is no event loop to return to.
+        """
+        if blocking:
+            self._apply_printers(available_printer_names())
+            return
+
+        from PySide6.QtCore import QThread
+
+        self.print_button.setEnabled(False)
+        self.status_bar.showMessage("Checking for printers...")
+
+        worker = _PrinterQueryWorker()
+        thread = QThread(self.window)
+        thread.run = worker.run
+        thread.finished.connect(lambda: self._apply_printers(worker.names))
+        thread.finished.connect(thread.deleteLater)
+        self._printer_thread = thread
+        thread.start()
+
+    def _apply_printers(self, printers: list[str]) -> None:
+        self._printers = list(printers)
         has_printers = bool(printers)
         self.print_button.setEnabled(has_printers)
         if has_printers:
@@ -127,7 +180,9 @@ class MainWindow:
             self.status_bar.showMessage(NO_PRINTERS_MESSAGE)
 
     def _on_print_clicked(self) -> None:
-        printers = available_printer_names()
+        # Use the cached list rather than re-enumerating: a second query
+        # would re-introduce exactly the block this moved off the UI thread.
+        printers = self._printers
         if not printers:
             # Defensive: the button should already be disabled, but never
             # open a print dialog against zero printers even if this
