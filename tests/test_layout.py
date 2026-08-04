@@ -246,3 +246,93 @@ def test_landscape_page_in_portrait_document_rotates_and_warns():
 
     assert out_page.placement.rotate_deg == 90
     assert any(w.kind == "mixed_orientation" for w in plan.warnings)
+
+
+def _tall_source(n: int = 2):
+    """A 6x9in source -- taller than letter's aspect, so fixed_gutter is
+    height-constrained and the scaled width is narrower than paper - gutter."""
+    return [
+        SourcePage(
+            ref=SourceRef(
+                path="tall.pdf", page_index=i, sha256="x" * 64,
+                width_pt=432.0, height_pt=648.0,
+            ),
+            rotate_deg=0,
+            skipped=False,
+        )
+        for i in range(n)
+    ]
+
+
+def _margins(plan, paper_w: float):
+    """(left, right) margin of each output page, in order."""
+    out = []
+    for sheet in plan.sheets:
+        for side in (sheet.front, sheet.back):
+            if side is None or side.is_filler:
+                continue
+            p = side.placement
+            scaled_w = 432.0 * p.scale_x
+            out.append((round(p.tx, 1), round(paper_w - p.tx - scaled_w, 1)))
+    return out
+
+
+def test_fixed_gutter_verso_mirrors_recto_when_height_constrained():
+    """Regression: the reserved gutter must stay on the binding edge.
+
+    With a 6x9in source on letter and a 0.75in gutter, fixed_gutter is
+    height-constrained, so the scaled content is narrower than
+    paper - gutter. The verso previously got tx=0.0, which put the slack on
+    the spine side and the content flush against the fore-edge -- the
+    binding edge appeared to flip when switching modes.
+    """
+    settings = LayoutSettings(
+        paper=(612.0, 792.0),
+        gutter_pt=54.0,
+        binding_edge="left",
+        scale_mode="fixed_gutter",
+        start_on_recto=True,
+        landscape_policy="rotate",
+    )
+    plan = GutterShiftStrategy().impose(_tall_source(2), settings)
+    recto, verso = _margins(plan, 612.0)
+
+    # Recto: gutter on the left, slack on the fore-edge.
+    assert recto == (54.0, 30.0)
+    # Verso: exact mirror -- gutter on the RIGHT (the spine), slack on the left.
+    assert verso == (30.0, 54.0)
+    assert recto == verso[::-1]
+
+
+def test_fixed_gutter_right_binding_is_mirror_of_left_when_height_constrained():
+    base = dict(
+        paper=(612.0, 792.0),
+        gutter_pt=54.0,
+        scale_mode="fixed_gutter",
+        start_on_recto=True,
+        landscape_policy="rotate",
+    )
+    left = GutterShiftStrategy().impose(
+        _tall_source(2), LayoutSettings(binding_edge="left", **base)
+    )
+    right = GutterShiftStrategy().impose(
+        _tall_source(2), LayoutSettings(binding_edge="right", **base)
+    )
+    lm, rm = _margins(left, 612.0), _margins(right, 612.0)
+    assert lm == [m[::-1] for m in rm]
+
+
+def test_fit_height_placement_unchanged_by_the_fix():
+    """fit_height's gutter IS the leftover, so tx reduces to 0.0 on versos."""
+    settings = LayoutSettings(
+        paper=(612.0, 792.0),
+        gutter_pt=54.0,
+        binding_edge="left",
+        scale_mode="fit_height",
+        start_on_recto=True,
+        landscape_policy="rotate",
+    )
+    plan = GutterShiftStrategy().impose(_tall_source(2), settings)
+    recto, verso = _margins(plan, 612.0)
+    assert recto == (84.0, 0.0)
+    assert verso == (0.0, 84.0)

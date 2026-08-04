@@ -129,7 +129,15 @@ def _place_page(
     scaled_h = src_h * scale
 
     gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)
-    tx = gutter if gutter_on_left else 0.0
+    # The reserved gutter always sits adjacent to the binding edge, and any
+    # slack left over lands on the fore-edge. Writing the verso as a bare
+    # tx=0.0 silently assumes the scaled content exactly fills
+    # ``paper_w - gutter`` -- true in fit_height (where the gutter IS the
+    # leftover) but false in fixed_gutter whenever height is the binding
+    # constraint. That asymmetry put the spine gutter on the wrong side of
+    # the verso and read as the binding edge flipping between modes.
+    # This form reduces to 0.0 in fit_height, so both modes share one rule.
+    tx = gutter if gutter_on_left else paper_w - gutter - scaled_w
     ty = (paper_h - scaled_h) / 2.0
 
     placement = Placement(

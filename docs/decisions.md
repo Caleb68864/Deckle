@@ -1,5 +1,12 @@
 # Decision Log
 
+## 2026-08-04 — fixed_gutter put the reserved gutter on the wrong side of the verso
+- Symptom: Switching from `fit_height` to `fixed_gutter` in the UI looked like the binding edge flipped. Reported from real use, not caught by any test.
+- Fix: `_place_page` computed `tx = gutter if gutter_on_left else 0.0`. The bare `0.0` silently assumes the scaled content exactly fills `paper_w - gutter` — true in `fit_height`, where the gutter *is* the leftover, but false in `fixed_gutter` whenever height is the binding constraint. With a 6x9in source on letter and a 0.75in gutter: recto got left=54/right=30 while verso got left=0/right=84, so the verso's spine gutter was 84pt and its content sat flush against the fore-edge. Now `tx = paper_w - gutter - scaled_w` on the gutter-right side, which reduces to 0.0 in `fit_height` so one rule serves both modes. Three regression tests added, including a right-binding mirror check.
+- Surfaces: Any two-mode geometry where one mode's invariant ("the leftover IS the gutter") is quietly relied on by shared downstream code. The shared line was correct for the mode it was written against and wrong for the other.
+- Watch: The existing parity tests all asserted `tx` on the *gutter-left* side, where both modes agree. A bug living entirely on the mirror side survived them. When testing a mirrored layout, assert both margins of both sides, not one coordinate.
+- Commit: (this commit)
+
 ## 2026-08-04 — Added run.bat; verified the GUI genuinely launches
 - Symptom: The app had never actually been run. 158 tests passed and an AST test proved every view is instantiated and mounted, but no one had started the Qt event loop — so "it works" was inference, not observation.
 - Fix: Added `run.bat` (GUI / `cli` passthrough / `test` / `deps` / `doctor`) and verified a real windowed launch: title "Deckle", visible, 292x631, event loop exits rc=0. `doctor` also enumerates printers through `QPrinterInfo`, which is the assumption SS-08's spike rests on — 7 printers resolve, including the Brother HL-L2350DW.
