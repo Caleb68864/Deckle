@@ -33,6 +33,21 @@ network-attached laser printer plus the CUPS PDF virtual printer)
 
 ## Escalation: Linux duplex-capability detection is unreliable before a first job
 
+**Escalation record**
+- Trigger: Intent "Stop and ask when" / "Escalation triggers" —
+  `docs/specs/2026-08-04-deckle-mvp.md`, "Qt's cross-platform print behavior diverges
+  from what this spec assumes (see SS-08 spike)."
+- Logged: 2026-08-04, by the SS-08 spike author (Caleb Bennett), against the one
+  `diverged` row above (Linux `supportedDuplexModes()` timing).
+- Status: **escalated with a recommendation, pending explicit owner sign-off.** Do not
+  read the recommendation below as a substitute for that sign-off — it is the input to
+  it, not the decision itself.
+- Owner decision (fill in when reviewed):
+  - [ ] Accepted — option 1 (ship as-is for MVP)
+  - [ ] Accepted — option 2 (add query-time warm-up / calibration refresh)
+  - [ ] Other (describe)
+  - Reviewer: _________________  Date: __________
+
 **Diverged, not patched around.** `QPrinterInfo.supportedDuplexModes()` on
 Linux/CUPS under-reports duplex capability for a printer that has never
 had a job submitted to its queue in the current session, then reports
