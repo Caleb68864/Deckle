@@ -1,0 +1,379 @@
+"""Exporter: render a ``SheetPlan`` to a PDF on disk via pikepdf Form XObjects.
+
+Composition follows the pikepdf "Gutter Shift Recipe" Method B: build the
+output sheet with ``add_blank_page``, obtain the source content as a Form
+XObject via ``copy_foreign(Page(src).as_form_xobject())``, register it as a
+resource, and place it with ``calc_form_xobject_placement`` using
+``invert_transformations=True``. The destination rect is always sized to
+exactly reproduce a placement's own ``scale_x``/``scale_y`` -- ``shrink``/
+``expand`` permission is granted only in the single direction (if any)
+actually needed to hit that exact scale, so pikepdf reproduces
+``Placement`` verbatim rather than substituting its own best-fit: when a
+placement's scale is already 1.0 (the common ``fixed_gutter`` case), that
+means neither is granted and the result is a pure translation with no
+scale factor at all.
+
+The whole-page overlay/watermark helper on ``pikepdf.Page`` is never used
+here -- it centers and best-fits content, which is wrong for imposition
+where ``Placement`` dictates exact geometry.
+
+This module does not modify, recompute, or clamp any ``Placement`` produced
+by ``Imposer``: it only translates ``Placement`` into PDF geometry.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+import os
+import tempfile
+import threading
+from collections import OrderedDict
+from typing import Sequence
+
+import pikepdf
+from pikepdf import Name, Page, Rectangle
+
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan
+
+_CACHE_DIR_NAME = "deckle_export_cache"
+
+# Default bound on the number of cached single-sheet exports kept on disk.
+_DEFAULT_CACHE_SIZE = 200
+
+# How many sheets to assemble before saving and reopening the output PDF,
+# so source handles opened during composition don't accumulate across a
+# very large document (see "pikepdf - Performance and Memory").
+_BATCH_SHEETS = 50
+
+
+def _plan_hash(plan: SheetPlan) -> str:
+    """A stable hash of everything that affects rendered output.
+
+    Deliberately built from the plan's own field values (not Python's
+    ``id()`` or ``hash()``, which are unstable across processes) so the
+    same layout settings always produce the same cache key.
+    """
+    digest = hashlib.sha256()
+    digest.update(repr(plan.paper_pt).encode("utf-8"))
+    for sheet in plan.sheets:
+        digest.update(f"|sheet:{sheet.index}".encode("utf-8"))
+        for side_name, side in (("front", sheet.front), ("back", sheet.back)):
+            digest.update(f"|{side_name}:".encode("utf-8"))
+            if side is None:
+                digest.update(b"none")
+                continue
+            digest.update(_output_page_key(side).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _output_page_key(page: OutputPage) -> str:
+    ref = page.source_ref
+    ref_key = (
+        "none"
+        if ref is None
+        else f"{ref.path}:{ref.page_index}:{ref.sha256}:{ref.width_pt}:{ref.height_pt}"
+    )
+    placement = page.placement
+    placement_key = (
+        f"{placement.scale_x}:{placement.scale_y}:{placement.tx}:"
+        f"{placement.ty}:{placement.rotate_deg}"
+    )
+    return f"{ref_key}|{placement_key}|{page.is_filler}"
+
+
+def _scale_flags_for(scale: float) -> tuple[bool, bool]:
+    """The minimal ``(allow_shrink, allow_expand)`` that reproduces ``scale``.
+
+    ``Placement`` already carries the exact target scale computed by
+    ``Imposer`` -- this module must never let pikepdf recompute or drift
+    from it. Passing a rect that already matches the intended scale and
+    granting *only* the direction actually needed (shrink for scale < 1,
+    expand for scale > 1, neither for scale == 1) means pikepdf reproduces
+    that exact scale rather than substituting its own best-fit: when
+    neither direction is permitted and none is needed, the result is a
+    pure translation with no scale factor at all.
+    """
+    if math.isclose(scale, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+        return False, False
+    if scale < 1.0:
+        return True, False
+    return False, True
+
+
+def _rect_for_placement(placement: Placement, src_w: float, src_h: float) -> Rectangle:
+    """The destination rectangle a source page's content is placed into.
+
+    ``invert_transformations=True`` means pikepdf's own placement math
+    expects the *destination* rectangle in final (post-scale) sheet
+    coordinates, derived here directly from ``Placement`` without any
+    reinterpretation of scale or translation. Sized to the page's own
+    (unrotated) natural dimensions -- rotation, if any, is applied as a
+    separate wrapping transform around a pivot, see ``_place_output_page``.
+    """
+    scaled_w = src_w * placement.scale_x
+    scaled_h = src_h * placement.scale_y
+    return Rectangle(
+        placement.tx,
+        placement.ty,
+        placement.tx + scaled_w,
+        placement.ty + scaled_h,
+    )
+
+
+def _rotation_matrix(rotate_deg: int, cx: float, cy: float) -> str:
+    """A ``cm`` matrix string rotating ``rotate_deg`` about ``(cx, cy)``."""
+    theta = math.radians(rotate_deg)
+    cos_t = round(math.cos(theta), 10)
+    sin_t = round(math.sin(theta), 10)
+    e = cx - cx * cos_t + cy * sin_t
+    f = cy - cx * sin_t - cy * cos_t
+    return f"{cos_t} {sin_t} {-sin_t} {cos_t} {e} {f} cm"
+
+
+def _place_output_page(
+    sheet_pdf: pikepdf.Pdf,
+    dest_page: pikepdf.Page,
+    output_page: OutputPage,
+    source_cache: dict[str, pikepdf.Pdf],
+) -> None:
+    if output_page.is_filler or output_page.source_ref is None:
+        # A filler page carries no source content -- leave the blank page
+        # exactly as ``add_blank_page`` created it.
+        return
+
+    ref = output_page.source_ref
+    src_pdf = source_cache.get(ref.path)
+    if src_pdf is None:
+        src_pdf = pikepdf.open(ref.path)
+        source_cache[ref.path] = src_pdf
+
+    src_page = src_pdf.pages[ref.page_index]
+    formx = sheet_pdf.copy_foreign(Page(src_page).as_form_xobject())
+    name = dest_page.add_resource(formx, Name.XObject, prefix="Fx")
+
+    placement = output_page.placement
+    rotate_deg = placement.rotate_deg % 360
+
+    if rotate_deg in (90, 270):
+        # The final on-sheet footprint (tx/ty/width/height in Placement) is
+        # already expressed post-rotation. Place the form at its natural
+        # (pre-rotation) orientation centered on that same footprint, then
+        # rotate the whole thing about the footprint's center -- this keeps
+        # the placement rect's own scale exact while the wrapping transform
+        # supplies the rotation Imposer decided on.
+        scaled_w = ref.width_pt * placement.scale_x
+        scaled_h = ref.height_pt * placement.scale_y
+        footprint_w, footprint_h = scaled_h, scaled_w
+        cx = placement.tx + footprint_w / 2.0
+        cy = placement.ty + footprint_h / 2.0
+        prerotate_rect = Rectangle(
+            cx - scaled_w / 2.0, cy - scaled_h / 2.0, cx + scaled_w / 2.0, cy + scaled_h / 2.0
+        )
+        allow_shrink, allow_expand = _scale_flags_for(placement.scale_x)
+        inner = dest_page.calc_form_xobject_placement(
+            formx,
+            name,
+            prerotate_rect,
+            invert_transformations=True,
+            allow_shrink=allow_shrink,
+            allow_expand=allow_expand,
+        )
+        rotation = _rotation_matrix(rotate_deg, cx, cy)
+        content_stream = f"q\n{rotation}\n{inner.decode('latin-1')}\nQ\n".encode("latin-1")
+    else:
+        rect = _rect_for_placement(placement, ref.width_pt, ref.height_pt)
+        allow_shrink, allow_expand = _scale_flags_for(placement.scale_x)
+        content_stream = dest_page.calc_form_xobject_placement(
+            formx,
+            name,
+            rect,
+            invert_transformations=True,
+            allow_shrink=allow_shrink,
+            allow_expand=allow_expand,
+        )
+    dest_page.contents_add(content_stream)
+
+
+def _sides(sheet: Sheet) -> list[OutputPage]:
+    sides = []
+    if sheet.front is not None:
+        sides.append(sheet.front)
+    if sheet.back is not None:
+        sides.append(sheet.back)
+    return sides
+
+
+def export(
+    plan: SheetPlan,
+    out_path: str,
+    sheets: Sequence[int] | None = None,
+) -> None:
+    """Render ``plan`` (or the sheets in ``sheets``) to a PDF at ``out_path``.
+
+    ``sheets=None`` exports every sheet in the plan, in order. A subset
+    selection uses the exact same composition code path -- there is no
+    separate "single sheet" implementation.
+
+    Raises before any bytes are written if ``out_path`` isn't writable, so a
+    partial file never appears on disk.
+    """
+    target_indices = (
+        [s.index for s in plan.sheets] if sheets is None else list(sheets)
+    )
+    by_index = {s.index: s for s in plan.sheets}
+    selected = [by_index[i] for i in target_indices if i in by_index]
+
+    _check_writable(out_path)
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(os.path.abspath(out_path)) or None)
+    os.close(tmp_fd)
+    try:
+        _export_batched(plan, selected, tmp_path)
+        os.replace(tmp_path, out_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def _check_writable(out_path: str) -> None:
+    directory = os.path.dirname(os.path.abspath(out_path)) or "."
+    if not os.path.isdir(directory):
+        raise OSError(f"Directory does not exist: {directory}")
+    if not os.access(directory, os.W_OK):
+        raise PermissionError(f"Directory is not writable: {directory}")
+    if os.path.exists(out_path) and not os.access(out_path, os.W_OK):
+        raise PermissionError(f"Path is not writable: {out_path}")
+
+
+def _export_batched(plan: SheetPlan, selected: list[Sheet], tmp_path: str) -> None:
+    """Assemble ``selected`` sheets into ``tmp_path``, saving/reopening in
+    batches of ``_BATCH_SHEETS`` so source handles never accumulate across a
+    very large document.
+    """
+    out = pikepdf.Pdf.new()
+    source_cache: dict[str, pikepdf.Pdf] = {}
+    try:
+        for i, sheet in enumerate(selected, start=1):
+            for output_page in _sides(sheet):
+                dest_page = out.add_blank_page(page_size=plan.paper_pt)
+                _place_output_page(out, dest_page, output_page, source_cache)
+
+            if i % _BATCH_SHEETS == 0 and i != len(selected):
+                _flush_batch(out, source_cache, tmp_path)
+                out = pikepdf.open(tmp_path, allow_overwriting_input=True)
+
+        out.remove_unreferenced_resources()
+        out.save(tmp_path)
+    finally:
+        for src in source_cache.values():
+            src.close()
+        out.close()
+
+
+def _flush_batch(
+    out: pikepdf.Pdf, source_cache: dict[str, pikepdf.Pdf], tmp_path: str
+) -> None:
+    """Save the in-progress output and close every open source handle.
+
+    Called mid-assembly on very large documents so source PDFs stay open
+    only for the batch that references them, not for the whole export.
+    """
+    out.remove_unreferenced_resources()
+    out.save(tmp_path)
+    out.close()
+    for src in source_cache.values():
+        src.close()
+    source_cache.clear()
+
+
+class _LRUCache:
+    """A bounded, LRU-evicting mapping of cache key -> exported file path.
+
+    Evicted entries have their backing temp file removed. Not otherwise
+    persisted -- cleared entirely on project close via ``clear()``.
+    """
+
+    def __init__(self, maxsize: int) -> None:
+        self._maxsize = maxsize
+        self._data: OrderedDict[tuple[int, str], str] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple[int, str]) -> str | None:
+        with self._lock:
+            path = self._data.get(key)
+            if path is None:
+                return None
+            if not os.path.exists(path):
+                # Backing file vanished out from under us (e.g. temp
+                # cleanup) -- treat as a miss rather than returning a
+                # dangling path.
+                del self._data[key]
+                return None
+            self._data.move_to_end(key)
+            return path
+
+    def put(self, key: tuple[int, str], path: str) -> None:
+        with self._lock:
+            self._data[key] = path
+            self._data.move_to_end(key)
+            while len(self._data) > self._maxsize:
+                _, evicted_path = self._data.popitem(last=False)
+                _safe_remove(evicted_path)
+
+    def clear(self) -> None:
+        with self._lock:
+            for path in self._data.values():
+                _safe_remove(path)
+            self._data.clear()
+
+
+def _safe_remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+_cache = _LRUCache(_DEFAULT_CACHE_SIZE)
+_call_count = 0
+_call_count_lock = threading.Lock()
+
+
+def _cache_dir() -> str:
+    directory = os.path.join(tempfile.gettempdir(), _CACHE_DIR_NAME)
+    os.makedirs(directory, exist_ok=True)
+    return directory
+
+
+def export_sheet_cached(plan: SheetPlan, sheet_index: int) -> str:
+    """Export a single sheet to a temp PDF, cached by ``(sheet_index, plan_hash)``.
+
+    Bounded LRU cache (default 200 entries): requesting the same
+    ``(sheet_index, plan_hash)`` twice performs the export only once.
+    Changing any layout setting changes ``plan_hash`` and so invalidates
+    the cache for that sheet.
+    """
+    global _call_count
+
+    key = (sheet_index, _plan_hash(plan))
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached
+
+    fd, out_path = tempfile.mkstemp(suffix=".pdf", dir=_cache_dir())
+    os.close(fd)
+    with _call_count_lock:
+        _call_count += 1
+    export(plan, out_path, sheets=[sheet_index])
+    _cache.put(key, out_path)
+    return out_path
+
+
+def clear_sheet_cache() -> None:
+    """Evict every cached single-sheet export and remove its temp file.
+
+    Call on project close so scrubbing a large document doesn't leak temp
+    files across sessions.
+    """
+    _cache.clear()
