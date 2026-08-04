@@ -510,7 +510,7 @@ geometry only; *which sheet gets which mark* is SS-08's predicate.
 - `[BEHAVIORAL]` `signature_order_mark` over `sig_index` 0…`sig_count-1` yields strictly monotonically increasing `y0`, with index 0 at the tail margin and index `sig_count-1` at the head margin. `sig_count == 1` does not divide by zero. Satisfies REQ-029.
 - `[BEHAVIORAL]` `fold_line(sheet_h, fold_x)` returns one `Mark` of kind `"fold_line"` with `x0 == x1 == fold_x`, spanning the full sheet height. Satisfies REQ-030.
 - `[BEHAVIORAL]` No mark returned by any function lies strictly inside a cell's content box for a letter-landscape folio with default margins — every mark is on or across the fold. Satisfies REQ-028, REQ-030.
-- `[MECHANICAL]` `! grep -n "pikepdf\|ContentStreamBuilder\|Canvas\|PySide6\|open(" deckle/core/marks.py || (echo "FAIL: drawing or I/O leaked into marks geometry" && exit 1)` — negative assertion: exits 0 when absent.
+- `[MECHANICAL]` `! grep -nE "^\s*(import|from)\s+(pikepdf|PySide6|PyQt)" deckle/core/marks.py || (echo "FAIL: drawing or I/O leaked into marks geometry" && exit 1)` — negative assertion: exits 0 when absent.
 - `[MECHANICAL]` `! grep -n "paper_thickness_pt" deckle/core/marks.py || (echo "FAIL: paper_thickness_pt reached mark geometry" && exit 1)` — negative assertion: exits 0 when absent. Satisfies REQ-027.
 - `[MECHANICAL]` `python -m pytest tests/test_marks.py -q` exits 0 with no fewer than 10 tests.
 - `[MECHANICAL]` `ruff check deckle tests` exits 0.
@@ -680,8 +680,13 @@ preview by construction** — there is no second drawing path to keep in sync.
 **Files (new):**
 - `tests/test_export_marks.py`
 
-**Decisions:** Use `pikepdf.canvas.ContentStreamBuilder` (`append_rectangle`,
-`stroke_and_close`, `line_width`, `dashes`), confirmed present in the installed pikepdf
+**Decisions:** Use `pikepdf.canvas.ContentStreamBuilder`. **Method names verified by
+enumeration against the installed pikepdf 10.11.0, not assumed:** `line(x1, y1, x2, y2)`
+(maps 1:1 onto a `Mark`), `set_line_width`, `set_dashes`, `stroke_and_close`,
+`append_rectangle`, `push`/`pop`, `build`. There is **no** `line_width` or `dashes`
+method -- an earlier draft named those and a worker following it would get an
+`AttributeError`. `set_stroke_color` takes three floats, not a `Color`; stroke in the
+PDF default rather than passing a tuple. Confirmed present in the installed pikepdf
 10.11.0. Two traps from `[[pikepdf - Canvas API]]` apply: colours are
 `pikepdf.canvas.Color`, **never tuples**; and `Canvas.draw_image` is never used here (a
 measured 12.6× size blowup — irrelevant for vectors, but the temptation exists for a logo).
@@ -1119,3 +1124,28 @@ End to end, cheapest first, with a physical gate at the end:
 `fold_reading_order(impose(pages, settings)) == list(range(len(pages))) + [None] * blanks`
 — fold the plan back up and you get the book. Everything else in this spec is in service of
 that one line, and step 10 is the only thing that proves it.
+
+
+## Phase Specs
+
+Refined by `/forge-prep` on 2026-08-04.
+
+| Sub-Spec | Wave | Phase Spec |
+|---|---|---|
+| SS-01. Model changes | 1 | `docs/specs/deckle-signatures-v2/sub-spec-1-model-changes.md` |
+| SS-10. License denylist + oracle | 1 | `docs/specs/deckle-signatures-v2/sub-spec-10-license-denylist.md` |
+| SS-02. Core `Side` refactor | 2 | `docs/specs/deckle-signatures-v2/sub-spec-2-core-side-refactor.md` |
+| SS-05. `signatures.py` + fold simulator | 2 | `docs/specs/deckle-signatures-v2/sub-spec-5-signatures-arithmetic.md` |
+| SS-06. `marks.py` geometry | 2 | `docs/specs/deckle-signatures-v2/sub-spec-6-marks-geometry.md` |
+| SS-03. App `Side` refactor | 3 | `docs/specs/deckle-signatures-v2/sub-spec-3-app-side-refactor.md` |
+| SS-04. `_hash_plan` + zero-diff seam | 3 | `docs/specs/deckle-signatures-v2/sub-spec-4-hash-plan-zero-diff.md` |
+| SS-07. `Cell` generalisation | 3 | `docs/specs/deckle-signatures-v2/sub-spec-7-cell-generalisation.md` |
+| SS-09. Mark rendering | 3 | `docs/specs/deckle-signatures-v2/sub-spec-9-mark-rendering.md` |
+| SS-08. `SaddleStitchStrategy` | 4 | `docs/specs/deckle-signatures-v2/sub-spec-8-saddlestitch-strategy.md` |
+| SS-11. UI surface | 5 | `docs/specs/deckle-signatures-v2/sub-spec-11-ui-surface.md` |
+| SS-12. Integration + full-suite gate | 6 | `docs/specs/deckle-signatures-v2/sub-spec-12-integration.md` |
+| SS-13. Folded dummy (`dispatch: manual`) | 7 | `docs/specs/deckle-signatures-v2/sub-spec-13-folded-dummy.md` |
+
+Index: `docs/specs/deckle-signatures-v2/index.md`
+Contracts: `docs/specs/deckle-signatures-v2/contracts.yaml`
+Traceability: `docs/specs/deckle-signatures-v2/traceability.md`

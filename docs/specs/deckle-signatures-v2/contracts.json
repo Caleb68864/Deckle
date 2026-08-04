@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "spec_slug": "deckle-signatures-v2",
+  "note": "Signatures v2 targets files that do not exist yet; content_sha256 is null until the owning sub-spec runs. Authoritative shapes and invariants live in contracts.yaml -- this file is the machine-readable index forge-run consumes.",
+  "contracts": [
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12
+      ],
+      "name": "Side",
+      "kind": "interface",
+      "signature": "see contracts.yaml :: Side",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13
+      ],
+      "name": "Sheet",
+      "kind": "interface",
+      "signature": "see contracts.yaml :: Sheet",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        13
+      ],
+      "name": "Signature",
+      "kind": "interface",
+      "signature": "see contracts.yaml :: Signature",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2,
+        5,
+        8,
+        11
+      ],
+      "name": "SheetPlan.signatures",
+      "kind": "schema",
+      "signature": "see contracts.yaml :: SheetPlan.signatures",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        4,
+        6,
+        7,
+        8,
+        9,
+        11,
+        12,
+        13
+      ],
+      "name": "Mark",
+      "kind": "Literal[\"sewing_station\", \"signature_order\", \"fold_line\"]",
+      "signature": "see contracts.yaml :: Mark",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        8,
+        12
+      ],
+      "name": "split_signatures",
+      "kind": "api",
+      "signature": "see contracts.yaml :: split_signatures",
+      "file_path": "deckle/core/signatures.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        8,
+        12,
+        13
+      ],
+      "name": "saddle_order",
+      "kind": "api",
+      "signature": "see contracts.yaml :: saddle_order",
+      "file_path": "deckle/core/signatures.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        8,
+        12,
+        13
+      ],
+      "name": "fold_reading_order",
+      "kind": "api",
+      "signature": "see contracts.yaml :: fold_reading_order",
+      "file_path": "deckle/core/signatures.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 7,
+      "consumer_sub_specs": [
+        5,
+        8,
+        11
+      ],
+      "name": "Cell",
+      "kind": "schema",
+      "signature": "see contracts.yaml :: Cell",
+      "file_path": "deckle/core/layout.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [],
+      "name": "LayoutSettings.v2_fields",
+      "kind": "schema",
+      "signature": "see contracts.yaml :: LayoutSettings.v2_fields",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 8,
+      "consumer_sub_specs": [
+        2,
+        12
+      ],
+      "name": "LayoutStrategy.impose",
+      "kind": "api",
+      "signature": "see contracts.yaml :: LayoutStrategy.impose",
+      "file_path": "deckle/core/layout.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 4,
+      "consumer_sub_specs": [],
+      "name": "manual_duplex_seam",
+      "kind": "file_layout",
+      "signature": "see contracts.yaml :: manual_duplex_seam",
+      "file_path": "",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 9,
+      "consumer_sub_specs": [
+        2
+      ],
+      "name": "export_content_stream",
+      "kind": "api",
+      "signature": "see contracts.yaml :: export_content_stream",
+      "file_path": "deckle/core/export.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 10,
+      "consumer_sub_specs": [],
+      "name": "license_denylist",
+      "kind": "schema",
+      "signature": "see contracts.yaml :: license_denylist",
+      "file_path": "tests/test_license_audit.py",
+      "content_sha256": null
+    }
+  ]
+}
