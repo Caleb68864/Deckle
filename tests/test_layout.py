@@ -145,21 +145,21 @@ def test_opposing_margin_difference_is_preserved():
     assert round(top - bottom, 6) == 27.0
 
 
-def test_inner_outer_difference_is_preserved_when_not_maximising():
-    """With maximize_gutter off the horizontal slack is split, so the
-    requested inner/outer difference survives."""
+def test_split_preserves_the_inner_outer_difference():
+    """slack_to="split" shares the width evenly, so the requested
+    inner/outer difference survives."""
     s = settings(gutter_pt=72.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0,
-                 maximize_gutter=False)
+                 slack_to="split")
     plan = impose(make_pages(2, size=TALL), s)
     inner, outer, _, _ = margins(plan, 0)
     assert round(inner - outer, 6) == 54.0
 
 
-def test_equal_margins_centre_the_content_when_not_maximising():
+def test_split_with_equal_margins_centres_the_content():
     s = settings(gutter_pt=18.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0,
-                 maximize_gutter=False)
+                 slack_to="split")
     plan = impose(make_pages(2, size=DIGEST), s)
     inner, outer, top, bottom = margins(plan, 0)
     assert round(inner, 6) == round(outer, 6)
@@ -169,17 +169,7 @@ def test_equal_margins_centre_the_content_when_not_maximising():
 # ------------------------------- rule 3: overflow only via degenerate settings
 
 
-
-
-
-
-
-
 # --------------------------------------------------- rule 4: one scale rule
-
-
-
-
 
 
 def test_fit_is_limited_by_whichever_dimension_binds():
@@ -490,8 +480,8 @@ def test_degenerate_margins_collapse_the_content_box_to_the_sheet():
 # ------------------------------------------------------------ maximize_gutter
 
 
-def test_maximize_gutter_is_on_by_default():
-    assert LayoutSettings(paper=LETTER, gutter_pt=0.0, binding_edge="left").maximize_gutter
+def test_slack_goes_to_the_gutter_by_default():
+    assert LayoutSettings(paper=LETTER, gutter_pt=0.0, binding_edge="left").slack_to == "gutter"
 
 
 def test_maximize_gutter_pushes_all_slack_to_the_spine():
@@ -499,7 +489,7 @@ def test_maximize_gutter_pushes_all_slack_to_the_spine():
     lands on exactly its requested value and the gutter absorbs the rest."""
     s = settings(gutter_pt=18.0, margin_outer_pt=18.0,
                  margin_top_pt=18.0, margin_bottom_pt=18.0,
-                 maximize_gutter=True)
+                 slack_to="gutter")
     plan = impose(make_pages(2, size=DIGEST), s)
     inner, outer, _, _ = margins(plan, 0)
     assert round(outer, 6) == 18.0        # fore-edge exact
@@ -516,9 +506,9 @@ def test_maximize_gutter_makes_the_gutter_a_minimum_not_an_exact_value():
 
 def test_maximize_gutter_off_centres_the_content_horizontally():
     s_on = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
-                    margin_bottom_pt=18.0, maximize_gutter=True)
+                    margin_bottom_pt=18.0, slack_to="gutter")
     s_off = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
-                     margin_bottom_pt=18.0, maximize_gutter=False)
+                     margin_bottom_pt=18.0, slack_to="split")
     on = margins(impose(make_pages(2, size=DIGEST), s_on), 0)
     off = margins(impose(make_pages(2, size=DIGEST), s_off), 0)
     assert on[0] > off[0]                        # inner larger when maximising
@@ -528,9 +518,9 @@ def test_maximize_gutter_off_centres_the_content_horizontally():
 
 def test_maximize_gutter_does_not_affect_the_vertical_axis():
     """Head and tail always share their slack -- neither has a binding."""
-    for maximize in (True, False):
+    for slack in ("gutter", "outer", "split"):
         s = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
-                     margin_bottom_pt=18.0, maximize_gutter=maximize)
+                     margin_bottom_pt=18.0, slack_to=slack)
         _, _, top, bottom = margins(impose(make_pages(2, size=DIGEST), s), 0)
         assert round(top, 6) == round(bottom, 6)
 
@@ -539,7 +529,7 @@ def test_maximize_gutter_does_not_affect_the_vertical_axis():
 @pytest.mark.parametrize("edge", ["left", "right"])
 def test_maximize_gutter_still_mirrors_recto_and_verso(size, edge):
     s = settings(binding_edge=edge, gutter_pt=54.0, margin_outer_pt=18.0,
-                 margin_top_pt=18.0, margin_bottom_pt=18.0, maximize_gutter=True)
+                 margin_top_pt=18.0, margin_bottom_pt=18.0, slack_to="gutter")
     plan = impose(make_pages(4, size=size), s)
     for pair in (0, 2):
         assert margins(plan, pair, binding_edge=edge) == pytest.approx(
@@ -550,7 +540,7 @@ def test_maximize_gutter_still_mirrors_recto_and_verso(size, edge):
 @pytest.mark.parametrize("size", [TRAVELLER, DIGEST, SQUARE, TALL])
 def test_maximize_gutter_never_violates_the_requested_minimums(size):
     s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
-                 margin_top_pt=36.0, margin_bottom_pt=9.0, maximize_gutter=True)
+                 margin_top_pt=36.0, margin_bottom_pt=9.0, slack_to="gutter")
     plan = impose(make_pages(2, size=size), s)
     for i in range(2):
         inner, outer, top, bottom = margins(plan, i)
@@ -558,3 +548,89 @@ def test_maximize_gutter_never_violates_the_requested_minimums(size):
         assert outer >= 18.0 - 1e-6
         assert top >= 36.0 - 1e-6
         assert bottom >= 9.0 - 1e-6
+
+
+# ------------------------------------------------- slack_to: which margin varies
+
+
+@pytest.mark.parametrize("size", [TRAVELLER, DIGEST, SQUARE, TALL])
+def test_slack_to_outer_keeps_the_gutter_exact(size):
+    """The point of the `outer` option: an identical spine margin on every
+    page, so a fixed punch or sewing template lines up throughout."""
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0, margin_top_pt=18.0,
+                 margin_bottom_pt=18.0, slack_to="outer")
+    plan = impose(make_pages(4, size=size), s)
+    for i in range(4):
+        inner, outer, _, _ = margins(plan, i)
+        assert round(inner, 6) == 54.0     # spine exact, every page
+        assert outer >= 18.0 - 1e-6        # fore-edge absorbs the difference
+
+
+def test_slack_to_outer_holds_the_gutter_across_mixed_page_widths():
+    """The real Traveller distribution, where the cover is 12.5pt narrower."""
+    pages = [
+        make_page(0, size=(506.88, 672.0)),
+        make_page(1, size=(519.36, 672.0)),
+        make_page(2, size=(527.28, 672.0)),
+        make_page(3, size=(519.36, 672.0)),
+    ]
+    s = settings(gutter_pt=54.0, margin_outer_pt=0.0, margin_top_pt=18.0,
+                 margin_bottom_pt=18.0, slack_to="outer")
+    plan = impose(pages, s)
+    inners = {round(margins(plan, i)[0], 6) for i in range(4)}
+    assert inners == {54.0}, f"gutter must be identical everywhere, got {inners}"
+    outers = {round(margins(plan, i)[1], 3) for i in range(4)}
+    assert len(outers) > 1, "the fore-edge should absorb the width variation"
+
+
+def test_slack_to_gutter_holds_the_fore_edge_across_mixed_page_widths():
+    """The default: the fore-edge is what stays constant instead."""
+    pages = [
+        make_page(0, size=(506.88, 672.0)),
+        make_page(1, size=(519.36, 672.0)),
+        make_page(2, size=(527.28, 672.0)),
+        make_page(3, size=(519.36, 672.0)),
+    ]
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0, margin_top_pt=18.0,
+                 margin_bottom_pt=18.0, slack_to="gutter")
+    plan = impose(pages, s)
+    outers = {round(margins(plan, i)[1], 6) for i in range(4)}
+    assert outers == {18.0}, f"fore-edge must be identical everywhere, got {outers}"
+    inners = {round(margins(plan, i)[0], 3) for i in range(4)}
+    assert len(inners) > 1, "the gutter should absorb the width variation"
+
+
+@pytest.mark.parametrize("target", ["gutter", "outer", "split"])
+def test_every_slack_target_respects_the_requested_minimums(target):
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0, margin_top_pt=36.0,
+                 margin_bottom_pt=9.0, slack_to=target)
+    plan = impose(make_pages(4, size=TRAVELLER), s)
+    for i in range(4):
+        inner, outer, top, bottom = margins(plan, i)
+        assert inner >= 54.0 - 1e-6
+        assert outer >= 18.0 - 1e-6
+        assert top >= 36.0 - 1e-6
+        assert bottom >= 9.0 - 1e-6
+
+
+@pytest.mark.parametrize("target", ["gutter", "outer", "split"])
+@pytest.mark.parametrize("edge", ["left", "right"])
+def test_every_slack_target_mirrors_recto_and_verso(target, edge):
+    s = settings(binding_edge=edge, gutter_pt=54.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0, slack_to=target)
+    plan = impose(make_pages(4, size=TRAVELLER), s)
+    for pair in (0, 2):
+        assert margins(plan, pair, binding_edge=edge) == pytest.approx(
+            margins(plan, pair + 1, binding_edge=edge)
+        )
+
+
+def test_slack_targets_conserve_total_horizontal_margin():
+    """All three distribute the same total width -- they only differ in where."""
+    totals = set()
+    for target in ("gutter", "outer", "split"):
+        s = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
+                     margin_bottom_pt=18.0, slack_to=target)
+        inner, outer, _, _ = margins(impose(make_pages(2, size=DIGEST), s), 0)
+        totals.add(round(inner + outer, 6))
+    assert len(totals) == 1, f"total horizontal margin must not vary: {totals}"

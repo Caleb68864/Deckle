@@ -226,15 +226,18 @@ def _place_page(
     slack_w = max(0.0, box_w - scaled_w)
     slack_h = max(0.0, box_h - scaled_h)
 
-    # `maximize_gutter` (default) gives ALL horizontal slack to the spine, so
-    # content sits as far from the binding as it can and the fore-edge lands
-    # on exactly its requested value -- the gutter becomes a minimum. Off, the
-    # slack is split, preserving the requested inner/outer difference and
-    # centring the content between them.
+    # `slack_to` decides which horizontal margin absorbs the difference when
+    # source pages vary in width -- i.e. which stays constant through the
+    # book and which varies. See LayoutSettings.slack_to.
     #
     # Vertical slack is always split: neither head nor tail has a binding to
     # accommodate, so there is nothing to bias toward.
-    inner_actual = gutter + (slack_w if settings.maximize_gutter else slack_w / 2.0)
+    if settings.slack_to == "outer":
+        inner_actual = gutter                    # spine exact; fore-edge varies
+    elif settings.slack_to == "split":
+        inner_actual = gutter + slack_w / 2.0    # both vary, difference kept
+    else:  # "gutter" (default)
+        inner_actual = gutter + slack_w          # fore-edge exact; spine varies
     bottom_actual = bottom + slack_h / 2.0
 
     gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)

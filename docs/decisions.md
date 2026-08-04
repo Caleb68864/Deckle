@@ -1,5 +1,12 @@
 # Decision Log
 
+## 2026-08-04 — slack_to replaces the maximize_gutter boolean
+- Symptom: Asked for a toggle so the gutter could vary by default but be held constant on demand. A toggle already existed — `maximize_gutter` — but its two positions were "slack to the gutter" and "slack split evenly". **Neither produced a constant gutter**, which was the option actually wanted.
+- Fix: Replaced the boolean with `slack_to: Literal["gutter", "outer", "split"]`, default `"gutter"`. It names the real question — when source pages differ in width, which margin absorbs the difference, and therefore which one stays identical through the book. `gutter`: fore-edge exact, gutter varies. `outer`: gutter exact, fore-edge varies. `split`: both vary, requested difference preserved.
+- Surfaces: On the real Traveller distribution (cover 12.5pt narrower than the body), gutter 0.75in / fore-edge 0.25in gives inner `[0.93, 0.75, 0.75, 0.75]` under `gutter`, `[0.75, 0.75, 0.75, 0.75]` under `outer`, `[0.84, ...]` under `split`. `outer` is the one to use with a fixed punch or sewing template.
+- Watch: A two-state boolean encoded a three-state question, so one third of the answer space was simply unreachable. The name also described the mechanism ("maximize") rather than the decision ("where does spare width go"), which is what hid the gap. When a setting's off-state needs a paragraph to explain, check whether it is really a boolean.
+- Commit: (this commit)
+
 ## 2026-08-04 — Uniform document-wide scale; per-page scaling resized the text
 - Symptom: Asked why, with gutter 0, the left preview sheet showed a gutter and the right did not — and guessed correctly that it was a page-size difference. It was: the Traveller cover is 506.88pt wide against 519.36pt for the body, so at the same height the cover left 14.6pt of slack while the body pages had none, and `maximize_gutter` put all of it on the cover's spine.
 - Fix: The far more consequential problem the question exposed was that **every page was being scaled independently**. Harmless at gutter 0 (all scales landed within 0.02%), but with a 0.75in gutter it made the cover's text **2.5% larger than the body's** — a real defect in a bound book. Added `document_scale()`, computing one scale for the whole document (the largest that fits every page) and applying it to all of them. Verified across all 266 pages: exactly one distinct content scale.

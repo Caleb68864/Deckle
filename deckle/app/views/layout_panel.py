@@ -49,8 +49,16 @@ def set_margins_linked(project: Project, linked: bool) -> Project:
     return replace(project, layout=replace(project.layout, margins_linked=linked))
 
 
-def set_maximize_gutter(project: Project, maximize: bool) -> Project:
-    return replace(project, layout=replace(project.layout, maximize_gutter=maximize))
+#: Where spare horizontal width goes. Index 0 is the panel default.
+SLACK_TARGETS: tuple[tuple[str, str], ...] = (
+    ("gutter", "Gutter (fore-edge exact, gutter varies)"),
+    ("outer", "Fore-edge (gutter exact, fore-edge varies)"),
+    ("split", "Split evenly between both"),
+)
+
+
+def set_slack_to(project: Project, slack_to: str) -> Project:
+    return replace(project, layout=replace(project.layout, slack_to=slack_to))
 
 
 #: Display units for lengths. Values are points-per-unit, so the stored
@@ -195,14 +203,21 @@ class LayoutPanel:
         self.gutter_spinbox.setValue(from_points(state.project.layout.gutter_pt, self._unit))
         form.addRow("Gutter:", self.gutter_spinbox)
 
-        self.maximize_gutter_check = QCheckBox("Maximise gutter (spare space to the spine)", self.widget)
-        self.maximize_gutter_check.setChecked(state.project.layout.maximize_gutter)
-        self.maximize_gutter_check.setToolTip(
-            "Push content as far from the spine as it will go, so the gutter is a "
-            "minimum and the fore-edge margin is exact. Off centres the content "
-            "between the two instead."
+        # Pages of differing widths produce differing slack; this picks
+        # which margin absorbs it -- i.e. which stays constant.
+        self.slack_combo = QComboBox(self.widget)
+        for _key, label in SLACK_TARGETS:
+            self.slack_combo.addItem(label)
+        self._slack_keys = [k for k, _ in SLACK_TARGETS]
+        current_slack = state.project.layout.slack_to
+        if current_slack in self._slack_keys:
+            self.slack_combo.setCurrentIndex(self._slack_keys.index(current_slack))
+        self.slack_combo.setToolTip(
+            "When source pages differ in width, spare space has to go somewhere. "
+            "This chooses which margin absorbs it, and therefore which one stays "
+            "identical on every page."
         )
-        form.addRow("", self.maximize_gutter_check)
+        form.addRow("Spare width to:", self.slack_combo)
 
         self.link_margins_check = QCheckBox("Link margins (one value for all)", self.widget)
         self.link_margins_check.setChecked(state.project.layout.margins_linked)
@@ -248,7 +263,7 @@ class LayoutPanel:
                 lambda value, f=field: self._on_margin_changed(f, value)
             )
         self.link_margins_check.toggled.connect(self._on_link_margins_toggled)
-        self.maximize_gutter_check.toggled.connect(self._on_maximize_gutter_toggled)
+        self.slack_combo.currentIndexChanged.connect(self._on_slack_to_changed)
         self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
@@ -259,10 +274,9 @@ class LayoutPanel:
         plan = apply_layout_change(self.state, lambda project: set_gutter_pt(project, points))
         self.layout_changed.emit(plan)
 
-    def _on_maximize_gutter_toggled(self, maximize: bool) -> None:
-        plan = apply_layout_change(
-            self.state, lambda project: set_maximize_gutter(project, maximize)
-        )
+    def _on_slack_to_changed(self, index: int) -> None:
+        key = self._slack_keys[index]
+        plan = apply_layout_change(self.state, lambda project: set_slack_to(project, key))
         self.layout_changed.emit(plan)
 
     def _sync_margin_enabled(self) -> None:

@@ -120,21 +120,28 @@ class LayoutSettings:
     ``clipped_by_imageable_area``.
     """
 
-    maximize_gutter: bool = True
-    """Push spare horizontal space into the gutter instead of splitting it.
+    slack_to: Literal["gutter", "outer", "split"] = "gutter"
+    """Where spare horizontal width goes when content is narrower than its box.
 
-    Defaults on, because it is what binding wants: content sits as far from
-    the spine as it can, the fore-edge margin lands on exactly its requested
-    value, and ``gutter_pt`` becomes a **minimum** rather than an exact
-    figure. A generous spine margin is nearly always preferable -- it is the
-    one that disappears into the binding.
+    Source pages of differing widths produce differing slack, and this
+    decides which margin absorbs the difference -- i.e. which one stays
+    constant through the book and which one varies.
 
-    Turn it off to share the slack equally between inner and outer, which
-    preserves their requested difference and visually centres the content
-    between them.
+    ``gutter`` (default) -- all slack to the spine. The fore-edge is exact
+    and identical on every page; the gutter varies and is a **minimum**.
+    Good default because the fore-edge is the edge you see when the book is
+    closed, and gutter variation disappears into the binding.
 
-    Vertical slack is always shared, since no edge there has a binding to
-    accommodate.
+    ``outer`` -- all slack to the fore-edge. The gutter is exact and
+    identical on every page; the fore-edge varies. Prefer this when a
+    consistent spine margin matters more, e.g. a fixed punch or sewing
+    template.
+
+    ``split`` -- half each. Both vary, but their requested difference is
+    preserved and the content sits visually centred between them.
+
+    Vertical slack is always split: neither head nor tail has a binding to
+    accommodate, so there is nothing to bias toward.
     """
 
     margins_linked: bool = True
