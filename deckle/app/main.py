@@ -9,12 +9,15 @@ opening an empty/broken print dialog or raising.
 
 from __future__ import annotations
 
+import os
+
 from deckle.app.state import AppState
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.print_dialog import PrintDialog
+from deckle.core.export import export
 from deckle.core.models import LayoutSettings, Project
 from deckle.core.profiles import BUILTIN_PRESETS
 
@@ -78,6 +81,13 @@ class MainWindow:
         )
         layout.addWidget(self.preview_view.widget)
 
+        # Two ways out of the app: a file, or paper. Export shares the exact
+        # same SheetPlan the preview is showing, so what you save is what you
+        # previewed -- and it needs no printer, so it stays enabled when
+        # Print is disabled.
+        self.save_pdf_button = QPushButton("Save PDF...", central)
+        layout.addWidget(self.save_pdf_button)
+
         self.print_button = QPushButton("Print...", central)
         layout.addWidget(self.print_button)
 
@@ -88,6 +98,7 @@ class MainWindow:
         self.import_view.imported.connect(self._on_imported)
         self.layout_panel.layout_changed.connect(self.preview_view.on_layout_changed)
         self.print_button.clicked.connect(self._on_print_clicked)
+        self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
 
         self.refresh_printers()
 
@@ -119,6 +130,47 @@ class MainWindow:
         self.print_dialog = PrintDialog(plan, self.window, printer_names=printers)
         self.print_dialog.widget.exec()
         self.status_bar.showMessage(f"{len(printers)} printer(s) available.")
+
+    def suggested_export_name(self) -> str:
+        """A default filename derived from the first imported source.
+
+        ``book.pdf`` imposed becomes ``book-deckle.pdf`` -- never the source
+        name itself, so a careless Save can't overwrite the input.
+        """
+        pages = self.state.project.pages
+        if not pages:
+            return "deckle-output.pdf"
+        stem = os.path.splitext(os.path.basename(pages[0].ref.path))[0]
+        return f"{stem}-deckle.pdf"
+
+    def _on_save_pdf_clicked(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        if not self.state.project.pages:
+            self.status_bar.showMessage("Nothing to export -- import a PDF or images first.")
+            return
+
+        start_dir = os.path.dirname(self.state.project.pages[0].ref.path) or os.getcwd()
+        path, _ = QFileDialog.getSaveFileName(
+            self.window,
+            "Save imposed PDF",
+            os.path.join(start_dir, self.suggested_export_name()),
+            "PDF files (*.pdf)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+
+        plan = self.preview_view.plan
+        sheets = len(plan.sheets)
+        self.status_bar.showMessage(f"Exporting {sheets} sheet(s) to {os.path.basename(path)}...")
+        try:
+            export(plan, path)
+        except Exception as exc:  # surfaced, never swallowed
+            self.status_bar.showMessage(f"Export failed: {exc}")
+            return
+        self.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
 
     def show(self) -> None:
         self.window.show()

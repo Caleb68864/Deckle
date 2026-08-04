@@ -314,15 +314,26 @@ class PreviewWorker:
         profile: PrinterProfile,
         sheet_index: int,
         side: Literal["front", "back"],
+        sides: tuple[Literal["front", "back"], ...] | None = None,
     ) -> None:
         self.plan = plan
         self.profile = profile
         self.sheet_index = sheet_index
         self.side = side
+        # Spread mode renders both sides in one background pass, so the two
+        # halves always come from the same plan revision -- rendering them
+        # as two independent jobs could show a stale front beside a fresh
+        # back if settings changed mid-flight.
+        self.sides = sides or (side,)
         self.frame: PreviewFrame | None = None
+        self.frames: list[PreviewFrame] = []
 
     def run(self) -> None:
-        self.frame = build_preview_frame(self.plan, self.profile, self.sheet_index, self.side)
+        self.frames = [
+            build_preview_frame(self.plan, self.profile, self.sheet_index, s)
+            for s in self.sides
+        ]
+        self.frame = self.frames[0] if self.frames else None
 
 
 class PreviewView:
@@ -399,8 +410,18 @@ class PreviewView:
         self.warning_label.setWordWrap(True)
         outer.addWidget(self.warning_label)
 
+        self.both_button = QPushButton("Both", self.widget)
+        self.both_button.setCheckable(True)
+        self.both_button.setToolTip(
+            "Show front and back of the same sheet side by side, so you can "
+            "check the gutter mirrors without toggling."
+        )
+        toolbar.insertWidget(2, self.both_button)
+        self._spread = False
+
         self.front_button.clicked.connect(lambda: self._set_side("front"))
         self.back_button.clicked.connect(lambda: self._set_side("back"))
+        self.both_button.toggled.connect(self._set_spread)
         self.sheet_spinbox.valueChanged.connect(self._set_sheet_index)
 
         self._QThread = QThread
@@ -413,6 +434,16 @@ class PreviewView:
 
     def _set_side(self, side: Literal["front", "back"]) -> None:
         self.side = side
+        if self._spread:
+            # Picking a specific side is an explicit exit from spread mode.
+            self.both_button.setChecked(False)
+            return
+        self.refresh()
+
+    def _set_spread(self, on: bool) -> None:
+        self._spread = bool(on)
+        self.front_button.setEnabled(not self._spread)
+        self.back_button.setEnabled(not self._spread)
         self.refresh()
 
     def _set_sheet_index(self, sheet_index: int) -> None:
@@ -431,7 +462,10 @@ class PreviewView:
 
     def refresh(self) -> None:
         """Kick off a background render of exactly the visible sheet/side."""
-        worker = PreviewWorker(self.plan, self.profile, self.sheet_index, self.side)
+        sides = ("front", "back") if self._spread else (self.side,)
+        worker = PreviewWorker(
+            self.plan, self.profile, self.sheet_index, self.side, sides=sides
+        )
         thread = self._QThread(self.widget)
         thread.run = worker.run
         thread.finished.connect(lambda: self._on_frame_ready(worker))
@@ -440,19 +474,70 @@ class PreviewView:
         thread.start()
 
     def _on_frame_ready(self, worker: PreviewWorker) -> None:
-        frame = worker.frame
-        if frame is None:
+        frames = worker.frames or ([worker.frame] if worker.frame else [])
+        if not frames:
             return
-        self.warning_label.setText(badge_text(frame.warnings))
-        self._paint_frame(frame)
+        # Warnings are per-sheet, not per-side, so show them once.
+        self.warning_label.setText(badge_text(frames[0].warnings))
+        if len(frames) == 1:
+            self._paint_frame(frames[0])
+        else:
+            self._paint_spread(frames)
+
+    def _paint_spread(self, frames: list[PreviewFrame]) -> None:
+        """Compose front and back onto one pixmap, side by side.
+
+        Each half is painted through ``_frame_pixmap`` so the imageable-area
+        guide is drawn identically to single-side mode -- the spread is a
+        layout of the same rendering, not a second rendering path.
+        """
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QPainter, QPixmap
+
+        halves = [self._frame_pixmap(f) for f in frames]
+        halves = [h for h in halves if h is not None]
+        if not halves:
+            return
+        gap = 24
+        width = sum(h.width() for h in halves) + gap * (len(halves) - 1)
+        height = max(h.height() for h in halves)
+
+        canvas = QPixmap(width, height)
+        canvas.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(canvas)
+        try:
+            x = 0
+            for h in halves:
+                painter.drawPixmap(x, 0, h)
+                x += h.width() + gap
+        finally:
+            painter.end()
+
+        self._source_pixmap = canvas
+        self._apply_zoom()
 
     def _paint_frame(self, frame: PreviewFrame) -> None:
+        pixmap = self._frame_pixmap(frame)
+        if pixmap is None:
+            self.image_label.clear()
+            return
+        # Keep the full-resolution render as the source of truth; zoom only
+        # ever scales a copy, so zooming in never re-rasterizes and never
+        # loses detail captured at 150 DPI.
+        self._source_pixmap = pixmap
+        self._apply_zoom()
+
+    def _frame_pixmap(self, frame: PreviewFrame):
+        """Rasterized sheet with the imageable-area guide drawn on it.
+
+        Shared by single-side and spread painting so the guide can't drift
+        between the two views.
+        """
         QImage, QPainter, QPen, QPixmap = _qt_gui()
         QRectF = _qt_core()[1]
         rendered = frame.rendered
         if rendered.width == 0 or rendered.height == 0:
-            self.image_label.clear()
-            return
+            return None
 
         image = QImage(rendered.rgba, rendered.width, rendered.height, QImage.Format.Format_RGBA8888)
         pixmap = QPixmap.fromImage(image)
@@ -478,11 +563,7 @@ class PreviewView:
         finally:
             painter.end()
 
-        # Keep the full-resolution render as the source of truth; zoom only
-        # ever scales a copy for display, so zooming in never re-rasterizes
-        # and never loses detail captured at 150 DPI.
-        self._source_pixmap = pixmap
-        self._apply_zoom()
+        return pixmap
 
     # -- zoom ----------------------------------------------------------------
 

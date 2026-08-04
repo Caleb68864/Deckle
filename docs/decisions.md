@@ -1,5 +1,12 @@
 # Decision Log
 
+## 2026-08-04 — Save PDF, spread preview, and verification against a real 266-page book
+- Symptom: The app could only print, and the preview showed one side at a time — so checking that the gutter mirrored correctly meant toggling Front/Back and holding two images in your head.
+- Fix: Added a "Save PDF..." button wired to the existing `export()` (SS-04), sharing the exact `SheetPlan` the preview is showing, and enabled independently of Print so it works with no printer. Default filename is `<source>-deckle.pdf`, never the source name, so a careless Save cannot overwrite the input. Added a "Both" toggle rendering front and back side by side; both halves come from one background pass so a stale front can never appear beside a fresh back, and both go through the same `_frame_pixmap` so the imageable-area guide cannot drift between views.
+- Surfaces: Verified against the real Traveller Core Rulebook (266pp, 172MB). Exported placement matrices confirm the mirror: recto `1.06534 0 0 1.06534 54 38.045 cm`, verso `1.03974 0 0 1.03974 18 46.647 cm`. The differing scales are correct — those source pages are 506.88pt and 519.36pt wide, so this is the per-page-aspect fix (defect 1 of the predecessor script) working on real data.
+- Watch: Inspecting the exported PDF hit the documented pikepdf trap — `page.Contents` is an Array of streams, so `read_bytes()` raises "operation for stream attempted on object of type array" until `contents_coalesce()` runs. The trap is real and it bites tooling, not just application code.
+- Commit: (this commit)
+
 ## 2026-08-04 — imageable_area_pt is margins, not a rect
 - Symptom: "Use printer margins" set a 3in margin from a 0.25in printer border. The value was 216pt — exactly the margin spinbox's cap, so a nonsense number had been silently clamped into a plausible-looking one.
 - Fix: `imageable_area_pt` is `(left, top, right, bottom)` **margins** from the paper edges — the convention `PrinterProfile`, `QtPrintBackend._paint_rendered_page` and `preview_view.imageable_rect_pt` all already used correctly. The new `imageable_inset_pt` helper read it as an `(x0, y0, x1, y1)` rect and computed `612 - 18 = 594`. Now `max(*imageable_area_pt, 0.0)`, with three regression tests pinning the convention.
