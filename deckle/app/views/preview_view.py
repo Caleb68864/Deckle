@@ -235,6 +235,72 @@ def _qt_widgets():
     return QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 
+#: Discrete zoom stops, so "+"/"-" step predictably instead of drifting.
+ZOOM_STOPS: tuple[float, ...] = (
+    0.10, 0.15, 0.25, 0.33, 0.50, 0.67, 0.75, 1.00, 1.25, 1.50, 2.00, 3.00, 4.00
+)
+
+
+def fit_scale(
+    pixmap_size: tuple[int, int],
+    viewport_size: tuple[int, int],
+    *,
+    max_scale: float = 1.0,
+) -> float:
+    """Scale that fits ``pixmap_size`` inside ``viewport_size``.
+
+    Capped at ``max_scale`` (default 1.0) so a large window shows the sheet at
+    100% rather than blurrily upscaling a raster. Pure arithmetic, no Qt, so
+    the fit rule is unit-testable without a display.
+    """
+    pw, ph = pixmap_size
+    vw, vh = viewport_size
+    if pw <= 0 or ph <= 0 or vw <= 0 or vh <= 0:
+        return max_scale
+    return min(vw / pw, vh / ph, max_scale)
+
+
+def next_zoom_stop(current: float, direction: int) -> float:
+    """The next discrete stop above (+1) or below (-1) ``current``."""
+    if direction > 0:
+        for stop in ZOOM_STOPS:
+            if stop > current + 1e-9:
+                return stop
+        return ZOOM_STOPS[-1]
+    for stop in reversed(ZOOM_STOPS):
+        if stop < current - 1e-9:
+            return stop
+    return ZOOM_STOPS[0]
+
+
+def _make_scroll_area(parent, on_resize, on_ctrl_wheel):
+    """A QScrollArea that reports resizes and Ctrl+wheel.
+
+    Built lazily as a subclass so this module keeps its "import Qt only when
+    a widget is actually constructed" property -- the core stays importable
+    headlessly.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QScrollArea
+
+    class _PreviewScrollArea(QScrollArea):
+        def resizeEvent(self, event):  # noqa: N802 - Qt naming
+            super().resizeEvent(event)
+            on_resize()
+
+        def wheelEvent(self, event):  # noqa: N802 - Qt naming
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                on_ctrl_wheel(1 if event.angleDelta().y() > 0 else -1)
+                event.accept()
+                return
+            super().wheelEvent(event)
+
+    area = _PreviewScrollArea(parent)
+    area.setWidgetResizable(False)
+    area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return area
+
+
 class PreviewWorker:
     """Runs ``build_preview_frame`` on a background ``QThread``.
 
@@ -294,8 +360,39 @@ class PreviewView:
         toolbar.addWidget(self.sheet_spinbox)
         outer.addLayout(toolbar)
 
-        self.image_label = QLabel(self.widget)
-        outer.addWidget(self.image_label)
+        # Zoom controls. `self._zoom is None` means fit-to-window, which is
+        # the default -- a letter sheet at 150 DPI is ~1275x1650px and would
+        # otherwise overflow the pane at native size.
+        self._zoom: float | None = None
+        self._source_pixmap = None
+
+        self.fit_button = QPushButton("Fit", self.widget)
+        self.actual_button = QPushButton("100%", self.widget)
+        self.zoom_out_button = QPushButton("-", self.widget)
+        self.zoom_in_button = QPushButton("+", self.widget)
+        self.zoom_label = QLabel("Fit", self.widget)
+        for w in (
+            self.zoom_out_button, self.zoom_in_button,
+            self.fit_button, self.actual_button,
+        ):
+            w.setMaximumWidth(56)
+        toolbar.addWidget(self.zoom_out_button)
+        toolbar.addWidget(self.zoom_in_button)
+        toolbar.addWidget(self.fit_button)
+        toolbar.addWidget(self.actual_button)
+        toolbar.addWidget(self.zoom_label)
+
+        self.image_label = QLabel()
+        self.scroll_area = _make_scroll_area(
+            self.widget, self._apply_zoom, self._zoom_step
+        )
+        self.scroll_area.setWidget(self.image_label)
+        outer.addWidget(self.scroll_area, stretch=1)
+
+        self.fit_button.clicked.connect(lambda: self._set_zoom(None))
+        self.actual_button.clicked.connect(lambda: self._set_zoom(1.0))
+        self.zoom_in_button.clicked.connect(lambda: self._zoom_step(1))
+        self.zoom_out_button.clicked.connect(lambda: self._zoom_step(-1))
 
         # A per-sheet warning badge -- a plain, non-modal label.
         self.warning_label = QLabel("", self.widget)
@@ -381,4 +478,48 @@ class PreviewView:
         finally:
             painter.end()
 
-        self.image_label.setPixmap(pixmap)
+        # Keep the full-resolution render as the source of truth; zoom only
+        # ever scales a copy for display, so zooming in never re-rasterizes
+        # and never loses detail captured at 150 DPI.
+        self._source_pixmap = pixmap
+        self._apply_zoom()
+
+    # -- zoom ----------------------------------------------------------------
+
+    def current_scale(self) -> float:
+        """The scale actually in use, resolving fit-to-window to a number."""
+        if self._source_pixmap is None:
+            return self._zoom or 1.0
+        if self._zoom is not None:
+            return self._zoom
+        viewport = self.scroll_area.viewport().size()
+        return fit_scale(
+            (self._source_pixmap.width(), self._source_pixmap.height()),
+            (viewport.width() - 2, viewport.height() - 2),
+        )
+
+    def _set_zoom(self, zoom: float | None) -> None:
+        self._zoom = zoom
+        self._apply_zoom()
+
+    def _zoom_step(self, direction: int) -> None:
+        self._set_zoom(next_zoom_stop(self.current_scale(), direction))
+
+    def _apply_zoom(self) -> None:
+        from PySide6.QtCore import Qt
+
+        if self._source_pixmap is None:
+            return
+        scale = self.current_scale()
+        w = max(1, int(self._source_pixmap.width() * scale))
+        h = max(1, int(self._source_pixmap.height() * scale))
+        scaled = self._source_pixmap.scaled(
+            w, h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.image_label.setPixmap(scaled)
+        self.image_label.resize(scaled.size())
+        self.zoom_label.setText(
+            "Fit" if self._zoom is None else f"{round(scale * 100)}%"
+        )

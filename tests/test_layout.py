@@ -336,3 +336,98 @@ def test_fit_height_placement_unchanged_by_the_fix():
     recto, verso = _margins(plan, 612.0)
     assert recto == (84.0, 0.0)
     assert verso == (0.0, 84.0)
+
+
+def _traveller_like(n: int = 2):
+    """506.88 x 672pt -- the real Traveller Core Rulebook page box, which
+    scaled to letter height leaves ~0pt head/tail margin."""
+    return [
+        SourcePage(
+            ref=SourceRef(
+                path="tr.pdf", page_index=i, sha256="x" * 64,
+                width_pt=506.88, height_pt=672.0,
+            ),
+            rotate_deg=0,
+            skipped=False,
+        )
+        for i in range(n)
+    ]
+
+
+def _settings(**kw):
+    base = dict(
+        paper=(612.0, 792.0), gutter_pt=54.0, binding_edge="left",
+        scale_mode="fit_height", start_on_recto=True, landscape_policy="rotate",
+    )
+    base.update(kw)
+    return LayoutSettings(**base)
+
+
+def test_zero_margin_leaves_content_flush_to_the_page_edge():
+    """The original behaviour, preserved: margin defaults to 0."""
+    plan = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=0.0))
+    p = plan.sheets[0].front.placement
+    assert round(p.ty, 3) == 0.0
+    assert round(672.0 * p.scale_y, 1) == 792.0  # full page height
+
+
+def test_margin_insets_head_tail_and_fore_edge():
+    plan = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=18.0))
+    p = plan.sheets[0].front.placement
+    scaled_w, scaled_h = 506.88 * p.scale_x, 672.0 * p.scale_y
+    assert round(p.ty, 1) == 18.0                      # tail
+    assert round(792.0 - p.ty - scaled_h, 1) == 18.0   # head
+    assert round(612.0 - p.tx - scaled_w, 1) == 18.0   # fore-edge
+    assert p.tx > 18.0                                 # gutter exceeds the margin
+
+
+def test_fit_height_fits_the_margin_box_not_the_paper():
+    """A margin must actually shrink the content, not be averaged away."""
+    no_margin = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=0.0))
+    margined = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=18.0))
+    assert margined.sheets[0].front.placement.scale_y < no_margin.sheets[0].front.placement.scale_y
+
+
+def test_margin_preserves_the_recto_verso_mirror():
+    plan = GutterShiftStrategy().impose(
+        _traveller_like(2), _settings(scale_mode="fixed_gutter", margin_pt=18.0)
+    )
+    sheet = plan.sheets[0]
+    recto, verso = sheet.front.placement, sheet.back.placement
+    rw = 506.88 * recto.scale_x
+    assert round(recto.tx, 1) == 54.0
+    assert round(612.0 - verso.tx - rw, 1) == 54.0     # gutter on the far side
+    assert round(recto.ty, 1) == round(verso.ty, 1)
+
+
+# --- Unit conversion and printer-margin helpers (LayoutPanel, Qt-free part) ---
+
+
+def test_length_unit_round_trip_is_lossless():
+    from deckle.app.views.layout_panel import from_points, to_points
+
+    for unit, pts in (("pt", 54.0), ("in", 54.0), ("cm", 54.0), ("mm", 54.0)):
+        assert round(to_points(from_points(pts, unit), unit), 9) == pts
+
+
+def test_known_unit_conversions():
+    from deckle.app.views.layout_panel import from_points, to_points
+
+    assert round(to_points(0.75, "in"), 4) == 54.0
+    assert round(to_points(1.0, "cm"), 4) == 28.3465
+    assert round(from_points(54.0, "cm"), 3) == 1.905
+    assert to_points(18.0, "pt") == 18.0
+
+
+def test_imageable_inset_reads_margins_not_a_rect():
+    """Regression: imageable_area_pt is (left, top, right, bottom) MARGINS.
+
+    Reading it as an (x0, y0, x1, y1) rect produced a ~600pt inset, which
+    the margin spinbox then clamped to its 216pt cap -- a 3in margin from a
+    0.25in printer border.
+    """
+    from deckle.app.views.layout_panel import imageable_inset_pt
+
+    assert imageable_inset_pt((18.0, 18.0, 18.0, 18.0)) == 18.0
+    assert imageable_inset_pt((12.2, 12.2, 12.2, 12.2)) == 12.2
+    assert imageable_inset_pt((10.0, 20.0, 15.0, 12.0)) == 20.0

@@ -70,7 +70,7 @@ class MainWindow:
         self.arrange_view = ArrangeView(self.state, central)
         layout.addWidget(self.arrange_view.widget)
 
-        self.layout_panel = LayoutPanel(self.state, central)
+        self.layout_panel = LayoutPanel(self.state, central, profile=DEFAULT_PROFILE)
         layout.addWidget(self.layout_panel.widget)
 
         self.preview_view = PreviewView(

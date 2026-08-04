@@ -44,6 +44,42 @@ def set_gutter_pt(project: Project, gutter_pt: float) -> Project:
     return replace(project, layout=replace(project.layout, gutter_pt=gutter_pt))
 
 
+def set_margin_pt(project: Project, margin_pt: float) -> Project:
+    return replace(project, layout=replace(project.layout, margin_pt=margin_pt))
+
+
+#: Display units for lengths. Values are points-per-unit, so the stored
+#: model stays in PDF points and only the UI converts.
+LENGTH_UNITS: dict[str, float] = {"pt": 1.0, "in": 72.0, "cm": 72.0 / 2.54, "mm": 72.0 / 25.4}
+
+
+def to_points(value: float, unit: str) -> float:
+    """Convert a displayed value in ``unit`` to PDF points."""
+    return value * LENGTH_UNITS[unit]
+
+
+def from_points(points: float, unit: str) -> float:
+    """Convert PDF points to a displayed value in ``unit``."""
+    return points / LENGTH_UNITS[unit]
+
+
+def imageable_inset_pt(imageable_area_pt: tuple[float, float, float, float]) -> float:
+    """The largest edge inset of a printer's imageable area, in points.
+
+    ``imageable_area_pt`` is ``(left, top, right, bottom)`` **margins** from
+    the paper edges -- the same convention ``PrinterProfile``,
+    ``QtPrintBackend._paint_rendered_page`` and
+    ``preview_view.imageable_rect_pt`` all use. It is *not* an
+    ``(x0, y0, x1, y1)`` rect; reading it as one yields a ~600pt "inset" and
+    a nonsense margin.
+
+    Used by "Use printer margins": a margin at least this large clears the
+    non-printable border on every edge, which is the condition that stops
+    ``clipped_by_imageable_area`` firing.
+    """
+    return max(*imageable_area_pt, 0.0)
+
+
 def set_binding_edge(project: Project, binding_edge: Literal["left", "right"]) -> Project:
     return replace(project, layout=replace(project.layout, binding_edge=binding_edge))
 
@@ -92,11 +128,15 @@ def _qt_widgets():
         QComboBox,
         QDoubleSpinBox,
         QFormLayout,
+        QPushButton,
         QRadioButton,
         QWidget,
     )
 
-    return QButtonGroup, QComboBox, QDoubleSpinBox, QFormLayout, QRadioButton, QWidget
+    return (
+        QButtonGroup, QComboBox, QDoubleSpinBox, QFormLayout,
+        QPushButton, QRadioButton, QWidget,
+    )
 
 
 class LayoutPanel:
@@ -107,13 +147,18 @@ class LayoutPanel:
     it never rasterizes anything itself.
     """
 
-    def __init__(self, state: AppState, parent=None) -> None:
+    def __init__(self, state: AppState, parent=None, profile=None) -> None:
+        # `profile` supplies the printer's imageable inset for the
+        # "Use printer margins" button. Optional so the panel stays
+        # constructible without a printer.
+        self.profile = profile
         QObject, Signal = _qt_core()
         (
             QButtonGroup,
             QComboBox,
             QDoubleSpinBox,
             QFormLayout,
+            QPushButton,
             QRadioButton,
             QWidget,
         ) = _qt_widgets()
@@ -140,10 +185,34 @@ class LayoutPanel:
         form.addRow("Scale mode:", self.fit_height_radio)
         form.addRow("", self.fixed_gutter_radio)
 
+        # Lengths are stored in points but entered in whatever unit suits the
+        # job -- inches for a US letter binder, cm for metric stock.
+        self.unit_combo = QComboBox(self.widget)
+        self.unit_combo.addItems(["pt", "in", "cm", "mm"])
+        self.unit_combo.setCurrentText("in")
+        self._unit = "in"
+        form.addRow("Units:", self.unit_combo)
+
         self.gutter_spinbox = QDoubleSpinBox(self.widget)
-        self.gutter_spinbox.setRange(0.0, 288.0)
-        self.gutter_spinbox.setValue(state.project.layout.gutter_pt)
-        form.addRow("Gutter (pt):", self.gutter_spinbox)
+        self.gutter_spinbox.setDecimals(3)
+        self.gutter_spinbox.setSingleStep(0.125)
+        self.gutter_spinbox.setRange(0.0, from_points(288.0, self._unit))
+        self.gutter_spinbox.setValue(from_points(state.project.layout.gutter_pt, self._unit))
+        form.addRow("Gutter:", self.gutter_spinbox)
+
+        self.margin_spinbox = QDoubleSpinBox(self.widget)
+        self.margin_spinbox.setDecimals(3)
+        self.margin_spinbox.setSingleStep(0.125)
+        self.margin_spinbox.setRange(0.0, from_points(216.0, self._unit))
+        self.margin_spinbox.setValue(from_points(state.project.layout.margin_pt, self._unit))
+        form.addRow("Margin (head/tail/fore):", self.margin_spinbox)
+
+        self.use_printer_margins_button = QPushButton("Use printer margins", self.widget)
+        self.use_printer_margins_button.setToolTip(
+            "Set the margin to the printer's non-printable inset, so content "
+            "clears the dead border on every edge."
+        )
+        form.addRow("", self.use_printer_margins_button)
 
         self.binding_edge_combo = QComboBox(self.widget)
         self.binding_edge_combo.addItems(list(BINDING_EDGES))
@@ -157,6 +226,9 @@ class LayoutPanel:
 
         self.fit_height_radio.toggled.connect(self._on_scale_mode_toggled)
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
+        self.margin_spinbox.valueChanged.connect(self._on_margin_changed)
+        self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
+        self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
 
@@ -166,8 +238,45 @@ class LayoutPanel:
         self.layout_changed.emit(plan)
 
     def _on_gutter_changed(self, value: float) -> None:
-        plan = apply_layout_change(self.state, lambda project: set_gutter_pt(project, value))
+        points = to_points(value, self._unit)
+        plan = apply_layout_change(self.state, lambda project: set_gutter_pt(project, points))
         self.layout_changed.emit(plan)
+
+    def _on_margin_changed(self, value: float) -> None:
+        points = to_points(value, self._unit)
+        plan = apply_layout_change(self.state, lambda project: set_margin_pt(project, points))
+        self.layout_changed.emit(plan)
+
+    def _on_unit_changed(self, unit: str) -> None:
+        """Re-display the same physical lengths in a new unit.
+
+        The stored model is always points, so switching units must not
+        change the layout -- only how it reads. Signals are blocked while
+        the displayed numbers are rewritten, otherwise the spinboxes would
+        emit and re-apply their pre-conversion values as if the user had
+        typed them.
+        """
+        gutter_pt = self.state.project.layout.gutter_pt
+        margin_pt = self.state.project.layout.margin_pt
+        self._unit = unit
+        for box, points, cap_pt in (
+            (self.gutter_spinbox, gutter_pt, 288.0),
+            (self.margin_spinbox, margin_pt, 216.0),
+        ):
+            box.blockSignals(True)
+            box.setRange(0.0, from_points(cap_pt, unit))
+            box.setDecimals(0 if unit == "pt" else 3)
+            box.setSingleStep(1.0 if unit in ("pt", "mm") else 0.125)
+            box.setValue(from_points(points, unit))
+            box.blockSignals(False)
+
+    def _on_use_printer_margins(self) -> None:
+        """Set the margin to the active printer's non-printable inset."""
+        profile = getattr(self, "profile", None)
+        if profile is None:
+            return
+        inset = imageable_inset_pt(profile.imageable_area_pt)
+        self.margin_spinbox.setValue(from_points(inset, self._unit))
 
     def _on_binding_edge_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_binding_edge(project, value))

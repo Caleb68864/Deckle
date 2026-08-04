@@ -1,5 +1,19 @@
 # Decision Log
 
+## 2026-08-04 — imageable_area_pt is margins, not a rect
+- Symptom: "Use printer margins" set a 3in margin from a 0.25in printer border. The value was 216pt — exactly the margin spinbox's cap, so a nonsense number had been silently clamped into a plausible-looking one.
+- Fix: `imageable_area_pt` is `(left, top, right, bottom)` **margins** from the paper edges — the convention `PrinterProfile`, `QtPrintBackend._paint_rendered_page` and `preview_view.imageable_rect_pt` all already used correctly. The new `imageable_inset_pt` helper read it as an `(x0, y0, x1, y1)` rect and computed `612 - 18 = 594`. Now `max(*imageable_area_pt, 0.0)`, with three regression tests pinning the convention.
+- Surfaces: Any four-float geometry field. `(left, top, right, bottom)` and `(x0, y0, x1, y1)` are indistinguishable by type, both plausible, and a wrong reading produces large-but-not-obviously-invalid numbers rather than an error.
+- Watch: The spinbox `setRange` cap turned a 594pt bug into a 216pt value that looked like a deliberate setting. Clamping hid the defect. When a computed value lands exactly on a range bound, suspect the computation before the bound.
+- Commit: (this commit)
+
+## 2026-08-04 — Added a margin concept; content had no head or tail margin at all
+- Symptom: Real-world test (Traveller Core Rulebook, 506.88x672pt on letter) reported `clipped_by_imageable_area` on both sides of every sheet. Correct: scaled to letter height the content is 597x792 — literally edge-to-edge vertically, 0pt head and tail. No printer can mark there, so the output would have been unusable.
+- Fix: Added `LayoutSettings.margin_pt` — a uniform margin on the three non-spine edges (head, tail, fore-edge); the gutter still owns the spine side. `fit_height` now fits the *content box* height rather than the paper height, and `ty` centres within the margin box, so a margin actually shrinks content instead of being averaged away. Defaults to 0.0, preserving previous behaviour and all 161 existing tests.
+- Surfaces: The layout model only ever expressed one inset (the gutter). Any binding style needs at least two — spine and fore-edge — and printing needs head/tail as well.
+- Watch: The imposer is pure and never sees the `PrinterProfile`, so it cannot infer the printer's dead border itself. "Use printer margins" bridges that deliberately in the UI layer rather than leaking the profile into the core.
+- Commit: (this commit)
+
 ## 2026-08-04 — fixed_gutter put the reserved gutter on the wrong side of the verso
 - Symptom: Switching from `fit_height` to `fixed_gutter` in the UI looked like the binding edge flipped. Reported from real use, not caught by any test.
 - Fix: `_place_page` computed `tx = gutter if gutter_on_left else 0.0`. The bare `0.0` silently assumes the scaled content exactly fills `paper_w - gutter` — true in `fit_height`, where the gutter *is* the leftover, but false in `fixed_gutter` whenever height is the binding constraint. With a 6x9in source on letter and a 0.75in gutter: recto got left=54/right=30 while verso got left=0/right=84, so the verso's spine gutter was 84pt and its content sat flush against the fore-edge. Now `tx = paper_w - gutter - scaled_w` on the gutter-right side, which reduces to 0.0 in `fit_height` so one rule serves both modes. Three regression tests added, including a right-binding mirror check.

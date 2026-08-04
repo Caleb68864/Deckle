@@ -97,6 +97,17 @@ class LayoutSettings:
     scale_mode: Literal["fit_height", "fixed_gutter"] = "fit_height"
     start_on_recto: bool = True
     landscape_policy: Literal["rotate", "scale", "letterbox"] = "rotate"
+    margin_pt: float = 0.0
+    """Uniform margin on the three non-spine edges: head, tail, and fore-edge.
+
+    The gutter handles the spine side; this handles the other three. Zero
+    reproduces the original edge-to-edge behaviour, which is why it defaults
+    to 0.0 -- but it is rarely what you want on a real printer. A source
+    scaled to full page height has *no* head or tail margin, so its content
+    necessarily falls inside the printer's non-printable border and triggers
+    ``clipped_by_imageable_area``. Setting this to at least the printer's
+    imageable inset is what makes a page physically printable.
+    """
 
 
 @dataclass(frozen=True)
