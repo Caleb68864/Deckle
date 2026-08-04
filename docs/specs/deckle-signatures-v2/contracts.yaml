@@ -1,0 +1,243 @@
+version: "1.0"
+spec: 2026-08-04-deckle-signatures-v2
+spec_path: docs/specs/2026-08-04-deckle-signatures-v2.md
+source_design: docs/plans/2026-08-04-deckle-signatures-v2-design.md
+
+notes: >
+  These are the ten committed interface/contract defaults carried verbatim from the
+  evaluated design's "Committed interface/contract defaults" section. They are inputs, not
+  questions: a worker that re-opens one is escalating, not deciding. Where the design's
+  narrative prose disagrees with a value here, this file wins — the seven known conflicts
+  are enumerated in the spec's Contracts section.
+
+  No contracts loader exists in this repository (there is no `artificery/` package and no
+  `forge/config/defaults.json`), so this file conforms to no local pydantic schema and was
+  written to the generic name/kind/shape shape. Only one copy is written, alongside the
+  spec at docs/specs/deckle-signatures-v2/; there is no separate factory_dir for this run.
+
+contracts:
+  - name: Side
+    kind: interface
+    module: deckle/core/models.py
+    shape: |
+      @dataclass(frozen=True)
+      class Side:
+          pages: tuple[OutputPage, ...]
+          marks: tuple[Mark, ...] = ()
+    invariants:
+      - "pages must be non-empty; Side(pages=()) raises ValueError in __post_init__"
+    satisfies: [REQ-001, REQ-003]
+    owner: SS-01
+
+  - name: Sheet
+    kind: interface
+    module: deckle/core/models.py
+    shape: |
+      @dataclass(frozen=True)
+      class Sheet:
+          index: int
+          front: Side | None
+          back: Side | None
+    invariants:
+      - "An absent side is None, never Side(pages=())."
+      - "C-1: print_session._hash_plan reads side presence; representing an absent side as an
+         empty Side would leave the code compiling, the tests passing, and the hash wrong."
+    satisfies: [REQ-002]
+    owner: SS-01
+
+  - name: Signature
+    kind: interface
+    module: deckle/core/models.py
+    shape: |
+      @dataclass(frozen=True)
+      class Signature:
+          index: int
+          sheet_indices: tuple[int, ...]
+          blank_count: int
+    invariants:
+      - "sheet_indices are contiguous, in binding order."
+      - "Across a plan, signatures' sheet_indices are gapless, non-overlapping, and cover
+         range(len(plan.sheets)) exactly."
+      - "No source_page_count field — the design's prose named one; the committed default
+         does not."
+    satisfies: [REQ-005, REQ-016]
+    owner: SS-01
+
+  - name: SheetPlan.signatures
+    kind: schema
+    module: deckle/core/models.py
+    shape: "signatures: tuple[Signature, ...] = ()"
+    invariants:
+      - "Empty for GutterShiftStrategy. Consumers must tolerate an empty tuple and must not
+         treat it as an error."
+    satisfies: [REQ-006]
+    owner: SS-01
+
+  - name: Mark
+    kind: interface
+    module: deckle/core/models.py
+    shape: |
+      @dataclass(frozen=True)
+      class Mark:
+          kind: Literal["sewing_station", "signature_order", "fold_line"]
+          x0: float
+          y0: float
+          x1: float
+          y1: float
+    invariants:
+      - "Sheet points, PDF origin bottom-left."
+      - "A line segment in every case — no fill, no width, no colour. Stroke style is the
+         renderer's concern (SS-09)."
+      - 'Kind is "signature_order", not "sig_order". There is no "trim" kind.'
+    satisfies: [REQ-004]
+    owner: SS-01
+
+  - name: split_signatures
+    kind: api
+    module: deckle/core/signatures.py
+    shape: "split_signatures(sheet_count: int, sheets_per_signature: int) -> list[tuple[int, ...]]"
+    invariants:
+      - "Groups are contiguous sheet indices; the remainder lands in the FINAL group."
+      - "Concatenated, the groups equal range(sheet_count) exactly."
+      - "No group is ever empty."
+      - "Takes a SHEET count and returns SHEET-index groups — not a page count returning
+         SignatureSpec objects, as the design's prose had it."
+    satisfies: [REQ-016]
+    owner: SS-05
+
+  - name: saddle_order
+    kind: api
+    module: deckle/core/signatures.py
+    shape: "saddle_order(n: int) -> list[int]"
+    invariants:
+      - "n must be a positive multiple of 4; otherwise ValueError."
+      - "Returns a permutation of range(n)."
+      - "PINNED: saddle_order(8) == [7, 0, 1, 6, 5, 2, 3, 4]"
+      - "seq[:2] == [n - 1, 0] — the outermost sheet carries the last and first pages, the
+         defining property of a NESTED (saddle) gathering rather than a stacked one."
+    provenance: >
+      Executed, verified output from the vault note "pikepdf - Imposition and Signature
+      Recipe" (lines 35-44 and 63), run end to end against pikepdf 10.11.0 / libqpdf 12.3.2
+      on Windows 11, 2026-08-04. The pikepdf mechanics are confirmed; the bindery arithmetic
+      is NOT — that note states plainly that saddle_order is hand-written and must be
+      validated against a physical folded dummy. See SS-13.
+    satisfies: [REQ-017]
+    owner: SS-05
+
+  - name: fold_reading_order
+    kind: api
+    module: deckle/core/signatures.py
+    shape: "fold_reading_order(plan: SheetPlan) -> list[int]"
+    invariants:
+      - "Returns source page indices in the order a folded, nested, gathered stack reads."
+      - "MUST be derived from the physical fold description and MUST NOT call or reuse
+         saddle_order. A shared implementation would let both encode the same error and
+         agree — the war-game's most-likely failure mode."
+      - "Round trip: fold_reading_order(impose(pages, settings)) == range(len(pages)) plus
+         the plan's blanks, over page count {1..40, 100, 266} x sheets_per_signature {1..8}
+         x binding_edge {left, right}."
+    enforcement: "AST test asserting fold_reading_order's FunctionDef references no saddle_order node."
+    satisfies: [REQ-018, REQ-019]
+    owner: SS-05
+
+  - name: Cell
+    kind: schema
+    module: deckle/core/layout.py
+    shape: "Cell = tuple[float, float, float, float]  # x0, y0, x1, y1 in sheet points"
+    invariants:
+      - "GutterShiftStrategy passes the full sheet, and its output must be byte-identical."
+      - "Under folio on letter landscape (792 x 612) the two cells are (0, 0, 396, 612) and
+         (396, 0, 792, 612)."
+      - "Consumed by document_scale, content_box_size, content_box_rect_pt and
+         actual_margins_pt as a keyword-only parameter defaulting to the whole sheet."
+    satisfies: [REQ-020]
+    owner: SS-07
+
+  - name: LayoutSettings.v2_fields
+    kind: schema
+    module: deckle/core/models.py
+    shape: |
+      fold_scheme: Literal["none", "folio"] = "none"
+      sheets_per_signature: int = 4
+      paper_thickness_pt: float = 0.0
+      sewing_stations: int = 3
+      blank_mode: Literal["end", "balanced"] = "end"
+    invariants:
+      - 'The enum value is "folio", not "folio_saddle".'
+      - "paper_thickness_pt defaults to 0.0, not 0.27, and MUST NEVER reach placement
+         geometry — confined to a single function named _creep_advisory in layout.py,
+         enforced by an AST test."
+      - "EXACTLY these five fields. sewing_marks, sig_order_marks, fold_lines,
+         sewing_margin_pt, sewing_tape_width_pt and signature_pattern MUST NOT be added —
+         a new LayoutSettings field is an 'agent recommends, human approves' item."
+      - "binding_edge changes meaning under fold_scheme='folio': it selects reading
+         direction (LTR/RTL), not gutter side. Document at the field; assert in tests."
+    satisfies: [REQ-008, REQ-027]
+    owner: SS-01
+
+  - name: LayoutStrategy.impose
+    kind: api
+    module: deckle/core/layout.py
+    shape: "def impose(self, pages: Sequence[SourcePage], settings: LayoutSettings) -> SheetPlan: ..."
+    invariants:
+      - "UNCHANGED. This signature is the feature's entry seam and must not move."
+      - "SaddleStitchStrategy implements it character-identically to GutterShiftStrategy."
+    satisfies: [REQ-021]
+    owner: SS-08
+    frozen: true
+
+  - name: manual_duplex_seam
+    kind: file_layout
+    shape: |
+      deckle/core/printing.py   # ZERO DIFF
+      deckle/core/profiles.py   # ZERO DIFF
+      deckle/core/print_session.py  # exactly one change: _hash_plan
+    invariants:
+      - "VERIFIED against the code: plan_passes reads only Sheet.index. Its sole Sheet
+         attribute access is printing.py:121 —
+         `indices = [s.index for s in plan.sheets] if sheets is None else list(sheets)`."
+      - "printing.py and profiles.py have zero diff, asserted by a SHA-256 pin test rather
+         than by inspection. Regenerating a pin is an ESCALATION, not a maintenance chore."
+      - "print_session._hash_plan gains each side's source_ref.page_index tuple (evaluation
+         finding I-1). PrintSession's public surface and behaviour are unchanged."
+      - "Per-signature printing is sheets=signature.sheet_indices through the EXISTING
+         subset path. No new branch in printing.py."
+    satisfies: [REQ-014, REQ-015, REQ-035]
+    owner: SS-04
+    frozen: true
+
+  - name: export_content_stream
+    kind: api
+    module: deckle/core/export.py
+    shape: |
+      _sides(sheet: Sheet) -> list[Side]
+      # one add_blank_page per Side; one _place_output_page per page in side.pages;
+      # side.marks drawn afterward via pikepdf.canvas.ContentStreamBuilder
+    invariants:
+      - "Exactly two balanced q...Q blocks carrying a Do operator per folio PDF page."
+      - "At document scale 1.0 each is a pure `1 0 0 1 <tx> <ty> cm` translation with no
+         scale factor — matching the vault's recorded `1 0 0 1 0 0 cm` / `1 0 0 1 396 0 cm`
+         for exactly this 2-up-on-landscape-letter case."
+      - "Marks are drawn as vectors in their own balanced q...Q block AFTER the placements,
+         so the two-XObject assertion is unaffected by them."
+      - "No text drawing, no add_overlay, no Canvas.draw_image, no reportlab. Colours are
+         pikepdf.canvas.Color, never tuples."
+      - "page.Contents may be an Array — call contents_coalesce() before read_bytes()."
+    satisfies: [REQ-010, REQ-031, REQ-032]
+    owner: SS-09
+
+  - name: license_denylist
+    kind: schema
+    module: tests/test_license_audit.py
+    shape: 'FORBIDDEN_DISTRIBUTIONS = {"pymupdf", "fitz", "pdfimpose", "cpdf"}'
+    invariants:
+      - "Checked by distribution name OR by intersection with the distribution's
+         top_level.txt module names, alongside the existing AGPL substring test over license
+         text and classifiers."
+      - "pdfimpose is a development-time oracle only, in a throwaway virtualenv. The oracle
+         must be UNABLE to become a dependency: tools/oracle_diff.py lives outside tests/,
+         is absent from pyproject.toml, and is imported by no shipped or tested module."
+      - "No AGPL, ever. No external runtime binary — this is what disqualifies vendoring
+         HornPenguin (pdf2image needs Poppler)."
+    satisfies: [REQ-033, REQ-034]
+    owner: SS-10

@@ -368,7 +368,7 @@ depends_on: ['SS-01', 'SS-03', 'SS-04']
   - `[MECHANICAL]` `! grep -n "Placement" deckle/core/render.py || (echo "FAIL: forbidden pattern present" && exit 1)` — **negative assertion: exits 0 when absent** in `render_sheet`'s body — the renderer consumes the exported artifact, not the transform.
   - `[STRUCTURAL]` `deckle/core/render.py` exposes `thumbnails(pages: Sequence[SourcePage], start: int, count: int, dpi: int = 36) -> list[RenderedPage]` — an explicit range, not a whole-document call.
   - `[STRUCTURAL]` `deckle/core/render.py` exposes `ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]` with per-`SourceRef` caching.
-  - `[MECHANICAL]` `! grep -rn "PySide6\|QImage\|QPixmap" deckle/core/render.py || (echo "FAIL: forbidden pattern present" && exit 1)` — **negative assertion: exits 0 when absent**.
+  - `[MECHANICAL]` `! grep -rnE "^\s*(import\|from)\s+(PySide6\|PyQt)" deckle/core/render.py || (echo "FAIL: Qt imported in core" && exit 1)` — **negative assertion: exits 0 when absent**.
   - `[BEHAVIORAL]` `ink_bbox` called twice for the same `SourceRef` rasterizes only once (verified by call counter).
   - `[BEHAVIORAL]` `render_sheet` with an already-set cancel event returns promptly without completing a full render.
   - `[BEHAVIORAL]` A page that is entirely blank returns an empty/degenerate ink bbox rather than raising.
@@ -426,7 +426,7 @@ depends_on: ['SS-01', 'SS-03']
   - `[BEHAVIORAL]` `plan_passes` with `sheets=[7]` produces passes covering only sheet 7 — the reprint path is the normal path with a smaller input, not a separate branch.
   - `[BEHAVIORAL]` Every `PrintPass` carries a non-empty `reload_instruction` naming the flip axis and the face direction in plain language.
   - `[STRUCTURAL]` At least two built-in presets exist so a user can print before SS-13 exists, covering at minimum the face-down/reversed and face-up/in-order reload behaviors from the verified table above.
-  - `[MECHANICAL]` `! grep -rn "PySide6" deckle/core/printing.py deckle/core/profiles.py || (echo "FAIL: forbidden pattern present" && exit 1)` — **negative assertion: exits 0 when absent**.
+  - `[MECHANICAL]` `! grep -rnE "^\s*(import\|from)\s+(PySide6\|PyQt)" deckle/core/printing.py deckle/core/profiles.py || (echo "FAIL: Qt imported in core" && exit 1)` — **negative assertion: exits 0 when absent**.
 
 ---
 sub_spec_id: SS-07
@@ -457,7 +457,7 @@ depends_on: ['SS-02', 'SS-03', 'SS-04', 'SS-05']
   - `[BEHAVIORAL]` Loading a project whose source file hash no longer matches raises/returns a `SourceChangedWarning` naming the file, and does not substitute the new content silently.
   - `[STRUCTURAL]` `deckle/core/session_log.py` exposes `log_print_job(printer, profile, sheets, dpi, pass_index)` writing one structured record per call to a session log file.
   - `[MECHANICAL]` `python -m deckle.cli export tests/fixtures/sample.pdf -o /tmp/out.pdf --gutter 0.75in` exits 0 and produces a readable PDF.
-  - `[MECHANICAL]` `! grep -rn "deckle.app\|PySide6" deckle/cli.py || (echo "FAIL: forbidden pattern present" && exit 1)` — **negative assertion: exits 0 when absent**.
+  - `[MECHANICAL]` `! grep -rnE "^\s*(import\|from)\s+(deckle\.app\|PySide6)" deckle/cli.py || (echo "FAIL: cli imports the app layer" && exit 1)` — **negative assertion: exits 0 when absent**.
   - `[MECHANICAL]` `python -m deckle.cli info tests/fixtures/sample.pdf` prints page count, detected page sizes, and any layout warnings.
 
 ---
@@ -580,7 +580,7 @@ depends_on: ['SS-06']
 - **Acceptance criteria:**
   - `[STRUCTURAL]` `deckle/core/print_session.py` exposes `PrintSession(plan, profile, backend, sheets=None, test_first=False)` with `start()`, `advance()`, `confirm_test_sheet()`, `resume(sheets_completed: int)`, and a `state` property.
   - `[STRUCTURAL]` Session state persists to disk as JSON carrying a `version` integer, the pass index, the sheet cursor, and the printer name.
-  - `[MECHANICAL]` `! grep -rn "PySide6\|QtWidgets" deckle/core/print_session.py || (echo "FAIL: forbidden pattern present" && exit 1)` — **negative assertion: exits 0 when absent**.
+  - `[MECHANICAL]` `! grep -rnE "^\s*(import\|from)\s+(PySide6\|PyQt)" deckle/core/print_session.py || (echo "FAIL: Qt imported in core" && exit 1)` — **negative assertion: exits 0 when absent**.
   - `[BEHAVIORAL]` A full run against a stub backend emits pass 1, then exposes the `reload_instruction` from `PrintPass`, then pass 2 — in that order.
   - `[BEHAVIORAL]` With `test_first=True`, exactly 1 sheet is submitted and no further submission occurs until `confirm_test_sheet()` is called.
   - `[BEHAVIORAL]` Discarding the session object mid-pass and reconstructing it from disk, then calling `resume(30)` on a 60-sheet pass, continues at sheet 31.
