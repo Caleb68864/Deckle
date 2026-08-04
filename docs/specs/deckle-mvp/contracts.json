@@ -1,0 +1,406 @@
+{
+  "version": 1,
+  "spec_slug": "deckle-mvp",
+  "note": "Greenfield project: no source files exist yet, so content_sha256 is null for every contract. forge-run Phase C.5 should treat null as 'not yet materialized' and verify symbol existence only after the owning sub-spec has run.",
+  "contracts": [
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        3,
+        4,
+        5
+      ],
+      "name": "Placement",
+      "kind": "type",
+      "signature": "Placement(scale_x: float, scale_y: float, tx: float, ty: float, rotate_deg: int) \u2014 frozen dataclass, PDF points, origin bottom-left",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        3,
+        4,
+        5,
+        6,
+        11
+      ],
+      "name": "SheetPlan",
+      "kind": "type",
+      "signature": "SheetPlan(sheets: list[Sheet], paper_pt: tuple[float, float], warnings: list[LayoutWarning])",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        3,
+        4,
+        5,
+        6,
+        11
+      ],
+      "name": "Sheet",
+      "kind": "type",
+      "signature": "Sheet(index: int, front: OutputPage | None, back: OutputPage | None)",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        3,
+        4,
+        5
+      ],
+      "name": "OutputPage",
+      "kind": "type",
+      "signature": "OutputPage(source_ref: SourceRef | None, placement: Placement, is_filler: bool)",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2,
+        3,
+        5,
+        7,
+        9
+      ],
+      "name": "SourcePage",
+      "kind": "type",
+      "signature": "SourcePage(ref: SourceRef, rotate_deg: int, skipped: bool)",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        3,
+        10
+      ],
+      "name": "LayoutSettings",
+      "kind": "type",
+      "signature": "LayoutSettings(paper, gutter_pt, binding_edge: Literal['left','right'], scale_mode='fit_height', start_on_recto, landscape_policy) - 'top' binding deferred to v2",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        2,
+        3,
+        10
+      ],
+      "name": "LayoutWarning",
+      "kind": "type",
+      "signature": "LayoutWarning(sheet_index: int, kind: Literal['clipped_by_page','clipped_by_imageable_area','mixed_orientation','mixed_dpi'], detail: str)",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 2,
+      "consumer_sub_specs": [
+        7,
+        9,
+        14
+      ],
+      "name": "load_pdf",
+      "kind": "function",
+      "signature": "load_pdf(path: str) -> list[SourcePage] \u2014 metadata-only, raises EncryptedPdfError",
+      "file_path": "deckle/core/loader.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 2,
+      "consumer_sub_specs": [
+        7,
+        9,
+        14
+      ],
+      "name": "load_image_dir",
+      "kind": "function",
+      "signature": "load_image_dir(path: str) -> list[SourcePage] \u2014 natsorted, EXIF-corrected, img2pdf-normalized",
+      "file_path": "deckle/core/loader.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 3,
+      "consumer_sub_specs": [],
+      "name": "LayoutStrategy",
+      "kind": "interface",
+      "signature": "def impose(self, pages: Sequence[SourcePage], settings: LayoutSettings) -> SheetPlan \u2014 v2 seam for signature/saddle-stitch strategies",
+      "file_path": "deckle/core/layout.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 3,
+      "consumer_sub_specs": [
+        7,
+        10,
+        14
+      ],
+      "name": "GutterShiftStrategy",
+      "kind": "type",
+      "signature": "implements LayoutStrategy; scale_mode 'fit_height' (default) or 'fixed_gutter'",
+      "file_path": "deckle/core/layout.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 4,
+      "consumer_sub_specs": [
+        7,
+        10,
+        14
+      ],
+      "name": "export",
+      "kind": "function",
+      "signature": "export(plan: SheetPlan, out_path: str, sheets: Sequence[int] | None = None) -> None \u2014 pikepdf as_form_xobject + calc_form_xobject_placement",
+      "file_path": "deckle/core/export.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        9,
+        10
+      ],
+      "name": "RenderedPage",
+      "kind": "type",
+      "signature": "RenderedPage(width: int, height: int, rgba: bytes) \u2014 raw buffer, no Qt or PIL type crosses the core boundary",
+      "file_path": "deckle/core/render.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        10,
+        14
+      ],
+      "name": "render_sheet",
+      "kind": "function",
+      "signature": "render_sheet(plan, sheet_index, side, dpi, cancel=None) -> RenderedPage - MUST rasterize the exported PDF via export_sheet_cached; never composites from Placement independently",
+      "file_path": "deckle/core/render.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        9
+      ],
+      "name": "thumbnails",
+      "kind": "function",
+      "signature": "thumbnails(pages: Sequence[SourcePage], start: int, count: int, dpi: int = 36) -> list[RenderedPage] \u2014 range-based by contract; no whole-document variant exists",
+      "file_path": "deckle/core/render.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 5,
+      "consumer_sub_specs": [
+        10
+      ],
+      "name": "ink_bbox",
+      "kind": "function",
+      "signature": "ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float] \u2014 cached per ref",
+      "file_path": "deckle/core/render.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 6,
+      "consumer_sub_specs": [
+        8,
+        11
+      ],
+      "name": "PrintBackend",
+      "kind": "interface",
+      "signature": "def submit(self, plan: SheetPlan, sheets: Sequence[int], printer_name: str, copies: int, dpi: int) -> PrintResult",
+      "file_path": "deckle/core/printing.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 6,
+      "consumer_sub_specs": [
+        8,
+        11
+      ],
+      "name": "PrintResult",
+      "kind": "type",
+      "signature": "PrintResult(submitted: int, job_id: str | None, error: str | None)",
+      "file_path": "deckle/core/printing.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 6,
+      "consumer_sub_specs": [
+        11,
+        14
+      ],
+      "name": "plan_passes",
+      "kind": "function",
+      "signature": "plan_passes(plan: SheetPlan, profile: PrinterProfile, sheets: Sequence[int] | None = None) -> list[PrintPass]",
+      "file_path": "deckle/core/printing.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 6,
+      "consumer_sub_specs": [
+        11,
+        12
+      ],
+      "name": "PrintPass",
+      "kind": "type",
+      "signature": "PrintPass(index: int, sheet_order: list[int], side: Literal['front','back'], reload_instruction: str, rotate_backs: bool) - reload_instruction displayed verbatim by SS-12; rotate_backs applied by SS-08",
+      "file_path": "deckle/core/printing.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 6,
+      "consumer_sub_specs": [
+        8,
+        10,
+        11,
+        12,
+        13
+      ],
+      "name": "PrinterProfile",
+      "kind": "type",
+      "signature": "PrinterProfile(version, flip_axis, output_face, feed_edge, reverse_stack, imageable_area_pt, calibrated_at, calibration_version) + save/load + built-in presets",
+      "file_path": "deckle/core/profiles.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 7,
+      "consumer_sub_specs": [
+        9,
+        14
+      ],
+      "name": "save_project",
+      "kind": "function",
+      "signature": "save_project(project, path) -> None \u2014 JSON, references only, top-level version: 1",
+      "file_path": "deckle/core/project_io.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 7,
+      "consumer_sub_specs": [
+        9,
+        14
+      ],
+      "name": "load_project",
+      "kind": "function",
+      "signature": "load_project(path) -> Project \u2014 raises/returns SourceChangedWarning on sha256 mismatch",
+      "file_path": "deckle/core/project_io.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 7,
+      "consumer_sub_specs": [
+        8,
+        11
+      ],
+      "name": "log_print_job",
+      "kind": "function",
+      "signature": "log_print_job(printer: str, profile: PrinterProfile, sheets: Sequence[int], dpi: int, pass_index: int) -> None \u2014 required by Intent constraints",
+      "file_path": "deckle/core/session_log.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 8,
+      "consumer_sub_specs": [
+        11,
+        12
+      ],
+      "name": "QtPrintBackend",
+      "kind": "type",
+      "signature": "implements PrintBackend; setFullPage(True), margins from PrinterProfile.imageable_area_pt, chunked submission (default 10)",
+      "file_path": "deckle/app/backend.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 9,
+      "consumer_sub_specs": [
+        10,
+        12,
+        14
+      ],
+      "name": "AppState",
+      "kind": "type",
+      "signature": "AppState.project, mutate(fn) -> None (snapshots first), undo(), redo() \u2014 all project mutation flows through mutate; bounded snapshot depth 50",
+      "file_path": "deckle/app/state.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 9,
+      "consumer_sub_specs": [
+        10,
+        12,
+        13,
+        14
+      ],
+      "name": "MainWindow",
+      "kind": "type",
+      "signature": "hosts every view, owns the single AppState; SS-14 asserts every deckle/app/views module is imported here",
+      "file_path": "deckle/app/main.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 11,
+      "consumer_sub_specs": [
+        12,
+        14
+      ],
+      "name": "PrintSession",
+      "kind": "type",
+      "signature": "PrintSession(plan, profile, backend, sheets=None, test_first=False) with start(), advance(), confirm_test_sheet(), resume(sheets_completed) [per-pass], list_resumable(), state - backend injected, Qt-free",
+      "file_path": "deckle/core/print_session.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 13,
+      "consumer_sub_specs": [
+        6
+      ],
+      "name": "derive_profile",
+      "kind": "function",
+      "signature": "derive_profile(answers: Mapping[str, str]) -> PrinterProfile \u2014 pure, total over the enumerated answer space",
+      "file_path": "deckle/core/calibration.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 13,
+      "consumer_sub_specs": [
+        8
+      ],
+      "name": "build_test_plan",
+      "kind": "function",
+      "signature": "build_test_plan() -> SheetPlan \u2014 synthetic 4-sheet plan with asymmetric corner glyphs, flows through the ordinary print path",
+      "file_path": "deckle/core/calibration.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 1,
+      "consumer_sub_specs": [
+        7,
+        9
+      ],
+      "name": "Project",
+      "kind": "type",
+      "signature": "Project(pages: list[SourcePage], layout: LayoutSettings, printer: str | None) - the document model (added by red-team C-1)",
+      "file_path": "deckle/core/models.py",
+      "content_sha256": null
+    },
+    {
+      "owner_sub_spec": 4,
+      "consumer_sub_specs": [
+        5,
+        10
+      ],
+      "name": "export_sheet_cached",
+      "kind": "function",
+      "signature": "export_sheet_cached(plan: SheetPlan, sheet_index: int) -> str - single-sheet PDF path, bounded LRU cache keyed by (sheet_index, plan_hash), cleared on project close (red-team P-4)",
+      "file_path": "deckle/core/export.py",
+      "content_sha256": null
+    }
+  ]
+}

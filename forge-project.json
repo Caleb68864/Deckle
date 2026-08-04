@@ -1,0 +1,18 @@
+{
+  "project_name": "Deckle",
+  "repo": "https://github.com/Caleb68864/Deckle",
+  "project_vault": "docs",
+  "spec_output_dir": "docs/specs",
+  "plan_output_dir": "docs/plans",
+  "tech_stack": ["Python 3.12", "PySide6", "pikepdf", "pypdfium2", "img2pdf"],
+  "build_command": null,
+  "test_command": "python -m pytest -q",
+  "reference_sources": {
+    "bookbinding_research": {
+      "path": "C:\\Users\\CalebBennett\\Documents\\Notes\\Caleb's Vault\\Software",
+      "label": "Verified bookbinding/PDF library research (executed, version-stamped)",
+      "max_files": 40
+    }
+  },
+  "infrastructure": null
+}
