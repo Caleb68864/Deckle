@@ -116,21 +116,24 @@ def _place_page(
 
     source_aspect = src_w / src_h
 
-    # The content box: the gutter eats the spine edge, `margin_pt` eats the
-    # other three. "fit height" means fit the *content box* height, not the
-    # paper height -- otherwise a margin would be silently ignored.
-    margin = settings.margin_pt
-    avail_h = max(1e-6, paper_h - 2.0 * margin)
+    # The content box is bounded by all four margins. The gutter IS the
+    # inner (spine) margin; top/bottom/outer cover the other three.
+    gutter = settings.gutter_pt
+    outer = settings.margin_outer_pt
+    top = settings.margin_top_pt
+    bottom = settings.margin_bottom_pt
+
+    avail_h = max(1e-6, paper_h - top - bottom)
+    avail_w = max(1e-6, paper_w - gutter - outer)
 
     if settings.scale_mode == "fixed_gutter":
-        gutter = settings.gutter_pt
-        avail_w = max(1e-6, paper_w - gutter - margin)
+        # Fit inside the whole content box -- never clips.
         scale = min(avail_w / src_w, avail_h / src_h)
     else:  # fit_height (default)
+        # Fill the vertical box; width falls where it falls. If the result is
+        # wider than avail_w the clipping detector reports it rather than the
+        # layout silently shrinking to hide it.
         scale = avail_h / src_h
-        scaled_w = src_w * scale
-        # Whatever is left after the fore-edge margin becomes the gutter.
-        gutter = max(0.0, paper_w - margin - scaled_w)
 
     scaled_w = src_w * scale
     scaled_h = src_h * scale
@@ -144,10 +147,15 @@ def _place_page(
     # constraint. That asymmetry put the spine gutter on the wrong side of
     # the verso and read as the binding edge flipping between modes.
     # This form reduces to 0.0 in fit_height, so both modes share one rule.
+    # The gutter is honoured exactly on the spine side; whatever slack remains
+    # lands on the fore-edge. Deriving the gutter from the leftover instead
+    # (the old fit_height behaviour) meant the gutter silently absorbed every
+    # bit of spare width and ignored the value actually set.
     tx = gutter if gutter_on_left else paper_w - gutter - scaled_w
-    # Centre within the margin box, not the sheet, so head and tail margins
-    # are actually honoured rather than averaged away.
-    ty = margin + (avail_h - scaled_h) / 2.0
+    # Centre within the vertical margin box, so head and tail are both
+    # honoured rather than averaged away. When height drives the scale this
+    # lands exactly on `bottom`.
+    ty = bottom + (avail_h - scaled_h) / 2.0
 
     placement = Placement(
         scale_x=scale,

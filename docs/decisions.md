@@ -1,5 +1,12 @@
 # Decision Log
 
+## 2026-08-04 — The gutter was derived from leftover width, not from the setting
+- Symptom: Reported from use — "gutter ends up with extra from margin". In `fit_height`, `gutter = paper_w - margin - scaled_w`, so the gutter was whatever width happened to remain. Asking for 0.75in on the Traveller page box silently produced 1.17in; `gutter_pt` was effectively ignored in that mode.
+- Fix: The gutter is now honoured exactly in both modes and any slack lands on the **fore-edge**, never the spine. Also split the single `margin_pt` into `margin_top_pt` / `margin_bottom_pt` / `margin_outer_pt` — with `gutter_pt` as the inner margin, that describes all four page edges — plus a persisted `margins_linked` flag driving a "Link margins" toggle in the panel.
+- Surfaces: The consequence is that `fit_height` can now genuinely overflow. Traveller content at full letter height is ~597pt wide; with a 54pt gutter it needs 651pt on a 612pt sheet, so the fore-edge goes to −39.4pt and the detector reports `clipped_by_page`. That is the honest outcome — the old behaviour hid an impossible request by quietly shrinking the gutter.
+- Watch: Head and tail are **minimums**, not exact values — content centres in the vertical box, so when width limits the scale both grow by an equal share of the slack. The invariant to assert is their *difference*, not either value. A test asserting `tail == 9.0` failed for that reason and was wrong, not the code.
+- Commit: (this commit)
+
 ## 2026-08-04 — Save PDF, spread preview, and verification against a real 266-page book
 - Symptom: The app could only print, and the preview showed one side at a time — so checking that the gutter mirrored correctly meant toggling Front/Back and holding two images in your head.
 - Fix: Added a "Save PDF..." button wired to the existing `export()` (SS-04), sharing the exact `SheetPlan` the preview is showing, and enabled independently of Print so it works with no printer. Default filename is `<source>-deckle.pdf`, never the source name, so a careless Save cannot overwrite the input. Added a "Both" toggle rendering front and back side by side; both halves come from one background pass so a stale front can never appear beside a fresh back, and both go through the same `_frame_pixmap` so the imageable-area guide cannot drift between views.

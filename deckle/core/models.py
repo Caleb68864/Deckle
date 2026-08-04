@@ -97,16 +97,30 @@ class LayoutSettings:
     scale_mode: Literal["fit_height", "fixed_gutter"] = "fit_height"
     start_on_recto: bool = True
     landscape_policy: Literal["rotate", "scale", "letterbox"] = "rotate"
-    margin_pt: float = 0.0
-    """Uniform margin on the three non-spine edges: head, tail, and fore-edge.
+    margin_top_pt: float = 0.0
+    margin_bottom_pt: float = 0.0
+    margin_outer_pt: float = 0.0
+    """Margins on the three non-spine edges: head, tail, and fore-edge.
 
-    The gutter handles the spine side; this handles the other three. Zero
-    reproduces the original edge-to-edge behaviour, which is why it defaults
-    to 0.0 -- but it is rarely what you want on a real printer. A source
-    scaled to full page height has *no* head or tail margin, so its content
-    necessarily falls inside the printer's non-printable border and triggers
-    ``clipped_by_imageable_area``. Setting this to at least the printer's
-    imageable inset is what makes a page physically printable.
+    The **fourth** edge is the spine, and its margin is ``gutter_pt`` -- the
+    gutter *is* the inner margin, so these four fields describe all four
+    sides of the page. Each is honoured exactly: any slack left over after
+    scaling lands on the fore-edge, never on the spine, so the gutter you
+    ask for is the gutter you get.
+
+    All default to 0.0, which reproduces edge-to-edge behaviour -- rarely
+    what you want on a real printer. Content scaled to full page height has
+    no head or tail margin at all, so it necessarily falls inside the
+    printer's non-printable border and triggers
+    ``clipped_by_imageable_area``.
+    """
+
+    margins_linked: bool = True
+    """Whether the UI edits the three margins as one value or individually.
+
+    Persisted with the project so reopening restores how you were working,
+    not just the numbers. Purely presentational -- the imposer always reads
+    the three fields independently.
     """
 
 

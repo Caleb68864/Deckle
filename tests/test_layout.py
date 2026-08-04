@@ -322,8 +322,14 @@ def test_fixed_gutter_right_binding_is_mirror_of_left_when_height_constrained():
     assert lm == [m[::-1] for m in rm]
 
 
-def test_fit_height_placement_unchanged_by_the_fix():
-    """fit_height's gutter IS the leftover, so tx reduces to 0.0 on versos."""
+def test_fit_height_honours_the_gutter_instead_of_absorbing_the_slack():
+    """Regression: the gutter is what you set, not whatever is left over.
+
+    fit_height previously derived ``gutter = paper_w - scaled_w``, so the
+    gutter silently swallowed every bit of spare width and ignored
+    ``gutter_pt`` entirely -- asking for 0.75in on this source produced
+    1.17in. Now the gutter is exact and the slack lands on the fore-edge.
+    """
     settings = LayoutSettings(
         paper=(612.0, 792.0),
         gutter_pt=54.0,
@@ -334,8 +340,26 @@ def test_fit_height_placement_unchanged_by_the_fix():
     )
     plan = GutterShiftStrategy().impose(_tall_source(2), settings)
     recto, verso = _margins(plan, 612.0)
-    assert recto == (84.0, 0.0)
-    assert verso == (0.0, 84.0)
+    assert recto == (54.0, 30.0)   # gutter exact; slack to the fore-edge
+    assert verso == (30.0, 54.0)   # mirrored
+
+
+def test_fit_height_overflow_is_reported_not_silently_absorbed():
+    """Content too wide for the gutter overflows and is flagged.
+
+    The Traveller page box scaled to full letter height is ~597pt wide; with
+    a 54pt gutter it needs 651pt on a 612pt sheet. The honest outcome is a
+    negative fore-edge plus a clipping warning -- not a quietly shrunken
+    gutter that hides the conflict.
+    """
+    plan = GutterShiftStrategy().impose(
+        _traveller_like(),
+        _settings(margin_top_pt=18.0, margin_bottom_pt=18.0, margin_outer_pt=18.0),
+    )
+    p = plan.sheets[0].front.placement
+    scaled_w = 506.88 * p.scale_x
+    assert round(p.tx, 1) == 54.0                    # gutter still exact
+    assert 612.0 - p.tx - scaled_w < 0               # overflows the fore-edge
 
 
 def _traveller_like(n: int = 2):
@@ -365,32 +389,76 @@ def _settings(**kw):
 
 def test_zero_margin_leaves_content_flush_to_the_page_edge():
     """The original behaviour, preserved: margin defaults to 0."""
-    plan = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=0.0))
+    plan = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_top_pt=0.0, margin_bottom_pt=0.0, margin_outer_pt=0.0))
     p = plan.sheets[0].front.placement
     assert round(p.ty, 3) == 0.0
     assert round(672.0 * p.scale_y, 1) == 792.0  # full page height
 
 
-def test_margin_insets_head_tail_and_fore_edge():
-    plan = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=18.0))
+def test_all_four_margins_are_honoured_exactly_in_fixed_gutter():
+    """Gutter (spine), fore-edge, head and tail are all respected.
+
+    fixed_gutter fits the whole content box, so nothing overflows and every
+    edge lands on exactly the value set -- except head/tail, which share the
+    vertical slack evenly because the content is narrower-limited here.
+    """
+    plan = GutterShiftStrategy().impose(
+        _traveller_like(),
+        _settings(
+            scale_mode="fixed_gutter",
+            margin_top_pt=18.0, margin_bottom_pt=18.0, margin_outer_pt=18.0,
+        ),
+    )
     p = plan.sheets[0].front.placement
     scaled_w, scaled_h = 506.88 * p.scale_x, 672.0 * p.scale_y
-    assert round(p.ty, 1) == 18.0                      # tail
-    assert round(792.0 - p.ty - scaled_h, 1) == 18.0   # head
-    assert round(612.0 - p.tx - scaled_w, 1) == 18.0   # fore-edge
-    assert p.tx > 18.0                                 # gutter exceeds the margin
+    assert round(p.tx, 1) == 54.0                          # gutter, exact
+    assert round(612.0 - p.tx - scaled_w, 1) == 18.0       # fore-edge, exact
+    assert round(p.ty, 1) >= 18.0                          # tail, at least
+    assert round(792.0 - p.ty - scaled_h, 1) >= 18.0       # head, at least
+
+
+def test_margins_can_differ_per_side():
+    plan = GutterShiftStrategy().impose(
+        _traveller_like(),
+        _settings(
+            scale_mode="fixed_gutter",
+            margin_top_pt=36.0, margin_bottom_pt=9.0, margin_outer_pt=18.0,
+        ),
+    )
+    p = plan.sheets[0].front.placement
+    scaled_h = 672.0 * p.scale_y
+    tail = p.ty
+    head = 792.0 - p.ty - scaled_h
+    # Both are honoured as minimums; when width limits the scale the leftover
+    # height is shared evenly, so the *difference* is the invariant.
+    assert tail >= 9.0
+    assert head >= 36.0
+    assert round(head - tail, 1) == 27.0                   # 36 - 9
+
+
+def test_equal_top_and_bottom_centre_the_content():
+    plan = GutterShiftStrategy().impose(
+        _traveller_like(),
+        _settings(
+            scale_mode="fixed_gutter",
+            margin_top_pt=18.0, margin_bottom_pt=18.0, margin_outer_pt=18.0,
+        ),
+    )
+    p = plan.sheets[0].front.placement
+    scaled_h = 672.0 * p.scale_y
+    assert round(p.ty, 1) == round(792.0 - p.ty - scaled_h, 1)
 
 
 def test_fit_height_fits_the_margin_box_not_the_paper():
     """A margin must actually shrink the content, not be averaged away."""
-    no_margin = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=0.0))
-    margined = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_pt=18.0))
+    no_margin = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_top_pt=0.0, margin_bottom_pt=0.0, margin_outer_pt=0.0))
+    margined = GutterShiftStrategy().impose(_traveller_like(), _settings(margin_top_pt=18.0, margin_bottom_pt=18.0, margin_outer_pt=18.0))
     assert margined.sheets[0].front.placement.scale_y < no_margin.sheets[0].front.placement.scale_y
 
 
 def test_margin_preserves_the_recto_verso_mirror():
     plan = GutterShiftStrategy().impose(
-        _traveller_like(2), _settings(scale_mode="fixed_gutter", margin_pt=18.0)
+        _traveller_like(2), _settings(scale_mode="fixed_gutter", margin_top_pt=18.0, margin_bottom_pt=18.0, margin_outer_pt=18.0)
     )
     sheet = plan.sheets[0]
     recto, verso = sheet.front.placement, sheet.back.placement

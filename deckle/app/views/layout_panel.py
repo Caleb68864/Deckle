@@ -44,8 +44,20 @@ def set_gutter_pt(project: Project, gutter_pt: float) -> Project:
     return replace(project, layout=replace(project.layout, gutter_pt=gutter_pt))
 
 
-def set_margin_pt(project: Project, margin_pt: float) -> Project:
-    return replace(project, layout=replace(project.layout, margin_pt=margin_pt))
+#: The three editable margin fields. The fourth page edge is the spine,
+#: whose margin is ``gutter_pt`` -- edited separately since it behaves
+#: differently (it mirrors between recto and verso).
+MARGIN_FIELDS: tuple[str, ...] = ("margin_top_pt", "margin_bottom_pt", "margin_outer_pt")
+
+
+def set_margin(project: Project, field: str, points: float, *, linked: bool = False) -> Project:
+    """Set one margin, or all three when ``linked``."""
+    updates = {f: points for f in MARGIN_FIELDS} if linked else {field: points}
+    return replace(project, layout=replace(project.layout, **updates))
+
+
+def set_margins_linked(project: Project, linked: bool) -> Project:
+    return replace(project, layout=replace(project.layout, margins_linked=linked))
 
 
 #: Display units for lengths. Values are points-per-unit, so the stored
@@ -125,6 +137,7 @@ def _qt_core():
 def _qt_widgets():
     from PySide6.QtWidgets import (
         QButtonGroup,
+        QCheckBox,
         QComboBox,
         QDoubleSpinBox,
         QFormLayout,
@@ -134,7 +147,7 @@ def _qt_widgets():
     )
 
     return (
-        QButtonGroup, QComboBox, QDoubleSpinBox, QFormLayout,
+        QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
         QPushButton, QRadioButton, QWidget,
     )
 
@@ -155,6 +168,7 @@ class LayoutPanel:
         QObject, Signal = _qt_core()
         (
             QButtonGroup,
+            QCheckBox,
             QComboBox,
             QDoubleSpinBox,
             QFormLayout,
@@ -200,12 +214,26 @@ class LayoutPanel:
         self.gutter_spinbox.setValue(from_points(state.project.layout.gutter_pt, self._unit))
         form.addRow("Gutter:", self.gutter_spinbox)
 
-        self.margin_spinbox = QDoubleSpinBox(self.widget)
-        self.margin_spinbox.setDecimals(3)
-        self.margin_spinbox.setSingleStep(0.125)
-        self.margin_spinbox.setRange(0.0, from_points(216.0, self._unit))
-        self.margin_spinbox.setValue(from_points(state.project.layout.margin_pt, self._unit))
-        form.addRow("Margin (head/tail/fore):", self.margin_spinbox)
+        self.link_margins_check = QCheckBox("Link margins (one value for all)", self.widget)
+        self.link_margins_check.setChecked(state.project.layout.margins_linked)
+        form.addRow("", self.link_margins_check)
+
+        # Three editable margins; the fourth edge is the spine, whose margin
+        # is the gutter above.
+        self.margin_spinboxes: dict[str, object] = {}
+        for field, label in (
+            ("margin_top_pt", "Margin top (head):"),
+            ("margin_bottom_pt", "Margin bottom (tail):"),
+            ("margin_outer_pt", "Margin outer (fore-edge):"),
+        ):
+            box = QDoubleSpinBox(self.widget)
+            box.setDecimals(3)
+            box.setSingleStep(0.125)
+            box.setRange(0.0, from_points(216.0, self._unit))
+            box.setValue(from_points(getattr(state.project.layout, field), self._unit))
+            form.addRow(label, box)
+            self.margin_spinboxes[field] = box
+        self._sync_margin_enabled()
 
         self.use_printer_margins_button = QPushButton("Use printer margins", self.widget)
         self.use_printer_margins_button.setToolTip(
@@ -226,7 +254,11 @@ class LayoutPanel:
 
         self.fit_height_radio.toggled.connect(self._on_scale_mode_toggled)
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
-        self.margin_spinbox.valueChanged.connect(self._on_margin_changed)
+        for field, box in self.margin_spinboxes.items():
+            box.valueChanged.connect(
+                lambda value, f=field: self._on_margin_changed(f, value)
+            )
+        self.link_margins_check.toggled.connect(self._on_link_margins_toggled)
         self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
@@ -242,10 +274,43 @@ class LayoutPanel:
         plan = apply_layout_change(self.state, lambda project: set_gutter_pt(project, points))
         self.layout_changed.emit(plan)
 
-    def _on_margin_changed(self, value: float) -> None:
-        points = to_points(value, self._unit)
-        plan = apply_layout_change(self.state, lambda project: set_margin_pt(project, points))
+    def _sync_margin_enabled(self) -> None:
+        """When linked, only the head box is editable -- the other two mirror
+        it. Disabling rather than hiding keeps the values visible, so you can
+        see what linking did before unlinking again."""
+        linked = self.link_margins_check.isChecked()
+        for field, box in self.margin_spinboxes.items():
+            box.setEnabled(not linked or field == "margin_top_pt")
+
+    def _on_link_margins_toggled(self, linked: bool) -> None:
+        self._sync_margin_enabled()
+        plan = apply_layout_change(
+            self.state, lambda project: set_margins_linked(project, linked)
+        )
+        if linked:
+            # Adopt the head margin for all three, so linking is a visible,
+            # predictable action rather than a silent mode change.
+            head = self.margin_spinboxes["margin_top_pt"].value()
+            self._on_margin_changed("margin_top_pt", head)
+            return
         self.layout_changed.emit(plan)
+
+    def _on_margin_changed(self, field: str, value: float) -> None:
+        points = to_points(value, self._unit)
+        linked = self.link_margins_check.isChecked()
+        plan = apply_layout_change(
+            self.state, lambda project: set_margin(project, field, points, linked=linked)
+        )
+        if linked:
+            self._refresh_margin_boxes()
+        self.layout_changed.emit(plan)
+
+    def _refresh_margin_boxes(self) -> None:
+        """Re-display all three margins from the model without re-emitting."""
+        for field, box in self.margin_spinboxes.items():
+            box.blockSignals(True)
+            box.setValue(from_points(getattr(self.state.project.layout, field), self._unit))
+            box.blockSignals(False)
 
     def _on_unit_changed(self, unit: str) -> None:
         """Re-display the same physical lengths in a new unit.
@@ -256,13 +321,13 @@ class LayoutPanel:
         emit and re-apply their pre-conversion values as if the user had
         typed them.
         """
-        gutter_pt = self.state.project.layout.gutter_pt
-        margin_pt = self.state.project.layout.margin_pt
+        layout = self.state.project.layout
+        boxes = [(self.gutter_spinbox, layout.gutter_pt, 288.0)]
+        boxes += [
+            (self.margin_spinboxes[f], getattr(layout, f), 216.0) for f in MARGIN_FIELDS
+        ]
         self._unit = unit
-        for box, points, cap_pt in (
-            (self.gutter_spinbox, gutter_pt, 288.0),
-            (self.margin_spinbox, margin_pt, 216.0),
-        ):
+        for box, points, cap_pt in boxes:
             box.blockSignals(True)
             box.setRange(0.0, from_points(cap_pt, unit))
             box.setDecimals(0 if unit == "pt" else 3)
@@ -276,7 +341,13 @@ class LayoutPanel:
         if profile is None:
             return
         inset = imageable_inset_pt(profile.imageable_area_pt)
-        self.margin_spinbox.setValue(from_points(inset, self._unit))
+        # Set every margin, regardless of link state -- the printer's dead
+        # border applies to all four edges, so a partial application would
+        # leave some edge still unprintable.
+        self.margin_spinboxes["margin_top_pt"].setValue(from_points(inset, self._unit))
+        if not self.link_margins_check.isChecked():
+            for field in ("margin_bottom_pt", "margin_outer_pt"):
+                self.margin_spinboxes[field].setValue(from_points(inset, self._unit))
 
     def _on_binding_edge_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_binding_edge(project, value))
