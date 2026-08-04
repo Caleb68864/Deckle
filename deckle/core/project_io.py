@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import warnings
+import dataclasses
 from dataclasses import asdict
 from typing import Any, Callable
 
@@ -170,9 +171,40 @@ def _layout_to_dict(layout: LayoutSettings) -> dict[str, Any]:
     return data
 
 
+class UnknownLayoutFieldsWarning(UserWarning):
+    """Emitted when a ``.deckle`` carries layout keys this build does not know.
+
+    Non-fatal by design. The alternative -- passing every stored key straight
+    into ``LayoutSettings(**kwargs)`` -- means *any* field ever added or
+    removed permanently breaks every project file written on the other side
+    of that change. Deleting ``scale_mode`` did exactly that: files saved
+    before the removal raised
+    ``TypeError: unexpected keyword argument 'scale_mode'`` and could not be
+    opened at all.
+    """
+
+
 def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
-    kwargs = dict(data)
-    kwargs["paper"] = tuple(data["paper"])
+    """Build ``LayoutSettings`` from stored JSON, tolerating field drift.
+
+    Unknown keys are dropped with a warning rather than raising, and missing
+    keys fall back to the dataclass defaults. That makes the format tolerant
+    in both directions: a file written by an older build (missing fields) and
+    one written by a newer build (extra fields) both open, which is what the
+    ``version`` integer was reserved for.
+    """
+    known = {f.name for f in dataclasses.fields(LayoutSettings)}
+    kwargs = {k: v for k, v in data.items() if k in known}
+    unknown = sorted(set(data) - known)
+    if unknown:
+        warnings.warn(
+            "ignoring layout fields this build does not recognise: "
+            + ", ".join(unknown),
+            UnknownLayoutFieldsWarning,
+            stacklevel=2,
+        )
+    if "paper" in kwargs:
+        kwargs["paper"] = tuple(kwargs["paper"])
     return LayoutSettings(**kwargs)
 
 

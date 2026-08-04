@@ -312,3 +312,70 @@ def test_traversal_cannot_escape_via_dotdot(tmp_path):
 
     with pytest.warns(PathOutsideRootsAdvisory):
         load_project(str(proj_path), check_sources=False)
+
+
+# --- Red-team (signatures v2): .deckle must survive LayoutSettings drift ---
+
+
+def test_legacy_deckle_with_removed_field_still_loads(tmp_path):
+    """Regression: deleting `scale_mode` made every project file saved before
+    the removal unopenable.
+
+    `_layout_from_dict` passed every stored key straight into
+    `LayoutSettings(**kwargs)`, so a retired field raised
+    `TypeError: unexpected keyword argument 'scale_mode'`. Any field ever
+    added or removed permanently broke files written on the other side of
+    that change -- and signatures v2 adds five more.
+    """
+    from deckle.core.project_io import UnknownLayoutFieldsWarning, _layout_from_dict
+
+    legacy = {
+        "paper": [612.0, 792.0],
+        "gutter_pt": 18.0,
+        "binding_edge": "left",
+        "scale_mode": "fit",  # retired
+    }
+    with pytest.warns(UnknownLayoutFieldsWarning):
+        settings = _layout_from_dict(legacy)
+    assert settings.gutter_pt == 18.0
+    assert settings.paper == (612.0, 792.0)
+
+
+def test_future_deckle_with_unknown_field_still_loads():
+    """Forward direction: a file written by a build that knows fold_scheme
+    must open here, dropping what this build cannot use."""
+    from deckle.core.project_io import UnknownLayoutFieldsWarning, _layout_from_dict
+
+    future = {
+        "paper": [612.0, 792.0],
+        "gutter_pt": 18.0,
+        "binding_edge": "left",
+        "fold_scheme": "folio",
+        "sheets_per_signature": 4,
+    }
+    with pytest.warns(UnknownLayoutFieldsWarning):
+        settings = _layout_from_dict(future)
+    assert settings.binding_edge == "left"
+
+
+def test_minimal_layout_dict_warns_about_nothing():
+    """Only genuinely unknown keys warn -- missing ones just take defaults."""
+    import warnings as _w
+
+    from deckle.core.project_io import UnknownLayoutFieldsWarning, _layout_from_dict
+
+    with _w.catch_warnings(record=True) as caught:
+        _w.simplefilter("always")
+        _layout_from_dict({"paper": [612.0, 792.0], "gutter_pt": 18.0, "binding_edge": "left"})
+    assert not [c for c in caught if issubclass(c.category, UnknownLayoutFieldsWarning)]
+
+
+def test_round_trip_still_preserves_every_known_field(tmp_path):
+    from deckle.core.project_io import _layout_from_dict, _layout_to_dict
+
+    original = LayoutSettings(
+        paper=(612.0, 792.0), gutter_pt=54.0, binding_edge="right",
+        margin_top_pt=18.0, margin_bottom_pt=9.0, margin_outer_pt=27.0,
+        slack_to="outer", margins_linked=False, start_on_recto=False,
+    )
+    assert _layout_from_dict(_layout_to_dict(original)) == original

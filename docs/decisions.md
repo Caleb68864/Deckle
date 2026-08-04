@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-08-04 — .deckle could not survive a LayoutSettings field change
+- Symptom: Red-teaming the signatures v2 spec surfaced a live data-loss bug in shipped code. `_layout_from_dict` passed every stored key straight into `LayoutSettings(**kwargs)`, so **any** field added or removed permanently broke every project file written on the other side of that change. Deleting `scale_mode` earlier the same day did exactly that: a legacy `.deckle` raises `TypeError: unexpected keyword argument 'scale_mode'` and cannot be opened at all.
+- Fix: Filter to known dataclass fields, default the missing, and emit a non-fatal `UnknownLayoutFieldsWarning` for extras — tolerant in both directions. Four regression tests: retired field, future field, no spurious warning on a minimal dict, and a full round trip.
+- Surfaces: The design had reasoned that no migration was needed because *"`SheetPlan` is never persisted"*. That is true and irrelevant — **`LayoutSettings` is persisted**, and it is exactly what the feature changes. Signatures v2 adds five more fields, so every v2-saved project would have been unopenable by any build without them.
+- Watch: A `version` integer in a file format is not migration tolerance; it is a place to *record* a version. This one had been present since SS-01 and unused. Any `Type(**stored_dict)` is a latent break on the next field change — the constructor is a schema contract whether or not you intended one.
+- Commit: (this commit)
+
+
 ## 2026-08-04 — Printer enumeration blocked the UI thread on launch
 - Symptom: With the internet down, `python -m pytest -q` took **81 minutes** instead of 7 seconds. Same 231 tests, all passing.
 - Fix: `QPrinterInfo.availablePrinters()` enumerates **network** printers, and the Windows spooler blocks per printer until it times out when one is unreachable. `MainWindow.refresh_printers()` ran synchronously inside `__init__`, so **Deckle hung on launch whenever a networked printer was offline** — measured at 21ms with the network up and effectively unbounded without it. Moved to a background `_PrinterQueryWorker`; the window now constructs in 338ms with Print disabled and a "Checking for printers..." message, enabling when the query returns. `_on_print_clicked` reads the cached list rather than re-enumerating.
@@ -127,3 +135,4 @@
 - Surfaces: Identical to the SS-05 entry above; both sub-specs failed the same gate in the same run for the same reason.
 - Watch: The decision-log hook appends a fresh scaffold on every commit *attempt*, so a blocked multi-commit recovery accumulates unfilled scaffolds that each block the next commit. Two traps: strip stale scaffolds before retrying, and never write the hook's placeholder token literally in prose — the hook string-matches it and will block on your own documentation.
 - Commit: (this commit)
+
