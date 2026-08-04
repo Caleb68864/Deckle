@@ -31,3 +31,6 @@ include = ["deckle*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: measures real resource usage (e.g. peak RSS across a 500-page export); slower than a unit test but still executes and asserts",
+]

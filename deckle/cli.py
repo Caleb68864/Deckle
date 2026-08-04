@@ -12,16 +12,40 @@ display server present.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import os
 import re
 import sys
 from typing import Sequence
 
+from deckle import __version__ as _DECKLE_VERSION
 from deckle.core.export import export as export_plan
 from deckle.core.layout import GutterShiftStrategy
 from deckle.core.loader import EncryptedPdfError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.project_io import SourceChangedWarning, save_project
+
+# A-6: `deckle --version` prints the app version plus the resolved versions
+# of its key third-party dependencies -- the first thing anyone asks for in
+# a bug report. Resolved via importlib.metadata (installed-distribution
+# metadata) rather than importing the packages themselves, so this never
+# imports PySide6 -- and so deckle.cli never has to import deckle.app.
+_VERSIONED_DISTRIBUTIONS = ("pikepdf", "pypdfium2", "img2pdf", "PySide6")
+
+
+def _distribution_version(dist_name: str) -> str:
+    try:
+        return importlib.metadata.version(dist_name)
+    except importlib.metadata.PackageNotFoundError:
+        return "not installed"
+
+
+def _version_string() -> str:
+    parts = [f"deckle {_DECKLE_VERSION}"]
+    parts.extend(
+        f"{dist} {_distribution_version(dist)}" for dist in _VERSIONED_DISTRIBUTIONS
+    )
+    return "\n".join(parts)
 
 LETTER_PT = (612.0, 792.0)
 A4_PT = (595.28, 841.89)
@@ -33,24 +57,37 @@ _PAPER_PRESETS = {
     "legal": LEGAL_PT,
 }
 
+_ACCEPTED_LENGTH_UNITS = ("in", "pt", "mm", "cm")
+
 _UNIT_TO_PT = {
     "in": 72.0,
     "pt": 1.0,
     "mm": 72.0 / 25.4,
+    "cm": 72.0 / 2.54,
 }
 
-_LENGTH_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*(in|pt|mm)\s*$", re.IGNORECASE)
+# A-9: unit is optional (a bare number means points), and an optional space
+# is allowed between the number and the unit -- e.g. "18", "5cm", "3 mm".
+_LENGTH_RE = re.compile(r"^\s*([0-9]*\.?[0-9]+)\s*(in|pt|mm|cm)?\s*$", re.IGNORECASE)
 
 
 def _parse_length_pt(value: str) -> float:
-    """Parse a length with a unit suffix (``0.75in``, ``18pt``, ``5mm``) to points."""
+    """Parse a length to points.
+
+    Accepts ``in``, ``pt``, ``mm``, or ``cm`` as the unit, with an optional
+    space before it (``0.75in``, ``18pt``, ``5mm``, ``5 cm``). A bare
+    number with no unit (``"18"``) is interpreted as points.
+    """
     match = _LENGTH_RE.match(value)
     if not match:
         raise argparse.ArgumentTypeError(
-            f"invalid length {value!r}: expected a number followed by in/pt/mm"
+            f"invalid length {value!r}: expected a number optionally followed "
+            f"by a unit ({', '.join(_ACCEPTED_LENGTH_UNITS)}); a bare number "
+            "is interpreted as points"
         )
     number, unit = match.groups()
-    return float(number) * _UNIT_TO_PT[unit.lower()]
+    factor = _UNIT_TO_PT[unit.lower()] if unit else 1.0
+    return float(number) * factor
 
 
 def _parse_paper(value: str) -> tuple[float, float]:
@@ -163,6 +200,14 @@ def _cmd_impose(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="deckle", description="Impose and print booklets.")
+    # A-6: --version must work without a subcommand. argparse's "version"
+    # action exits immediately when encountered, before the subparsers'
+    # required-argument check runs, so this is reachable even though
+    # add_subparsers(required=True) below would otherwise demand one.
+    parser.add_argument(
+        "--version", action="version", version=_version_string(),
+        help="print the Deckle app version and key dependency versions",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     impose_parser = subparsers.add_parser("impose", help="impose a source into a .deckle project")

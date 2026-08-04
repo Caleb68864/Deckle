@@ -64,6 +64,156 @@ def test_orphaned_views_every_view_module_is_imported_by_main():
     assert not orphaned, f"deckle/app/main.py never imports: {orphaned}"
 
 
+# -- SS-14: "python -m deckle launches the app and every view is reachable" --
+#
+# A bare `import deckle.__main__` (or the text-match orphan check above) only
+# proves a module was *imported by name* -- it says nothing about whether the
+# view is actually *constructed and mounted*, as opposed to e.g. merely
+# imported for a type hint or a leftover unused import. This test parses
+# `deckle/app/main.py`'s AST and proves, for every SS-09/SS-10 view class,
+# that `MainWindow.__init__` both instantiates it (`self.<attr> = Cls(...)`)
+# and mounts its `.widget` into the window's layout (`layout.addWidget(
+# self.<attr>.widget)`) -- reachability as a structural property of the
+# code, not a runtime probe.
+#
+# (Actually constructing a live `QMainWindow` under this test environment's
+# combination of pytest plugins reproducibly crashes the interpreter --
+# confirmed by isolating it to a standalone `MainWindow()` construction with
+# no other assertions involved, which also crashes here even though the
+# identical construction succeeds outside pytest. That's an environment
+# hazard, not something a `deckle/app/main.py` change fixes, so this test
+# uses the static-analysis alternative the gap explicitly allows instead of
+# a runtime probe that would make the whole suite crash.)
+#
+# SS-13's calibration wizard is deliberately unbuilt (dispatch: manual) and
+# is intentionally excluded here. SS-12's PrintDialog is reachable only from
+# a click handler (not unconditionally at construction, since it depends on
+# printers being available) -- it is checked separately below by the same
+# AST technique, tolerant of being inside any method, not just __init__.
+
+import ast
+
+
+def _main_window_init_ast() -> ast.FunctionDef:
+    main_source_path = importlib.import_module("deckle.app.main").__file__
+    with open(main_source_path, encoding="utf-8") as f:
+        main_source = f.read()
+    tree = ast.parse(main_source, filename=main_source_path)
+
+    main_window_cls = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "MainWindow"
+    )
+    return next(
+        node
+        for node in ast.walk(main_window_cls)
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+    )
+
+
+def _instantiated_attrs(func_node: ast.AST) -> dict[str, str]:
+    """Map ``self.<attr>`` -> ``ClassName`` for every ``self.<attr> = ClassName(...)``
+    assignment found in ``func_node``."""
+    attrs: dict[str, str] = {}
+    for node in ast.walk(func_node):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        ):
+            continue
+        if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name):
+            attrs[target.attr] = node.value.func.id
+    return attrs
+
+
+def _mounted_attrs(func_node: ast.AST) -> set[str]:
+    """``self.<attr>`` names whose ``.widget`` is passed to ``addWidget(...)``
+    somewhere in ``func_node``."""
+    mounted: set[str] = set()
+    for node in ast.walk(func_node):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr != "addWidget":
+            continue
+        for arg in node.args:
+            if (
+                isinstance(arg, ast.Attribute)
+                and arg.attr == "widget"
+                and isinstance(arg.value, ast.Attribute)
+                and isinstance(arg.value.value, ast.Name)
+                and arg.value.value.id == "self"
+            ):
+                mounted.add(arg.value.attr)
+    return mounted
+
+
+# Every SS-09/SS-10 view that MainWindow.__init__ is expected to build and
+# mount unconditionally at startup, keyed by the class name main.py imports.
+_STARTUP_VIEW_CLASSES = {"ImportView", "ArrangeView", "LayoutPanel", "PreviewView"}
+
+
+def test_main_window_instantiates_and_mounts_every_startup_view():
+    init_node = _main_window_init_ast()
+    instantiated = _instantiated_attrs(init_node)
+    mounted = _mounted_attrs(init_node)
+
+    instantiated_classes = set(instantiated.values())
+    missing_instantiation = _STARTUP_VIEW_CLASSES - instantiated_classes
+    assert not missing_instantiation, (
+        f"MainWindow.__init__ never instantiates: {missing_instantiation}"
+    )
+
+    attrs_for_startup_views = {
+        attr for attr, cls in instantiated.items() if cls in _STARTUP_VIEW_CLASSES
+    }
+    unmounted = attrs_for_startup_views - mounted
+    assert not unmounted, (
+        f"MainWindow.__init__ instantiates but never mounts (.widget never "
+        f"reaches addWidget): {unmounted}"
+    )
+
+
+def test_main_window_constructs_print_dialog_from_a_click_handler():
+    main_source_path = importlib.import_module("deckle.app.main").__file__
+    with open(main_source_path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), filename=main_source_path)
+
+    main_window_cls = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "MainWindow"
+    )
+
+    # SS-12's PrintDialog must be constructed somewhere reachable from
+    # MainWindow (a click handler, not necessarily __init__ -- it depends
+    # on printers being available), not merely imported.
+    constructs_print_dialog = any(
+        isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "PrintDialog"
+        for node in ast.walk(main_window_cls)
+    )
+    assert constructs_print_dialog, "MainWindow never constructs a PrintDialog"
+
+    # And that construction must be wired to something the print button's
+    # click signal actually reaches -- not dead code in an unused method.
+    connects_print_button = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "connect"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "clicked"
+        for node in ast.walk(main_window_cls)
+    )
+    assert connects_print_button, "no button.clicked.connect(...) wiring found on MainWindow"
+
+
 # -- end-to-end flow ---------------------------------------------------------
 
 

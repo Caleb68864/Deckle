@@ -7,10 +7,13 @@ level shape::
     {"version": 1, "pages": [...], "layout": {...}, "printer": "..."}
 
 Reopening a project whose source file content has changed since it was
-saved (a mismatched ``sha256``) raises ``SourceChangedWarning`` naming the
-file, rather than silently substituting the new content -- see the module
-docstring in ``deckle/core/print_session.py`` for why silent substitution
-during printing is unacceptable.
+saved (a mismatched ``sha256``, on a file that still exists) raises
+``SourceChangedWarning`` naming the file, rather than silently substituting
+the new content -- see the module docstring in
+``deckle/core/print_session.py`` for why silent substitution during
+printing is unacceptable. A source file that has been moved or deleted --
+a different failure -- raises ``SourceMissingError`` instead, carrying an
+``expected_path`` and a ``relocate(new_path)`` affordance for the caller.
 
 This module must not import Qt bindings -- see ``tests/test_core_purity.py``.
 """
@@ -19,8 +22,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import warnings
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Callable
 
 from deckle.core.models import LayoutSettings, Project, SourcePage, SourceRef
 
@@ -39,6 +44,88 @@ class SourceChangedWarning(Exception):
     def __init__(self, path: str):
         self.path = path
         super().__init__(f"Source file changed since project was saved: {path}")
+
+
+class SourceMissingError(Exception):
+    """Raised by ``load_project`` when a referenced source file cannot be
+    found on disk at all (moved or deleted), as distinct from
+    ``SourceChangedWarning`` (a file that exists but whose content hash no
+    longer matches).
+
+    Carries ``expected_path`` -- where the project expected to find the
+    file -- so a caller (the CLI or the UI) can offer a *relocate*
+    affordance rather than a bare failure. ``relocate(new_path)`` records
+    the path the caller found the file at, for use in a subsequent
+    load/save cycle.
+    """
+
+    def __init__(self, expected_path: str):
+        self.expected_path = expected_path
+        self.relocated_path: str | None = None
+        super().__init__(f"Source file missing: {expected_path}")
+
+    def relocate(self, new_path: str) -> str:
+        """Record ``new_path`` as the relocated location of the missing
+        source and return it, for the caller to use when re-loading or
+        re-saving the project.
+        """
+        self.relocated_path = new_path
+        return new_path
+
+
+class PathOutsideRootsWarning(Exception):
+    """Raised by ``load_project`` when a referenced source path resolves
+    outside the project directory and any caller-supplied ``allowed_roots``
+    (red-team A-3: ``.deckle`` files carry filesystem paths and may be
+    shared, so a crafted or relocated project file could point at an
+    unrelated path elsewhere on disk).
+
+    A path that fails this check is never opened silently. The caller
+    (CLI or UI) decides whether to prompt the user for confirmation and,
+    if approved, retry with an expanded ``allowed_roots``.
+    """
+
+    def __init__(self, path: str, allowed_roots: tuple[str, ...]):
+        self.path = path
+        self.allowed_roots = allowed_roots
+        super().__init__(
+            f"Source path resolves outside the project directory and "
+            f"allowed roots: {path}"
+        )
+
+
+class PathOutsideRootsAdvisory(UserWarning):
+    """Emitted by ``load_project`` when a referenced source path resolves
+    outside the project directory and any caller-supplied ``allowed_roots``,
+    and no ``on_outside_roots`` decision callback was provided.
+
+    This is deliberately **non-fatal**. Deckle's normal case is a project
+    whose sources live somewhere else entirely -- Downloads, a sync folder,
+    a scanner output directory -- so refusing to load them would break the
+    primary workflow rather than protect it. Red-team A-3 asks that such a
+    path not be opened *silently*; a visible advisory satisfies that, while
+    a UI that wants a real confirmation prompt passes ``on_outside_roots``
+    and gets a veto.
+    """
+
+
+def _path_within_roots(candidate: str, roots: tuple[str, ...]) -> bool:
+    """True if ``candidate`` resolves inside any of ``roots``.
+
+    Resolves both sides with ``os.path.realpath`` so ``..`` traversal and
+    symlinks can't be used to escape the check.
+    """
+    real_candidate = os.path.realpath(candidate)
+    for root in roots:
+        real_root = os.path.realpath(root)
+        try:
+            common = os.path.commonpath([real_candidate, real_root])
+        except ValueError:
+            # e.g. different drives on Windows -- definitely not contained.
+            continue
+        if common == real_root:
+            return True
+    return False
 
 
 def _sha256_file(path: str) -> str:
@@ -105,31 +192,64 @@ def save_project(project: Project, path: str) -> None:
         json.dump(payload, f, indent=2)
 
 
-def load_project(path: str, *, check_sources: bool = True) -> Project:
+def load_project(
+    path: str,
+    *,
+    check_sources: bool = True,
+    allowed_roots: tuple[str, ...] | None = None,
+    on_outside_roots: Callable[[str, tuple[str, ...]], bool] | None = None,
+) -> Project:
     """Read a ``.deckle`` project file from ``path``.
 
+    Every distinct source path referenced by the project is validated
+    (red-team A-3) against the project's own directory plus any
+    caller-supplied ``allowed_roots`` -- the directories the user has
+    actually chosen to work in. A source path that resolves outside all of
+    them raises ``PathOutsideRootsWarning`` rather than being opened
+    silently; ``.deckle`` files carry filesystem paths and may be shared,
+    so a crafted or relocated project file could otherwise be used to
+    reference an arbitrary path elsewhere on disk. This check runs
+    regardless of ``check_sources``.
+
     If ``check_sources`` is true (the default), every distinct source
-    file referenced by the project has its content hash recomputed and
-    compared against the hash stored at save time. On the first mismatch,
-    raises ``SourceChangedWarning`` naming that file -- the project is
-    never loaded with silently substituted content.
+    file referenced by the project is also checked to still exist and has
+    its content hash recomputed and compared against the hash stored at
+    save time. A missing file raises ``SourceMissingError`` naming that
+    file's ``expected_path``; a file that exists but hashes differently
+    raises ``SourceChangedWarning``. Either way the project is never
+    loaded with silently substituted content.
     """
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
     pages = [_page_from_dict(p) for p in payload["pages"]]
 
-    if check_sources:
-        checked: set[str] = set()
-        for page in pages:
-            ref = page.ref
-            if ref.path in checked:
-                continue
-            checked.add(ref.path)
+    project_dir = os.path.dirname(os.path.realpath(path))
+    roots = (project_dir, *(allowed_roots or ()))
+
+    checked: set[str] = set()
+    for page in pages:
+        ref = page.ref
+        if ref.path in checked:
+            continue
+        checked.add(ref.path)
+        if not _path_within_roots(ref.path, roots):
+            if on_outside_roots is None:
+                warnings.warn(
+                    f"Source path resolves outside the project directory and "
+                    f"allowed roots: {ref.path}",
+                    PathOutsideRootsAdvisory,
+                    stacklevel=2,
+                )
+            elif not on_outside_roots(ref.path, roots):
+                raise PathOutsideRootsWarning(ref.path, roots)
+        if check_sources:
+            if not os.path.exists(ref.path):
+                raise SourceMissingError(ref.path)
             try:
                 current_hash = _sha256_file(ref.path)
             except OSError:
-                raise SourceChangedWarning(ref.path)
+                raise SourceMissingError(ref.path)
             if current_hash != ref.sha256:
                 raise SourceChangedWarning(ref.path)
 

@@ -276,3 +276,79 @@ def test_large_document_export_completes_via_batching(tmp_path):
     with pikepdf.open(out_path) as pdf:
         # n_pages source pages -> n_pages/2 sheets * 2 sides = n_pages pages.
         assert len(pdf.pages) == n_pages
+
+
+# --- BEHAVIORAL: A-8 -- 500-page peak memory stays under 4x 50-page peak --
+
+
+@pytest.mark.slow
+def test_large_document_export_peak_memory_under_4x_small_export(tmp_path):
+    """A-8 (docs/specs/2026-08-04-deckle-mvp.md, Edge Cases "Red-team
+    advisories, resolved"): peak RSS during a 500-page export must stay
+    under 4x the peak RSS observed for a 50-page export -- proving batching
+    actually bounds memory growth rather than merely letting the export
+    finish.
+
+    Measured via ``psutil`` (already installed in this environment though
+    not a declared project dependency -- per instructions, use it rather
+    than adding a new dependency). ``psutil.Process().memory_info().rss`` is
+    literally the OS-reported peak-resident-set metric A-8 names, unlike
+    ``tracemalloc`` -- which only tracks Python-heap allocations and
+    completely misses pikepdf's C++/QPDF-backed memory, the dominant cost
+    here, so it produces a noisy, unrepresentative ratio for this
+    comparison. A background poll thread samples RSS during each export to
+    catch the peak, since ``memory_info()`` only reports the *current*
+    value.
+    """
+    psutil = pytest.importorskip("psutil")
+
+    import gc
+    import threading
+    import time
+
+    proc = psutil.Process(os.getpid())
+
+    def _peak_rss_for(n_pages: int, out_name: str) -> int:
+        # Build the plan *outside* the measurement window: SheetPlan
+        # construction is inherently O(n_pages) (one Sheet/Placement per
+        # page) and scaling with document size there is expected -- it is
+        # not what A-8 is guarding. A-8 guards export()'s own working set
+        # (source-PDF handles and in-progress pikepdf objects) staying
+        # bounded via batching rather than growing with total page count.
+        plan = _plan_from_source(tmp_path, n_pages)
+        out_path = os.path.join(str(tmp_path), out_name)
+
+        gc.collect()
+        samples = [proc.memory_info().rss]
+        stop = threading.Event()
+
+        def _poll() -> None:
+            while not stop.is_set():
+                samples.append(proc.memory_info().rss)
+                time.sleep(0.003)
+
+        poller = threading.Thread(target=_poll, daemon=True)
+        poller.start()
+        try:
+            export_fn(plan, out_path)
+        finally:
+            stop.set()
+            poller.join()
+
+        assert os.path.exists(out_path)
+        return max(samples)
+
+    # Warm up the process (module imports, allocator arenas, first pikepdf
+    # calls) once outside of measurement so the first *measured* run isn't
+    # penalized by one-time startup cost that has nothing to do with A-8.
+    _peak_rss_for(2, "warmup.pdf")
+
+    peak_50 = _peak_rss_for(50, "small.pdf")
+    peak_500 = _peak_rss_for(500, "big.pdf")
+
+    assert peak_50 > 0
+    assert peak_500 < 4 * peak_50, (
+        f"peak RSS grew {peak_500 / peak_50:.2f}x from a 50-page to a "
+        f"500-page export (peak_50={peak_50}, peak_500={peak_500}); A-8 "
+        "requires this to stay under 4x"
+    )

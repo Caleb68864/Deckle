@@ -7,8 +7,15 @@ import os
 
 import pytest
 
+from deckle.core import session_log
 from deckle.core.models import LayoutSettings, Project, SourcePage, SourceRef
-from deckle.core.project_io import SourceChangedWarning, load_project, save_project
+from deckle.core.profiles import PrinterProfile
+from deckle.core.project_io import (
+    SourceChangedWarning,
+    SourceMissingError,
+    load_project,
+    save_project,
+)
 
 
 def _make_source_file(tmp_path, name: str = "src.pdf", content: bytes = b"hello world") -> str:
@@ -113,6 +120,62 @@ def test_load_raises_source_changed_warning_on_hash_mismatch(tmp_path):
     assert exc_info.value.path == source_path
 
 
+def test_load_raises_source_missing_error_for_deleted_file(tmp_path):
+    """A-4: a moved/deleted source is a different failure from a changed
+    one -- it must raise SourceMissingError, not SourceChangedWarning."""
+    content = b"original content"
+    source_path = _make_source_file(tmp_path, content=content)
+    project = _make_project(source_path, content)
+
+    out_path = os.path.join(str(tmp_path), "proj.deckle")
+    save_project(project, out_path)
+
+    os.remove(source_path)
+
+    with pytest.raises(SourceMissingError) as exc_info:
+        load_project(out_path)
+    assert exc_info.value.expected_path == source_path
+    assert not isinstance(exc_info.value, SourceChangedWarning)
+
+
+def test_source_missing_error_relocate_records_new_path(tmp_path):
+    """The relocate affordance lets a caller (CLI/UI) record where the
+    missing source was actually found, for a subsequent load/save cycle."""
+    content = b"original content"
+    source_path = _make_source_file(tmp_path, content=content)
+    project = _make_project(source_path, content)
+
+    out_path = os.path.join(str(tmp_path), "proj.deckle")
+    save_project(project, out_path)
+    os.remove(source_path)
+
+    with pytest.raises(SourceMissingError) as exc_info:
+        load_project(out_path)
+
+    relocated = os.path.join(str(tmp_path), "relocated.pdf")
+    result = exc_info.value.relocate(relocated)
+    assert result == relocated
+    assert exc_info.value.relocated_path == relocated
+
+
+def test_load_still_raises_source_changed_warning_when_file_exists(tmp_path):
+    """Regression guard: a file that exists but hashes differently must
+    still raise SourceChangedWarning, never SourceMissingError, now that
+    a missing-file branch exists alongside it."""
+    content = b"original content"
+    source_path = _make_source_file(tmp_path, content=content)
+    project = _make_project(source_path, content)
+
+    out_path = os.path.join(str(tmp_path), "proj.deckle")
+    save_project(project, out_path)
+
+    with open(source_path, "wb") as f:
+        f.write(b"different content now")
+
+    with pytest.raises(SourceChangedWarning):
+        load_project(out_path)
+
+
 def test_load_does_not_silently_substitute_changed_content(tmp_path):
     content = b"original content"
     source_path = _make_source_file(tmp_path, content=content)
@@ -129,3 +192,124 @@ def test_load_does_not_silently_substitute_changed_content(tmp_path):
         # If no exception were raised, this would be the silent-substitution
         # failure mode this test guards against.
         assert loaded is None  # pragma: no cover - unreachable if raised correctly
+
+
+def _make_profile() -> PrinterProfile:
+    return PrinterProfile(
+        version=1,
+        flip_axis="long",
+        output_face="down",
+        feed_edge="top",
+        reverse_stack=True,
+        imageable_area_pt=(18.0, 18.0, 18.0, 18.0),
+        calibrated_at="2026-08-04T00:00:00",
+        calibration_version=1,
+    )
+
+
+def test_session_log_rotates_and_retains_bounded_generations(tmp_path, monkeypatch):
+    """A-5: the session log is capped and rotated rather than growing
+    forever. Shrink the rotation threshold so the test doesn't have to
+    write 5 MB of records to exercise it."""
+    monkeypatch.setenv("DECKLE_SESSION_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(session_log, "_MAX_BYTES", 500)
+    monkeypatch.setattr(session_log, "_BACKUP_COUNT", 3)
+
+    profile = _make_profile()
+    for i in range(200):
+        session_log.log_print_job(
+            printer="my_printer",
+            profile=profile,
+            sheets=[i, i + 1, i + 2],
+            dpi=300,
+            pass_index=i % 2,
+        )
+
+    base_path = session_log.session_log_path()
+    assert base_path.exists()
+    assert base_path.stat().st_size <= 500
+
+    # At most _BACKUP_COUNT rolled-over generations are retained --
+    # session_log.jsonl.1 .. .3 -- never an unbounded number of files.
+    rotated = sorted(tmp_path.glob("session_log.jsonl.*"))
+    assert 1 <= len(rotated) <= 3
+    for rotated_file in rotated:
+        assert rotated_file.stat().st_size <= 500 + 512  # allow one record's slack
+
+    no_generation_4 = tmp_path / "session_log.jsonl.4"
+    assert not no_generation_4.exists()
+
+
+# --- Red-team A-3: .deckle files carry filesystem paths and may be shared ---
+
+
+def test_load_project_warns_when_source_path_is_outside_allowed_roots(tmp_path):
+    """A source outside the project dir is surfaced, never opened silently.
+
+    Non-fatal by design: Deckle's normal case is sources living in Downloads
+    or a sync folder, so refusing to load them would break the primary
+    workflow rather than protect it.
+    """
+    from deckle.core.project_io import PathOutsideRootsAdvisory
+
+    outside = tmp_path / "elsewhere" / "book.pdf"
+    outside.parent.mkdir()
+    outside.write_bytes(b"%PDF-1.4\n")
+
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    proj_path = proj_dir / "p.deckle"
+
+    project = _make_project(str(outside), b"%PDF-1.4")
+    save_project(project, str(proj_path))
+
+    with pytest.warns(PathOutsideRootsAdvisory):
+        load_project(str(proj_path), check_sources=False)
+
+
+def test_load_project_callback_can_veto_an_outside_root_path(tmp_path):
+    """A UI that wants a real confirmation prompt gets a veto."""
+    from deckle.core.project_io import PathOutsideRootsWarning
+
+    outside = tmp_path / "elsewhere" / "book.pdf"
+    outside.parent.mkdir()
+    outside.write_bytes(b"%PDF-1.4\n")
+
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    proj_path = proj_dir / "p.deckle"
+
+    project = _make_project(str(outside), b"%PDF-1.4")
+    save_project(project, str(proj_path))
+
+    with pytest.raises(PathOutsideRootsWarning):
+        load_project(
+            str(proj_path),
+            check_sources=False,
+            on_outside_roots=lambda path, roots: False,
+        )
+
+    # Approving proceeds without raising.
+    load_project(
+        str(proj_path),
+        check_sources=False,
+        on_outside_roots=lambda path, roots: True,
+    )
+
+
+def test_traversal_cannot_escape_via_dotdot(tmp_path):
+    """`..` segments are resolved before the containment check."""
+    from deckle.core.project_io import PathOutsideRootsAdvisory
+
+    proj_dir = tmp_path / "proj"
+    proj_dir.mkdir()
+    outside = tmp_path / "secret.pdf"
+    outside.write_bytes(b"%PDF-1.4\n")
+
+    sneaky = str(proj_dir / ".." / "secret.pdf")
+    project = _make_project(sneaky, b"%PDF-1.4")
+    proj_path = proj_dir / "p.deckle"
+    save_project(project, str(proj_path))
+
+    with pytest.warns(PathOutsideRootsAdvisory):
+        load_project(str(proj_path), check_sources=False)

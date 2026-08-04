@@ -1,5 +1,19 @@
 # Decision Log
 
+## 2026-08-04 — Path-traversal validation must advise, not refuse
+- Symptom: The red-team A-3 fix made `load_project` raise `PathOutsideRootsWarning` unconditionally for any source path outside the project directory. Three `test_app_state.py` autosave tests failed immediately — but the real damage was larger: Deckle's normal case is source PDFs living in Downloads or a sync folder, not beside the `.deckle` file, so **every real project would have hard-failed on reopen**.
+- Fix: The spec says "prompts for confirmation rather than opening silently" — a refusal is not a prompt. Split into `PathOutsideRootsAdvisory(UserWarning)` (visible, non-fatal, emitted when no decision-maker is available) and an `on_outside_roots` callback that lets a UI veto, raising `PathOutsideRootsWarning` on decline. Three tests added: advisory, veto/approve, and `..` traversal resolution.
+- Surfaces: Any security-flavoured acceptance criterion whose remedy is "confirm" or "warn". Implementing it as a hard raise is the easy reading and the wrong one — it converts a usability affordance into an outage. Check the criterion's verb before choosing the mechanism.
+- Watch: A security fix that makes the primary workflow fail is almost always over-implemented. If a validation rejects the common case rather than the crafted one, the threshold is wrong.
+- Commit: (this commit)
+
+## 2026-08-04 — Patching a master spec after prep desynchronizes the phase-spec bundle
+- Symptom: Converge pass 1 found four confirmed gaps (`SourceMissingError`, session-log rotation, `--version`, gutter-parser `cm`/bare-number). All four were red-team advisories A-4/A-5/A-6/A-9. The code was not wrong — the workers had faithfully implemented the phase specs, which never contained those advisories.
+- Fix: Implemented all four in converge pass 1. The structural lesson is ordering: red-team patched the *master* spec after `/forge-prep` had already expanded the *phase* specs, and the factory dispatches from phase specs.
+- Surfaces: Any forge chain where red-team (or a manual edit) touches the master spec after prep has run. The bundle silently keeps the pre-patch requirements; nothing errors, the work just quietly omits the fixes.
+- Watch: If a master spec is edited post-prep, either re-run `/forge-prep` or expect converge to surface the delta as gaps. The factory's own `--trust-anyway` flag exists because it can detect this drift — treat that flag as a warning sign, not a convenience.
+- Commit: (this commit)
+
 ## 2026-08-04 — Negative-assertion acceptance criteria must exit 0 when the pattern is absent
 - Symptom: Factory run `c46e15e3` deferred SS-05 and SS-06 with `idempotency-strong-build-gate: grep -n "Placement" deckle/core/render.py [real_failure]`, despite both having correct, complete implementations on disk. The cascade blocked SS-07 through SS-14 — seven sub-specs that never dispatched.
 - Fix: Ten acceptance criteria in the master spec were written as a bare `` `grep ...` `` followed by the prose "returns nothing". `grep` exits 1 when it finds no match, so the build gate read a *passing* assertion as a real failure. Rewrote all ten as `! grep ... || (echo "FAIL: forbidden pattern present" && exit 1)`, which exits 0 when the forbidden pattern is absent. Commit `d296d01`.

@@ -33,6 +33,53 @@ _FALLBACK_PAGE_PT = (612.0, 792.0)  # US Letter, matching Project defaults.
 
 _CACHE_DIR_NAME = "deckle_import_cache"
 
+# A-7 (docs/specs/2026-08-04-deckle-mvp.md, Edge Cases "Red-team advisories,
+# resolved"): the img2pdf normalization cache is bounded and cleaned. Cap at
+# 2 GB, evict least-recently-used on startup -- heavy image import otherwise
+# accumulates silently in temp.
+_CACHE_MAX_BYTES = 2 * 1024 ** 3
+
+
+def _evict_lru_cache_entries(cache_dir: str, max_bytes: int) -> None:
+    """Evict least-recently-used files from ``cache_dir`` until its total
+    size is at or under ``max_bytes``.
+
+    Runs at the start of every ``load_image_dir`` call -- the only place
+    that touches this cache -- so the bound is enforced "on startup" of the
+    next import rather than requiring a separate app-lifecycle hook.
+    Recency is each file's last-access time (falling back to modification
+    time on filesystems that don't track atime), so a file that was merely
+    read still counts as recently used.
+    """
+    if not os.path.isdir(cache_dir):
+        return
+
+    entries: list[tuple[float, int, str]] = []
+    total = 0
+    for entry in os.scandir(cache_dir):
+        if not entry.is_file():
+            continue
+        try:
+            stat = entry.stat()
+        except OSError:
+            continue
+        total += stat.st_size
+        recency = getattr(stat, "st_atime", None) or stat.st_mtime
+        entries.append((recency, stat.st_size, entry.path))
+
+    if total <= max_bytes:
+        return
+
+    entries.sort(key=lambda item: item[0])  # oldest-accessed first
+    for _recency, size, file_path in entries:
+        if total <= max_bytes:
+            break
+        try:
+            os.remove(file_path)
+        except OSError:
+            continue
+        total -= size
+
 
 class EncryptedPdfError(Exception):
     """Raised by ``load_pdf`` when the PDF is password-protected."""
@@ -142,13 +189,22 @@ def _single_image_pdf_bytes(image_path: str, dpi: tuple[float, float] | None) ->
     return img2pdf.convert(raw, **kwargs)
 
 
-def load_image_dir(path: str) -> list[SourcePage]:
+def load_image_dir(
+    path: str, cache_max_bytes: int | None = None
+) -> list[SourcePage]:
     """Import a directory of images as one normalized PDF, metadata-only.
 
     Writes a single normalized PDF (one page per image, in natural sort
     order) into a cache directory under the OS temp dir, and returns
     ``SourcePage``s whose ``SourceRef``s point at that cached PDF.
+
+    The cache directory is bounded (A-7): before writing, least-recently-used
+    entries are evicted until the directory's total size is at or under
+    ``cache_max_bytes`` (default 2 GB, ``_CACHE_MAX_BYTES``). The parameter
+    exists mainly so tests can exercise eviction without writing 2 GB of
+    fixtures; production callers should leave it at the default.
     """
+    max_bytes = _CACHE_MAX_BYTES if cache_max_bytes is None else cache_max_bytes
     image_paths = _list_images(path)
 
     dpis = [_image_dpi(p) for p in image_paths]
@@ -181,6 +237,7 @@ def load_image_dir(path: str) -> list[SourcePage]:
 
         cache_dir = os.path.join(tempfile.gettempdir(), _CACHE_DIR_NAME)
         os.makedirs(cache_dir, exist_ok=True)
+        _evict_lru_cache_entries(cache_dir, max_bytes)
         fd, out_path = tempfile.mkstemp(suffix=".pdf", dir=cache_dir)
         os.close(fd)
         merged.save(out_path)
