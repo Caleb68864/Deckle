@@ -172,7 +172,15 @@ def _place_page(
     slack_w = max(0.0, box_w - scaled_w)
     slack_h = max(0.0, box_h - scaled_h)
 
-    inner_actual = gutter + slack_w / 2.0
+    # `maximize_gutter` (default) gives ALL horizontal slack to the spine, so
+    # content sits as far from the binding as it can and the fore-edge lands
+    # on exactly its requested value -- the gutter becomes a minimum. Off, the
+    # slack is split, preserving the requested inner/outer difference and
+    # centring the content between them.
+    #
+    # Vertical slack is always split: neither head nor tail has a binding to
+    # accommodate, so there is nothing to bias toward.
+    inner_actual = gutter + (slack_w if settings.maximize_gutter else slack_w / 2.0)
     bottom_actual = bottom + slack_h / 2.0
 
     gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)
@@ -187,6 +195,32 @@ def _place_page(
         rotate_deg=rotate_deg,
     )
     return OutputPage(source_ref=slot.ref, placement=placement, is_filler=False)
+
+
+def content_box_rect_pt(
+    settings: LayoutSettings, *, is_recto: bool
+) -> tuple[float, float, float, float]:
+    """The content box as ``(x0, y0, x1, y1)`` in PDF (bottom-left origin) points.
+
+    This is the rectangle the gutter and margins define -- the space content
+    is fitted into. It is **not** the printer's imageable area, which is a
+    property of the hardware; the two coincide only when every margin
+    happens to equal the printer's inset. Drawing both is what makes the
+    relationship legible: content aligns with this box on whichever axis
+    binds, and sits inset from it on the other by the aspect-ratio slack.
+    """
+    paper_w, paper_h = settings.paper
+    gutter = max(0.0, settings.gutter_pt)
+    outer = max(0.0, settings.margin_outer_pt)
+    top = max(0.0, settings.margin_top_pt)
+    bottom = max(0.0, settings.margin_bottom_pt)
+
+    if paper_w - gutter - outer <= 0.0 or paper_h - top - bottom <= 0.0:
+        return (0.0, 0.0, paper_w, paper_h)
+
+    gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)
+    left, right = (gutter, outer) if gutter_on_left else (outer, gutter)
+    return (left, bottom, paper_w - right, paper_h - top)
 
 
 def actual_margins_pt(

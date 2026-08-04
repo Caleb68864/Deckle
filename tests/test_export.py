@@ -117,8 +117,12 @@ def test_export_sheet_cached_invalidates_on_layout_change(tmp_path):
     settings_a = LayoutSettings(
         paper=LETTER, gutter_pt=18.0, binding_edge="left"
     )
+    # A gutter large enough to actually bind the scale. With
+    # maximize_gutter on and a zero fore-edge margin, content sits flush
+    # against the fore-edge, so a *small* gutter change moves nothing --
+    # the gutter is a minimum, and the plan (and its hash) is unchanged.
     settings_b = LayoutSettings(
-        paper=LETTER, gutter_pt=36.0, binding_edge="left"
+        paper=LETTER, gutter_pt=300.0, binding_edge="left"
     )
     plan_a = GutterShiftStrategy().impose(pages, settings_a)
     plan_b = GutterShiftStrategy().impose(pages, settings_b)

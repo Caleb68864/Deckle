@@ -77,7 +77,10 @@ class MainWindow:
         layout.addWidget(self.layout_panel.widget)
 
         self.preview_view = PreviewView(
-            recompute_plan(self.state.project), DEFAULT_PROFILE, central
+            recompute_plan(self.state.project),
+            DEFAULT_PROFILE,
+            central,
+            layout_settings=self.state.project.layout,
         )
         layout.addWidget(self.preview_view.widget)
 
@@ -96,11 +99,16 @@ class MainWindow:
         self.window.setStatusBar(self.status_bar)
 
         self.import_view.imported.connect(self._on_imported)
-        self.layout_panel.layout_changed.connect(self.preview_view.on_layout_changed)
+        self.layout_panel.layout_changed.connect(self._on_layout_changed)
         self.print_button.clicked.connect(self._on_print_clicked)
         self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
 
         self.refresh_printers()
+
+    def _on_layout_changed(self, plan) -> None:
+        # Hand the preview the settings too, so its content-box guide
+        # tracks the gutter/margins rather than going stale.
+        self.preview_view.on_layout_changed(plan, self.state.project.layout)
 
     def _on_imported(self, pages, warnings) -> None:
         self.arrange_view.refresh()

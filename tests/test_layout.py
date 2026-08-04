@@ -145,17 +145,21 @@ def test_opposing_margin_difference_is_preserved():
     assert round(top - bottom, 6) == 27.0
 
 
-def test_inner_outer_difference_is_preserved():
+def test_inner_outer_difference_is_preserved_when_not_maximising():
+    """With maximize_gutter off the horizontal slack is split, so the
+    requested inner/outer difference survives."""
     s = settings(gutter_pt=72.0, margin_outer_pt=18.0,
-                 margin_top_pt=18.0, margin_bottom_pt=18.0)
+                 margin_top_pt=18.0, margin_bottom_pt=18.0,
+                 maximize_gutter=False)
     plan = impose(make_pages(2, size=TALL), s)
     inner, outer, _, _ = margins(plan, 0)
     assert round(inner - outer, 6) == 54.0
 
 
-def test_equal_margins_centre_the_content():
+def test_equal_margins_centre_the_content_when_not_maximising():
     s = settings(gutter_pt=18.0, margin_outer_pt=18.0,
-                 margin_top_pt=18.0, margin_bottom_pt=18.0)
+                 margin_top_pt=18.0, margin_bottom_pt=18.0,
+                 maximize_gutter=False)
     plan = impose(make_pages(2, size=DIGEST), s)
     inner, outer, top, bottom = margins(plan, 0)
     assert round(inner, 6) == round(outer, 6)
@@ -361,3 +365,135 @@ def test_impose_performs_no_file_io(monkeypatch):
     monkeypatch.setattr(builtins, "open", lambda *a, **k: (calls.append(a), real_open(*a, **k))[1])
     impose(make_pages(4, size=TRAVELLER), settings())
     assert calls == []
+
+
+# ------------------------------------------------------- content box geometry
+
+
+def test_content_box_mirrors_between_recto_and_verso():
+    from deckle.core.layout import content_box_rect_pt
+
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0)
+    recto = content_box_rect_pt(s, is_recto=True)
+    verso = content_box_rect_pt(s, is_recto=False)
+    assert recto == (54.0, 18.0, 594.0, 774.0)   # gutter on the left
+    assert verso == (18.0, 18.0, 558.0, 774.0)   # gutter on the right
+    # Same width and height, mirrored horizontally.
+    assert recto[2] - recto[0] == verso[2] - verso[0]
+    assert 612.0 - recto[2] == verso[0]
+
+
+def test_content_box_is_not_the_imageable_area():
+    """The two guides answer different questions and generally differ.
+
+    Conflating them is what makes 'why won't my content align with the black
+    lines?' a reasonable question with a geometric answer.
+    """
+    from deckle.app.views.preview_view import imageable_rect_pt
+    from deckle.core.layout import content_box_rect_pt
+
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0)
+    assert content_box_rect_pt(s, is_recto=True) != imageable_rect_pt(
+        LETTER, (18.0, 18.0, 18.0, 18.0)
+    )
+
+
+def test_content_touches_the_content_box_on_the_binding_axis_only():
+    """Content fills the box on whichever axis binds and is inset on the
+    other by the aspect-ratio slack -- so it cannot touch all four edges
+    unless the source aspect matches the box aspect."""
+    from deckle.core.layout import content_box_rect_pt
+
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0)
+    plan = impose(make_pages(2, size=TRAVELLER), s)
+    x0, y0, x1, y1 = content_box_rect_pt(s, is_recto=True)
+    p = plan.sheets[0].front.placement
+    scaled_w = TRAVELLER[0] * p.scale_x
+    scaled_h = TRAVELLER[1] * p.scale_y
+
+    assert round(scaled_w, 4) == round(x1 - x0, 4)     # fills width
+    assert scaled_h < (y1 - y0) - 1e-6                 # inset vertically
+
+
+def test_degenerate_margins_collapse_the_content_box_to_the_sheet():
+    from deckle.core.layout import content_box_rect_pt
+
+    s = settings(gutter_pt=400.0, margin_outer_pt=400.0,
+                 margin_top_pt=500.0, margin_bottom_pt=500.0)
+    assert content_box_rect_pt(s, is_recto=True) == (0.0, 0.0, 612.0, 792.0)
+
+
+# ------------------------------------------------------------ maximize_gutter
+
+
+def test_maximize_gutter_is_on_by_default():
+    assert LayoutSettings(paper=LETTER, gutter_pt=0.0, binding_edge="left").maximize_gutter
+
+
+def test_maximize_gutter_pushes_all_slack_to_the_spine():
+    """Content sits as far from the binding as it can: the fore-edge margin
+    lands on exactly its requested value and the gutter absorbs the rest."""
+    s = settings(gutter_pt=18.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0,
+                 maximize_gutter=True)
+    plan = impose(make_pages(2, size=DIGEST), s)
+    inner, outer, _, _ = margins(plan, 0)
+    assert round(outer, 6) == 18.0        # fore-edge exact
+    assert inner > 18.0                   # gutter got everything else
+
+
+def test_maximize_gutter_makes_the_gutter_a_minimum_not_an_exact_value():
+    s = settings(gutter_pt=18.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0)
+    plan = impose(make_pages(2, size=DIGEST), s)
+    inner, _, _, _ = margins(plan, 0)
+    assert inner >= 18.0
+
+
+def test_maximize_gutter_off_centres_the_content_horizontally():
+    s_on = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
+                    margin_bottom_pt=18.0, maximize_gutter=True)
+    s_off = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
+                     margin_bottom_pt=18.0, maximize_gutter=False)
+    on = margins(impose(make_pages(2, size=DIGEST), s_on), 0)
+    off = margins(impose(make_pages(2, size=DIGEST), s_off), 0)
+    assert on[0] > off[0]                        # inner larger when maximising
+    assert on[1] < off[1]                        # outer smaller
+    assert round(on[0] + on[1], 6) == round(off[0] + off[1], 6)  # total unchanged
+
+
+def test_maximize_gutter_does_not_affect_the_vertical_axis():
+    """Head and tail always share their slack -- neither has a binding."""
+    for maximize in (True, False):
+        s = settings(gutter_pt=18.0, margin_outer_pt=18.0, margin_top_pt=18.0,
+                     margin_bottom_pt=18.0, maximize_gutter=maximize)
+        _, _, top, bottom = margins(impose(make_pages(2, size=DIGEST), s), 0)
+        assert round(top, 6) == round(bottom, 6)
+
+
+@pytest.mark.parametrize("size", [TRAVELLER, DIGEST, SQUARE, TALL])
+@pytest.mark.parametrize("edge", ["left", "right"])
+def test_maximize_gutter_still_mirrors_recto_and_verso(size, edge):
+    s = settings(binding_edge=edge, gutter_pt=54.0, margin_outer_pt=18.0,
+                 margin_top_pt=18.0, margin_bottom_pt=18.0, maximize_gutter=True)
+    plan = impose(make_pages(4, size=size), s)
+    for pair in (0, 2):
+        assert margins(plan, pair, binding_edge=edge) == pytest.approx(
+            margins(plan, pair + 1, binding_edge=edge)
+        )
+
+
+@pytest.mark.parametrize("size", [TRAVELLER, DIGEST, SQUARE, TALL])
+def test_maximize_gutter_never_violates_the_requested_minimums(size):
+    s = settings(gutter_pt=54.0, margin_outer_pt=18.0,
+                 margin_top_pt=36.0, margin_bottom_pt=9.0, maximize_gutter=True)
+    plan = impose(make_pages(2, size=size), s)
+    for i in range(2):
+        inner, outer, top, bottom = margins(plan, i)
+        assert inner >= 54.0 - 1e-6
+        assert outer >= 18.0 - 1e-6
+        assert top >= 36.0 - 1e-6
+        assert bottom >= 9.0 - 1e-6

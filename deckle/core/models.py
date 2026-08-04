@@ -120,6 +120,23 @@ class LayoutSettings:
     ``clipped_by_imageable_area``.
     """
 
+    maximize_gutter: bool = True
+    """Push spare horizontal space into the gutter instead of splitting it.
+
+    Defaults on, because it is what binding wants: content sits as far from
+    the spine as it can, the fore-edge margin lands on exactly its requested
+    value, and ``gutter_pt`` becomes a **minimum** rather than an exact
+    figure. A generous spine margin is nearly always preferable -- it is the
+    one that disappears into the binding.
+
+    Turn it off to share the slack equally between inner and outer, which
+    preserves their requested difference and visually centres the content
+    between them.
+
+    Vertical slack is always shared, since no edge there has a binding to
+    accommodate.
+    """
+
     margins_linked: bool = True
     """Whether the UI edits the three margins as one value or individually.
 

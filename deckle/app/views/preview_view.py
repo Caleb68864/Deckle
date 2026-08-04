@@ -32,6 +32,7 @@ import threading
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
+from deckle.core.layout import content_box_rect_pt
 from deckle.core.models import LayoutWarning, OutputPage, Sheet, SheetPlan
 from deckle.core.profiles import PrinterProfile
 from deckle.core.render import RenderedPage, render_sheet
@@ -347,7 +348,16 @@ class PreviewView:
     non-modal label directly on the view, never a dialog.
     """
 
-    def __init__(self, plan: SheetPlan, profile: PrinterProfile, parent=None) -> None:
+    def __init__(
+        self,
+        plan: SheetPlan,
+        profile: PrinterProfile,
+        parent=None,
+        layout_settings=None,
+    ) -> None:
+        # Needed to draw the content-box guide alongside the imageable
+        # area. Optional so the view stays constructible from a bare plan.
+        self.layout_settings = layout_settings
         QObject, QRectF, QThread, Signal = _qt_core()
         QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget = _qt_widgets()
 
@@ -450,11 +460,18 @@ class PreviewView:
         self.sheet_index = sheet_index
         self.refresh()
 
-    def on_layout_changed(self, plan: SheetPlan) -> None:
+    def set_layout_settings(self, settings) -> None:
+        """Update the settings behind the content-box guide."""
+        self.layout_settings = settings
+        self.refresh()
+
+    def on_layout_changed(self, plan: SheetPlan, settings=None) -> None:
         """Connected to ``LayoutPanel.layout_changed``: swap in the fresh
         whole-document plan but re-render only the sheet on screen.
         """
         self.plan = plan
+        if settings is not None:
+            self.layout_settings = settings
         self.sheet_spinbox.setMaximum(max(0, len(plan.sheets) - 1))
         self.refresh()
 
@@ -542,24 +559,57 @@ class PreviewView:
         image = QImage(rendered.rgba, rendered.width, rendered.height, QImage.Format.Format_RGBA8888)
         pixmap = QPixmap.fromImage(image)
 
-        # Draw the imageable-area guide directly on top of the rasterized
-        # sheet -- a visible rectangle, not a separately-computed layout.
+        # Two guides, drawn distinctly, because they answer different
+        # questions and are routinely confused for one another:
+        #
+        #   solid red   -- the printer's IMAGEABLE AREA. A hardware limit;
+        #                  nothing outside it can be marked at all.
+        #   dashed blue -- the CONTENT BOX defined by your gutter and
+        #                  margins. Content fills this on whichever axis
+        #                  binds and sits inset on the other by the
+        #                  aspect-ratio slack, so it will NOT touch all four
+        #                  edges unless the source aspect happens to match.
+        #
+        # Showing only the imageable area invites the reasonable-but-wrong
+        # conclusion that content should line up with it.
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor
+
         dpi_scale = rendered.height / self.plan.paper_pt[1] if self.plan.paper_pt[1] else 0.0
-        x0, y0, x1, y1 = imageable_rect_pt(self.plan.paper_pt, self.profile.imageable_area_pt)
         paper_h = self.plan.paper_pt[1]
-        painter = QPainter(pixmap)
-        try:
-            pen = QPen()
-            pen.setWidth(2)
-            painter.setPen(pen)
+
+        def to_image_rect(rect_pt):
+            x0, y0, x1, y1 = rect_pt
             # Flip y: PDF origin bottom-left, image origin top-left.
-            guide = QRectF(
+            return QRectF(
                 x0 * dpi_scale,
                 (paper_h - y1) * dpi_scale,
                 (x1 - x0) * dpi_scale,
                 (y1 - y0) * dpi_scale,
             )
-            painter.drawRect(guide)
+
+        painter = QPainter(pixmap)
+        try:
+            imageable = QPen(QColor(220, 40, 40))
+            imageable.setWidth(2)
+            painter.setPen(imageable)
+            painter.drawRect(
+                to_image_rect(
+                    imageable_rect_pt(self.plan.paper_pt, self.profile.imageable_area_pt)
+                )
+            )
+
+            if self.layout_settings is not None:
+                box = QPen(QColor(40, 110, 230))
+                box.setWidth(2)
+                box.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(box)
+                is_recto = frame.side == "front"
+                painter.drawRect(
+                    to_image_rect(
+                        content_box_rect_pt(self.layout_settings, is_recto=is_recto)
+                    )
+                )
         finally:
             painter.end()
 
