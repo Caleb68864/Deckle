@@ -102,11 +102,11 @@ python -m pytest tests/test_models.py -q
 
 ### Step 8. Write repo files
 
-- `LICENSE` — MIT, copyright "Caleb Bennett", year 2026.
+- `LICENSE` — **already exists** at the repo root (MIT, copyright "Caleb Bennett", from GitHub's initial commit). Verify only; do not create or overwrite.
 - `README.md` — purpose, the four-level page model, MIT license, "not yet released" status.
 - `CHANGELOG.md` — Keep a Changelog format with an `## [Unreleased]` section.
 - `.gitignore` — Python (`__pycache__/`, `*.pyc`, `.venv/`), PyInstaller (`build/`, `dist/`,
-  `*.spec`), Qt (`*.qmlc`), and `tests/fixtures/*.pdf` (fixtures are large and external).
+  `*.spec`), Qt (`*.qmlc`), `tests/fixtures/*.pdf` (fixtures are large and external), and `*.stackdump` (Git Bash leaves these in the working tree).
 - `pyproject.toml` — dependencies `pikepdf`, `pypdfium2`, `img2pdf`, `natsort`, `Pillow`,
   `PySide6`; `license = "MIT"`; pytest config. **Do not add `pypdf`.**
 

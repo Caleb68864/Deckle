@@ -147,7 +147,6 @@ depends_on: []
   - `.gitignore`
   - `README.md`
   - `CHANGELOG.md`
-  - `LICENSE`
   - `pyproject.toml`
   - `deckle/__init__.py`
   - `deckle/core/__init__.py`
@@ -156,9 +155,11 @@ depends_on: []
   - `tests/test_models.py`
   - `tests/test_core_purity.py`
 - **Decisions:** All model types are frozen dataclasses with full type annotations.
-  `LICENSE` is MIT with copyright "Caleb Bennett". `CHANGELOG.md` follows Keep a Changelog
-  with an `## [Unreleased]` section. `.gitignore` covers Python, PyInstaller (`build/`,
-  `dist/`, `*.spec`), Qt (`*.qmlc`), and `tests/fixtures/*.pdf`.
+  **`LICENSE` already exists** at the repo root — MIT, copyright "Caleb Bennett", committed
+  with GitHub's initial commit. Do not create or overwrite it; verify only.
+  `CHANGELOG.md` follows Keep a Changelog with an `## [Unreleased]` section. `.gitignore`
+  covers Python, PyInstaller (`build/`, `dist/`, `*.spec`), Qt (`*.qmlc`),
+  `tests/fixtures/*.pdf`, and `*.stackdump` (Git Bash leaves these in the working tree).
 - **Acceptance criteria:**
   - `[STRUCTURAL]` `deckle/core/models.py` defines `Placement(scale_x: float, scale_y: float, tx: float, ty: float, rotate_deg: int)` as a frozen dataclass, in PDF points, origin bottom-left.
   - `[STRUCTURAL]` `deckle/core/models.py` defines `SourceRef(path: str, page_index: int, sha256: str, width_pt: float, height_pt: float)`, `SourcePage(ref: SourceRef, rotate_deg: int, skipped: bool)`, `OutputPage(source_ref: SourceRef | None, placement: Placement, is_filler: bool)`, `Sheet(index: int, front: OutputPage | None, back: OutputPage | None)`, and `SheetPlan(sheets: list[Sheet], paper_pt: tuple[float, float], warnings: list[LayoutWarning])`.
