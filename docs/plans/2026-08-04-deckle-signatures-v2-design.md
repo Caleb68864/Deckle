@@ -2,7 +2,8 @@
 date: 2026-08-04
 topic: "Deckle v2 — signature imposition: splitting, folio saddle-stitch fold order, 2-up placement, and bindery marks"
 author: Caleb Bennett
-status: draft
+status: evaluated
+evaluated_date: 2026-08-04
 supersedes: null
 builds_on: "docs/plans/2026-08-04-deckle-bookbinding-print-prep-design.md"
 repo: https://github.com/Caleb68864/Deckle
@@ -520,13 +521,79 @@ knob that silently did nothing. `paper_thickness_pt` **must never enter placemen
 geometry** in v2; a `[MECHANICAL]` grep can enforce that it appears only in the warning
 path.
 
+## Evaluation Findings (2026-08-04)
+
+Three load-bearing claims were verified against the code rather than accepted:
+
+- **`plan_passes` reads only `sheet.index`. CONFIRMED.** Its body is
+  `indices = [s.index for s in plan.sheets]` and nothing else touches a sheet. The design's
+  central claim — that signature imposition is invisible to the manual-duplex brain — holds.
+- **`saddle_order(8) == [7, 0, 1, 6, 5, 2, 3, 4]`. CONFIRMED** against
+  `[[pikepdf - Imposition and Signature Recipe]]` line 63.
+- **`pikepdf.canvas.ContentStreamBuilder` exists** in the installed pikepdf 10.11.0.
+
+Two Critical gaps were found and are resolved below.
+
+### C-1 — Success Criterion 2's zero-diff claim has an unstated precondition
+
+`deckle/core/print_session.py::_hash_plan` **does** read sheet sides:
+
+```python
+{"index": s.index, "front": s.front is not None, "back": s.back is not None}
+```
+
+Zero diff therefore holds **only if** `Sheet.front`/`Sheet.back` remain `Side | None` and an
+absent side stays `None`. Representing an absent side as `Side(pages=())` would leave the
+code compiling, the test passing, and the hash silently wrong.
+
+**Committed contract:** `Sheet.front: Side | None`, `Sheet.back: Side | None`. An absent
+side is `None`. `Side(pages=())` is invalid and a `[MECHANICAL]` check must reject it.
+
+### C-2 — The `Side` change touches five modules, not one
+
+The design names `export.py`. The actual blast radius, from the current tree:
+
+| Module | Reads | What the change requires |
+|---|---|---|
+| `deckle/core/export.py` | 5 sites | Iterate `side.pages` instead of one `OutputPage`; draw `side.marks` |
+| `deckle/core/render.py` | 2 sites | Pass through to `export`; no logic change, but the call shape moves |
+| `deckle/core/print_session.py` | 2 sites | **None**, given C-1's contract. Asserted by test |
+| `deckle/app/backend.py` | 2 sites | Paint every page on a side, not one |
+| `deckle/app/views/preview_view.py` | 1 site | `_output_page_bbox` becomes per-page-in-side for clipping warnings |
+
+A spec derived from the unamended design would have missed `render.py`, `backend.py` and
+`preview_view.py` — and the preview one is a correctness gap, not a mechanical one: clipping
+warnings computed per *side* instead of per *page* would under-report on a 2-up sheet.
+
+### I-1 — `_hash_plan` is content-blind, and folio amplifies it
+
+The hash covers sheet index and side *presence* only — not placements, not which source
+pages landed where. Two different page orderings over the same sheet count therefore hash
+identically. A resumed `PrintSession` could bind to a document whose content changed. This
+is latent in the MVP; folio doubles the content behind each hash.
+
+**Resolution for v2:** extend `_hash_plan` to include each side's `source_ref.page_index`
+tuple. This is a deliberate, scoped exception to the zero-diff criterion for
+`print_session.py` — Success Criterion 2 is amended accordingly below.
+
+### Escalations resolved (operator AFK; recorded for review)
+
+| Escalation | Decision | Reasoning |
+|---|---|---|
+| Vendor HornPenguin? | **No — write the math** | Accepts the design's recommendation. `pdf2image` needs a Poppler binary, which violates Deckle's no-external-runtime-binary constraint outright — this is not a preference but a hard-constraint failure. Reverses the MVP's "Approved reuse" row and closes MVP Open Question 6 |
+| `Sheet` contract change | **Approved** | `SheetPlan` is never persisted (`project_io` writes pages/layout/printer only), so there is no format migration. Bounded by the C-1 contract above |
+| `PrinterProfile` per-orientation imageable area | **Deferred, not blocking** | Only hardware answers it. v2 emits a `landscape_imageable_unverified` info warning when a portrait-measured profile is used with landscape paper. Measure during the folded-dummy run |
+| Folded-dummy verification | **`dispatch: manual`** | Cannot be delegated; it is the only check on `saddle_order`, and the vault note states plainly that the function is hand-written and unverified against paper |
+
 ## Success Criteria
 
 1. `SaddleStitchStrategy` implements `LayoutStrategy` with the **unmodified** signature
    `impose(self, pages: Sequence[SourcePage], settings: LayoutSettings) -> SheetPlan`, and
    `deckle/core/layout.py` still passes the no-I/O `[MECHANICAL]` check.
-2. `deckle/core/printing.py`, `deckle/core/profiles.py` and `deckle/core/print_session.py`
-   have **zero diff**. Asserted by a test, not by inspection.
+2. `deckle/core/printing.py` and `deckle/core/profiles.py` have **zero diff**, asserted by
+   a test rather than inspection. `deckle/core/print_session.py` changes in exactly one
+   place — `_hash_plan` gains each side's `source_ref.page_index` tuple (evaluation finding
+   I-1); `PrintSession`'s public surface and behaviour are unchanged, also asserted.
 3. A 266-page document at `sheets_per_signature=4` produces 17 signatures, 67 sheets, and
    exactly 2 blanks, all in the final signature.
 4. `fold_reading_order(plan)` returns the source pages in reading order for every
@@ -767,6 +834,149 @@ Use the numbered-pages approach Bookbinder JS ships for exactly this
   explicitly a human-approval item, and this can only be answered against hardware.
 - **The physical folded dummy cannot be delegated to an agent.** Mark the corresponding
   sub-spec `dispatch: manual`, as SS-13 already is.
+
+## Commander's Intent
+
+**Desired End State**
+
+`SaddleStitchStrategy` sits beside `GutterShiftStrategy` behind the unchanged
+`LayoutStrategy` Protocol. A 266-page book at 4 sheets per signature imposes to 17
+signatures / 67 sheets / 2 blanks, exports with two pure-translation placements per PDF
+page, carries sewing-station and signature-order marks on the fold, and prints per-signature
+through the existing `sheets=` subset path with **no new branch in `printing.py`**. All 234
+existing tests still pass. The gate is a physical folded dummy that reads front to back in
+correct order.
+
+**Purpose**
+
+The MVP produces a 3-hole-punch layout. The user hand-sews on a Singer 111w101 and wants a
+real book. Folio at 4 sheets per signature also halves the paper — 67 sheets against 133.
+**When a judgment call is not covered here, favour whatever makes the folded, sewn result
+correct**; physical correctness outranks code elegance, feature breadth and UI polish, in
+that order.
+
+**Constraints**
+
+- **MUST NOT** change `LayoutStrategy.impose`'s signature.
+- **MUST NOT** introduce AGPL. `pdfimpose` is a dev-time oracle in a throwaway venv and
+  must be denylisted in the license audit so it can never become a dependency.
+- **MUST NOT** add an external runtime binary. This is what disqualifies vendoring
+  HornPenguin (`pdf2image` → Poppler).
+- **MUST NOT** import Qt into `deckle.core`, or perform I/O in `layout.py`.
+- **MUST NOT** let `paper_thickness_pt` reach placement geometry — warning path only,
+  enforced by grep.
+- **MUST NOT** recompute or adjust a `Placement` outside `Imposer`.
+- **MUST** keep signatures on contiguous runs of sheet indices, in binding order.
+- **MUST** keep one document-wide scale (`document_scale`), generalised to a cell.
+- **MUST** represent an absent side as `None`, never `Side(pages=())`.
+- **MUST** run exactly one padding pass — the predecessor script's defect 2.
+
+**Freedoms** — the implementing agent MAY choose module layout, naming, test organisation,
+the internal representation of `Mark`, the sewing-station spacing algorithm's internals, and
+whether `signatures` is a tuple or list on `SheetPlan`.
+
+### Committed interface/contract defaults
+
+- **`Side`** → **Default:** `@dataclass(frozen=True) class Side: pages: tuple[OutputPage, ...]; marks: tuple[Mark, ...] = ()`.
+- **`Sheet`** → **Default:** `front: Side | None`, `back: Side | None`. Absent side is
+  `None`. _(C-1: `Side(pages=())` is invalid and must be rejected.)_
+- **`Signature`** → **Default:**
+  `@dataclass(frozen=True) class Signature: index: int; sheet_indices: tuple[int, ...]; blank_count: int`.
+- **`SheetPlan`** → **Default:** gains `signatures: tuple[Signature, ...] = ()`. Empty for
+  `GutterShiftStrategy`, so the MVP strategy needs no change beyond the `Side` wrapper.
+- **`Mark`** → **Default:**
+  `@dataclass(frozen=True) class Mark: kind: Literal["sewing_station","signature_order","fold_line"]; x0: float; y0: float; x1: float; y1: float` — sheet points, PDF origin bottom-left, a line segment in every case.
+- **`split_signatures`** → **Default:**
+  `split_signatures(sheet_count: int, sheets_per_signature: int) -> list[tuple[int, ...]]`, contiguous, remainder in the final signature.
+- **`saddle_order`** → **Default:** `saddle_order(n: int) -> list[int]` where `n` is a
+  multiple of 4. Pinned: `saddle_order(8) == [7, 0, 1, 6, 5, 2, 3, 4]`.
+- **`fold_reading_order`** → **Default:**
+  `fold_reading_order(plan: SheetPlan) -> list[int]` returning source page indices in the
+  order a folded, nested, gathered stack reads. **Agent-free** on internals, but it MUST be
+  derived from the physical fold description, never by reusing `saddle_order` — a shared
+  implementation would let both encode the same error and agree.
+- **Cell** → **Default:** `Cell = tuple[float, float, float, float]` (`x0, y0, x1, y1` in
+  sheet points). `GutterShiftStrategy` passes the full sheet.
+- **New `LayoutSettings` fields** → **Default:** `fold_scheme: Literal["none","folio"] = "none"`,
+  `sheets_per_signature: int = 4`, `paper_thickness_pt: float = 0.0`,
+  `sewing_stations: int = 3`, `blank_mode: Literal["end","balanced"] = "end"`.
+
+## Execution Guidance
+
+**Observe**
+- `python -m pytest -q` — 234 passing before any change; that number must not fall.
+- The core-purity test (no Qt in `deckle.core`) and the no-I/O check on `layout.py`.
+- The license audit, extended with `pdfimpose`/`cpdf` denylist entries.
+- The Pinebox golden fixture and every existing `test_layout.py` test — the `Side` refactor
+  must not move MVP output.
+- `ruff check deckle tests` — currently clean.
+
+**Orient**
+- `docs/decisions.md` is the highest-value context in the repo. Read it. Several entries are
+  directly about this code path.
+- Assert **measured margins** via `actual_margins_pt`, never raw `tx`/`ty`. A coordinate
+  assertion on one edge of one page is how a verso-only bug survived the original suite.
+- The preview rasterises the exported PDF; marks are visible in preview by construction, so
+  there is no separate preview drawing path to keep in sync.
+- Filler pages carry a neutral `scale_x = 1.0` and must be excluded from any "one document
+  scale" assertion.
+
+**Escalate When**
+- Any change is needed to `printing.py` or `profiles.py` — the zero-diff criterion is the
+  design's central claim and a diff there means the seam did not hold.
+- `fold_reading_order` and the imposition disagree and the discrepancy is not obviously a
+  bug in one of them. That is the signature of a shared wrong assumption.
+- The `.deckle` format would need to change (it should not; `SheetPlan` is not persisted).
+- Any dependency addition.
+
+**Shortcuts (apply without deliberation)**
+- Composition: `as_form_xobject` + `calc_form_xobject_placement`. Never `add_overlay`.
+- Never reorder a `pikepdf.Pdf.pages` list by tuple-swap or slice assignment.
+- `page.Contents` may be an Array — `contents_coalesce()` before reading bytes.
+- Wrap `page.mediabox` in `Rectangle` before using `.width`.
+- Marks drawing: `pikepdf.canvas.ContentStreamBuilder` (confirmed present in 10.11.0).
+- Tests parametrise over aspect ratios and both binding edges; follow `test_layout.py`.
+
+## Decision Authority
+
+**Agent decides autonomously** — module and file layout, naming, test organisation, `Mark`
+internals, sewing-station spacing arithmetic, warning message wording, whether `signatures`
+is a tuple or list.
+
+**Agent recommends, human approves** — any new `LayoutSettings` field beyond those committed
+above; any change to `PrintSession`'s public surface; any dependency; changing the `.deckle`
+format.
+
+**Human decides** — vendoring third-party source (resolved: no); `PrinterProfile` shape
+changes (deferred); scope changes to the Exclusions list; the folded-dummy verdict.
+
+## War-Game Results
+
+**Most likely failure:** `saddle_order` is subtly wrong in a way `fold_reading_order`
+encodes identically, so the round-trip test passes and the printed book is out of order.
+*Mitigation:* `fold_reading_order` must be written from the physical fold description
+without reference to `saddle_order`, plus the pinned `saddle_order(8)` value, plus the
+mandatory physical dummy. The vault note says this outright: *"saddle_order is my own
+function, not pikepdf's… validate the fold order against a physical folded dummy."*
+
+**Scale stress:** 266 pages → 67 sheets → 134 sides → 268 placements, versus the MVP's 266.
+Export is already batched (`_BATCH_SHEETS`), and the preview renders one sheet. Marks add
+~10 line segments per sheet. No new scaling concern.
+
+**Dependency risk:** none added. The only new API surface is `pikepdf.canvas`, confirmed
+present. `pdfimpose` as an oracle is the live risk — hence the denylist in the audit.
+
+**Maintenance (6 months):** strong. The `Side`/`Signature` nouns extend the existing
+four-level vocabulary rather than competing with it, and every rejected approach is recorded
+with its reason.
+
+## Evaluation Metadata
+
+- Evaluated: 2026-08-04
+- Cynefin: **Complicated**, with `saddle_order`'s physical correctness as a **Complex**
+  pocket that only paper resolves
+- Critical gaps: 2 (2 resolved) · Important: 1 (1 resolved) · Escalations: 4 (4 decided)
+- Verified claims: 3 of 3 confirmed against the code
 
 ## Next Steps
 
