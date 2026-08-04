@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deckle"
+version = "0.1.0"
+description = "Desktop app for imposing and printing booklets from PDF and image sources."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Caleb Bennett" },
+]
+dependencies = [
+    "pikepdf",
+    "pypdfium2",
+    "img2pdf",
+    "natsort",
+    "Pillow",
+    "PySide6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+include = ["deckle*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
