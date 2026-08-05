@@ -40,3 +40,6 @@ Thumbs.db
 graphify-out/
 .forge-factory/
 .converge-scratch/
+
+# Factory/audit tool exhaust -- git history already holds these
+*.audit-backup-*

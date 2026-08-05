@@ -150,3 +150,10 @@
 - Surfaces: `fold_scheme="none"` -- the default, and every existing user's path. Every export, preview render and print went through the broken branch. The saddle path worked because it was the one the feature author was looking at.
 - Watch: SS-02 called its own change "atomic across layout.py, export.py and render.py" and predicted this exact tree state, then was marked complete having done half of it. When a sub-spec argues for exceeding its file budget because a change cannot be split, verify every named file actually moved -- the argument is evidence the author knew the risk, not that they discharged it. Tests passing is not evidence here: they asserted the un-migrated shape, so the green suite was measuring the bug.
 - Commit: (this commit)
+
+## 2026-08-04 - Proved refactor neutrality against main when the golden fixture was absent
+- Symptom: SS-02 names the Pinebox golden as its own proof of zero behaviour change, but that fixture is not in the repo -- it is the suite's 3 skips. 318 passing tests are not the byte comparison the sub-spec asked for.
+- Fix: Built the comparison the sub-spec wanted out of what was available. A `git worktree` of main, the same PDF exported through both trees, then compared every page's MediaBox and every `cm` matrix from the content streams. Identical across 4 settings on the sample fixture and 2 on the 300-page mixed-size Traveller book.
+- Surfaces: Any refactor claiming behavioural neutrality when its nominated golden is missing. Also the zero-diff seam claim, which `git diff --stat main -- deckle/core/printing.py deckle/core/profiles.py` settles directly and more convincingly than the spec's grep guard.
+- Watch: Do not byte-compare PDFs -- creation timestamps and document IDs differ on every run, so identical documents have different hashes. Compare MediaBox plus the ordered `cm` operators. And prefer a mixed-page-size source: uniform pages cannot reveal a per-page-vs-per-document scale regression, which is precisely the defect `document_scale` exists to prevent.
+- Commit: (this commit)
