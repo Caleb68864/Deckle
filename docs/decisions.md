@@ -178,3 +178,10 @@
 - Surfaces: Any spec whose acceptance criteria are shell commands. The criteria rot independently of the code, and a green suite says nothing about whether they still run.
 - Watch: Re-measure after fixing, do not trust the fix. Two more gaps surfaced only on the second pass, and one of them (the folio guide branch) was a real hole hidden because its non-folio sibling existed and looked like coverage. Remap a criterion to an existing test ONLY after confirming that test actually asserts the criterion's property -- bending the criterion to fit whatever is green is the exact failure the audit existed to correct.
 - Commit: (this commit)
+
+## 2026-08-04 - Resuming a print run now refuses when the document changed
+- Symptom: `PrintSession` stored `plan_hash` from the start and NEVER compared it. `load()` took a fresh plan, read the state file, and wired up `plan_passes(plan, ...)` at the old sheet cursor. Re-impose a book, resume the old session, and Deckle prints the new layout's sheets at the old position.
+- Fix: `load()` now compares `_hash_plan(plan)` against the stored hash and raises `StaleSessionError` on mismatch; `PrintDialog._offer_resume` catches it and shows the reason instead of propagating. Also bumped `STATE_VERSION` to 2, since this session's `_hash_plan` payload change made every v1 hash incomparable.
+- Surfaces: Manual duplex specifically. By the time a user resumes they have already physically reloaded the paper stack, so a mismatch prints backs onto the wrong fronts and the first symptom is a ruined pile of expensive paper.
+- Watch: Check version BEFORE content. A v1 state file's hash cannot be compared with a v2 one, so testing the hash first would report "the document changed" -- sending the user hunting for an edit they never made -- when what actually changed was Deckle. The two failures need distinct `reason` codes for the same purpose. Chose refusal over warn-and-continue because the costs are asymmetric: refusing costs a reprint the user was about to do anyway, continuing can cost the whole book.
+- Commit: (this commit)

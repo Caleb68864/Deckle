@@ -305,3 +305,55 @@ def test_printer_offline_at_submission_shows_blocking_modal_naming_printer():
     # remains resumable afterward.
     assert dialog._session.finished is False
     assert dialog._session.last_error is not None
+
+
+# -- refusing a stale session (hardening pass 7) -------------------------
+
+
+def test_resume_is_refused_and_explained_when_the_plan_has_changed():
+    """The dialog must surface the refusal, not propagate the exception.
+
+    ``PrintSession.load`` now raises ``StaleSessionError`` when the document
+    has been re-imposed since the run started. Letting that escape would
+    take down the dialog at the moment the user is standing at the printer
+    with a half-printed stack.
+    """
+    from deckle.core.print_session import StaleSessionError
+
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=0,
+        sheet_cursor=3,
+        state_path="/tmp/abc123.json",
+    )
+    shown: list[tuple[str, str]] = []
+
+    class RefusingSession(_StubSession):
+        @classmethod
+        def load(cls, plan, profile, backend, session_id):
+            raise StaleSessionError(
+                session_id=session_id,
+                reason="plan",
+                detail=(
+                    "the document's layout has changed since this print run "
+                    "started, so the remaining sheets no longer line up with "
+                    "the pages already printed; start a new print run"
+                ),
+            )
+
+    dialog = _make_dialog(
+        session_cls=RefusingSession,
+        resumable_lister=lambda: [summary],
+        confirm_resume=lambda resumable: resumable[0],
+        ask_resume_count=lambda chosen: 7,
+        show_offline_error=lambda title, detail: shown.append((title, detail)),
+    )
+
+    assert dialog._session is None, "a refused session must not be adopted"
+    assert len(shown) == 1
+    title, detail = shown[0]
+    assert "resume" in title.lower()
+    assert "layout has changed" in detail
+    assert "start a new print run" in detail

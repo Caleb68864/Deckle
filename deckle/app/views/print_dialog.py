@@ -20,7 +20,7 @@ from typing import Callable, Sequence
 
 from deckle.core.diagnostics import log_exception
 from deckle.core.models import SheetPlan
-from deckle.core.print_session import PrintSession, SessionSummary
+from deckle.core.print_session import PrintSession, SessionSummary, StaleSessionError
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 
 
@@ -238,7 +238,21 @@ class PrintDialog:
         count = self._ask_resume_count(chosen)
         profile = self._resolve_profile(chosen.printer_name)
         backend = self._backend_cls(profile)
-        session = self._session_cls.load(self.plan, profile, backend, chosen.session_id)
+        try:
+            session = self._session_cls.load(
+                self.plan, profile, backend, chosen.session_id
+            )
+        except StaleSessionError as exc:
+            # Refusing is the safe direction. The user has already reloaded
+            # the paper stack by this point, so resuming onto a re-imposed
+            # document would print backs against fronts that no longer
+            # match -- and they would not find out until the stack was
+            # ruined. Say why, and leave them on a fresh run.
+            log_exception(
+                "resume_refused", exc, session_id=exc.session_id, reason=exc.reason
+            )
+            self._show_offline_error("Cannot resume this print run", exc.detail)
+            return
         self._session = session
         session.resume(count)
         self._drive(session)

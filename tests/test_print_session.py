@@ -9,7 +9,7 @@ from typing import Sequence
 import pytest
 
 from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side, SourceRef
-from deckle.core.print_session import PrintSession, _hash_plan
+from deckle.core.print_session import PrintSession, StaleSessionError, _hash_plan
 from deckle.core.printing import PrintResult
 from deckle.core.profiles import PrinterProfile
 
@@ -438,3 +438,106 @@ def test_print_session_public_surface_is_unchanged():
     assert session.last_error is None or isinstance(session.last_error, str)
     assert isinstance(session.state, dict)
     assert session.state_path is not None
+
+
+# -- stale-session refusal (hardening pass 7) ----------------------------
+#
+# `plan_hash` was stored from the start and never compared, so a session
+# could be resumed against a document that had been re-imposed underneath
+# it. On a printer with no duplexer the user has already physically
+# reloaded the stack by then, so the first sign of trouble is a ruined
+# pile of paper. These tests pin the refusal.
+
+
+def _reimposed_plan(n_sheets: int) -> SheetPlan:
+    """Same sheet count and side presence as ``_make_plan``, different pages.
+
+    This is the dangerous case precisely because it is indistinguishable
+    from the original by every coarse measure -- only the page *content*
+    behind each side differs.
+    """
+    sheets = [
+        Sheet(
+            index=i,
+            front=Side(pages=(_source_output_page(i * 2),)),
+            back=Side(pages=(_source_output_page(i * 2 + 1),)),
+        )
+        for i in range(n_sheets)
+    ]
+    return SheetPlan(sheets=sheets, paper_pt=(612.0, 792.0), warnings=[])
+
+
+def _started_session_id(plan: SheetPlan) -> str:
+    session = PrintSession(plan, _profile(), StubBackend(), printer_name="P")
+    session.start()
+    return session._state.session_id
+
+
+def test_load_resumes_normally_when_the_plan_is_unchanged():
+    """The guard must not break the case it exists to protect."""
+    plan = _make_plan(3)
+    session_id = _started_session_id(plan)
+
+    resumed = PrintSession.load(plan, _profile(), StubBackend(), session_id)
+
+    assert resumed._state.session_id == session_id
+
+
+def test_load_refuses_a_session_whose_plan_has_changed():
+    plan = _make_plan(3)
+    session_id = _started_session_id(plan)
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(_reimposed_plan(3), _profile(), StubBackend(), session_id)
+
+    error = exc_info.value
+    assert error.reason == "plan"
+    assert error.session_id == session_id
+    # The message is for the person standing at the printer.
+    assert "layout has changed" in error.detail
+    assert "start a new print run" in error.detail
+
+
+def test_load_refuses_a_state_file_from_an_incompatible_version():
+    import json
+
+    from deckle.core.print_session import STATE_VERSION, _state_dir
+
+    plan = _make_plan(2)
+    session_id = _started_session_id(plan)
+    path = _state_dir() / f"{session_id}.json"
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["version"] = STATE_VERSION - 1
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(plan, _profile(), StubBackend(), session_id)
+
+    assert exc_info.value.reason == "version"
+    # A version mismatch must NOT be reported as "the document changed" --
+    # what changed was Deckle, and telling the user otherwise sends them
+    # hunting for an edit they never made.
+    assert "layout has changed" not in exc_info.value.detail
+    assert "version of Deckle" in exc_info.value.detail
+
+
+def test_the_version_check_runs_before_the_plan_check():
+    """A v1 file's hash is incomparable, so version must be diagnosed first."""
+    import json
+
+    from deckle.core.print_session import STATE_VERSION, _state_dir
+
+    plan = _make_plan(2)
+    session_id = _started_session_id(plan)
+    path = _state_dir() / f"{session_id}.json"
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["version"] = STATE_VERSION - 1
+    data["plan_hash"] = "totally-different"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(plan, _profile(), StubBackend(), session_id)
+
+    assert exc_info.value.reason == "version"

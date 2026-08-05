@@ -33,7 +33,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
 
-from deckle.core.diagnostics import log_exception
+from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_passes
 from deckle.core.profiles import PrinterProfile
@@ -57,10 +57,36 @@ except ImportError:  # pragma: no cover - SS-07 (persistence/log) not yet landed
 
 
 # Bumped whenever the on-disk state shape changes incompatibly.
-STATE_VERSION = 1
+#
+# 2: ``_hash_plan``'s payload gained the full ordered page sequence per side
+# (``front_pages``/``back_pages`` replacing ``front_page``/``back_page``), so
+# every v1 hash is incomparable with a v2 one. Without the bump, a v1 session
+# would be reported to the user as "the document changed" -- which is a lie,
+# and a confusing one, when what actually changed was Deckle.
+STATE_VERSION = 2
 
 # Number of sheets submitted per chunk, mirroring SS-08's default.
 DEFAULT_CHUNK_SIZE = 10
+
+
+class StaleSessionError(Exception):
+    """A saved session cannot safely be resumed against the current plan.
+
+    Carries a machine-readable ``reason`` so a caller can distinguish the
+    two cases without parsing prose, and a ``detail`` written for the person
+    at the printer rather than for a log.
+
+    :ivar session_id: the session that was refused.
+    :ivar reason: ``"plan"`` -- the document's layout changed; or
+        ``"version"`` -- the state file came from an incompatible build.
+    :ivar detail: a user-facing explanation ending in what to do next.
+    """
+
+    def __init__(self, session_id: str, reason: str, detail: str) -> None:
+        self.session_id = session_id
+        self.reason = reason
+        self.detail = detail
+        super().__init__(detail)
 
 
 def _state_dir() -> Path:
@@ -263,10 +289,57 @@ class PrintSession:
         backend: PrintBackend,
         session_id: str,
     ) -> "PrintSession":
-        """Reconstruct a session from its on-disk state file."""
+        """Reconstruct a session from its on-disk state file.
+
+        :raises StaleSessionError: if ``plan`` no longer matches the plan the
+            session was started against, or the state file was written by an
+            incompatible version of Deckle.
+
+        The plan check is the whole reason ``plan_hash`` is stored. Resuming
+        onto a re-imposed document means printing backs against fronts that
+        were laid out differently -- and on a printer with no duplexer,
+        where the user has already physically reloaded the stack, the first
+        sign of trouble is a ruined pile of paper. Refusing costs a reprint
+        the user was about to do anyway; continuing can cost the whole book.
+        """
         path = _state_dir() / f"{session_id}.json"
         data = json.loads(path.read_text(encoding="utf-8"))
         state = _SessionState.from_json(data)
+
+        if state.version != STATE_VERSION:
+            log_event(
+                "session_version_mismatch",
+                session_id=session_id,
+                found=state.version,
+                expected=STATE_VERSION,
+            )
+            raise StaleSessionError(
+                session_id=session_id,
+                reason="version",
+                detail=(
+                    f"this session was saved by a different version of Deckle "
+                    f"(state format {state.version}, this build expects "
+                    f"{STATE_VERSION}); start a new print run"
+                ),
+            )
+
+        current_hash = _hash_plan(plan)
+        if current_hash != state.plan_hash:
+            log_event(
+                "session_plan_mismatch",
+                session_id=session_id,
+                stored=state.plan_hash,
+                current=current_hash,
+            )
+            raise StaleSessionError(
+                session_id=session_id,
+                reason="plan",
+                detail=(
+                    "the document's layout has changed since this print run "
+                    "started, so the remaining sheets no longer line up with "
+                    "the pages already printed; start a new print run"
+                ),
+            )
 
         session = cls.__new__(cls)
         session.plan = plan
