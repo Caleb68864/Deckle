@@ -27,9 +27,12 @@ of it.
    core.marks
    core.export
    core.render
+   core.locate
    core.project_io
+   core.outputs
    core.printing
    core.profiles
    core.print_session
+   core.schedule
    core.session_log
    core.diagnostics
