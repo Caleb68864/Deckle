@@ -24,6 +24,10 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
+    # Property-based testing for the imposition arithmetic. MPL-2.0,
+    # verified from its own LICENSE.txt, and test-only -- it never
+    # enters the shipped closure the licence audits guard.
+    "hypothesis",
 ]
 # Documentation tooling only. Deliberately NOT a runtime dependency:
 # Deckle is MIT and must install and run without Sphinx present.
