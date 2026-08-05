@@ -262,3 +262,10 @@
 - Surfaces: It is gated on BOTH a folio fold scheme and a loaded document -- either alone produces an empty schedule. The panel reports the outcome through a `schedule_saved` signal rather than reaching for a status bar it does not own; the window connects it.
 - Watch: The schedule uses the same `deckle.core.outputs` wording as Save PDF and the CLI, so a locked file or a bad drive letter reads the same in all three. A third front end with its own phrasing for the same failure was exactly what the outputs module was extracted to prevent.
 - Commit: (this commit)
+
+## 2026-08-05 - A literal tab in run.bat threw away a three-minute build
+- Symptom: run.bat package built both executables successfully over ~3 minutes, then failed at the final audit step with "file or directory not found: est_packaging_audit.py". The user reported it as the build getting stuck.
+- Fix: The :package target was generated from a Python string containing tests + backslash + test_packaging_audit.py written with a SINGLE backslash, so the escape became a literal tab. cmd then passed pytest two arguments. Repaired, and pinned by a test asserting run.bat holds no tab, form feed, vertical tab, backspace or bell.
+- Surfaces: Any file generated from a Python string that contains a Windows path. Unknown escapes are left alone, which is why dist-backslash-deckle and build-backslash-pyinstaller survived intact and only the t was destroyed -- the corruption is selective and therefore easy to miss.
+- Watch: The guard test itself was written through a shell heredoc and acquired the identical bug, searching run.bat for a tab instead of for the path. That is the fourth occurrence of this trap in one session. Use the editor, or a raw string, for anything containing backslashes -- never a heredoc. Separately: the build is near-silent for two minutes during the PySide6 hooks, which reads as a hang. It now says so before starting.
+- Commit: (this commit)

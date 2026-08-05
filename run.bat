@@ -36,6 +36,8 @@ if /i "%CMD%"=="test"   goto :test
 if /i "%CMD%"=="deps"   goto :deps
 if /i "%CMD%"=="doctor" goto :package
 echo [deckle] building executables...
+echo          This takes about two minutes. PyInstaller goes quiet
+echo          while it processes the PySide6 hooks - that is normal.
 rem Build from .buildenv, NOT from the developer's interpreter. The first
 rem build ran against a global environment and produced a 1.6 GB bundle
 rem containing torch, paddle, cv2 -- and pymupdf, which is AGPL and would
@@ -56,7 +58,7 @@ if errorlevel 1 goto :fail
 echo [deckle] auditing the bundle...
 rem Licence and size gate. A dependency-level audit cannot see what the
 rem packager actually copied, so the artifact is checked directly.
-"%PY%" -m pytest tests	est_packaging_audit.py -q
+"%PY%" -m pytest tests\test_packaging_audit.py -q
 if errorlevel 1 goto :fail
 echo [deckle] wrote dist\deckle\deckle.exe and dist\deckle\deckle-cli.exe
 goto :done

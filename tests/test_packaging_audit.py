@@ -142,3 +142,56 @@ def test_the_spec_records_why_pyinstallers_licence_permits_this():
     spec = (REPO_ROOT / "packaging" / "deckle.spec").read_text(encoding="utf-8")
     assert "exception" in spec.lower()
     assert "GPL" in spec
+
+
+# -- run.bat integrity ---------------------------------------------------
+
+
+def test_run_bat_contains_no_stray_control_characters():
+    r"""A literal TAB in a path is invisible and splits the argument.
+
+    ``run.bat``'s package target was generated from a Python string in which
+    ``tests\test_packaging_audit.py`` was written with a single backslash, so
+    ``\t`` became a tab. The batch file then invoked
+    ``pytest tests<TAB>est_packaging_audit.py``, pytest received two
+    arguments, and a two-minute build failed at its very last step with
+    "file or directory not found: est_packaging_audit.py".
+
+    Note this docstring is raw. The first version of this very test was
+    written through a shell heredoc and acquired the identical bug -- it
+    searched ``run.bat`` for a tab character instead of for the path. A guard
+    against an invisible-character bug is an easy place to reintroduce one.
+
+    Tabs are legal in batch files but Deckle's has no use for one, and the
+    failure mode is bad enough to be worth pinning.
+    """
+    raw = (REPO_ROOT / "run.bat").read_text(encoding="utf-8")
+
+    assert "\t" not in raw, (
+        "run.bat contains a literal tab. If it was generated from a Python "
+        r"string, a path like 'tests\test_...' needs a doubled backslash "
+        "or a raw string."
+    )
+    # Form feed, vertical tab, backspace, bell: the other escapes a
+    # single-backslash Windows path can silently produce.
+    for char, name in ((chr(12), r"\f"), (chr(11), r"\v"), (chr(8), r"\b"), (chr(7), r"\a")):
+        assert char not in raw, f"run.bat contains a literal {name}"
+
+
+def test_run_bat_package_target_points_at_this_file():
+    """The audit is the release gate; a typo in its path disables it
+    silently, because a build that never ran the gate still exits 0 if the
+    gate's own invocation is what failed."""
+    raw = (REPO_ROOT / "run.bat").read_text(encoding="utf-8")
+
+    assert r"tests\test_packaging_audit.py" in raw
+    assert Path(__file__).name == "test_packaging_audit.py"
+
+
+def test_run_bat_warns_that_packaging_takes_a_while():
+    """PyInstaller is near-silent for ~2 minutes during the PySide6 hooks.
+    Without a warning, that reads as a hang -- and was reported as one."""
+    raw = (REPO_ROOT / "run.bat").read_text(encoding="utf-8")
+
+    package_target = raw.split(":package", 1)[1].split("goto :done", 1)[0]
+    assert "minutes" in package_target.lower()
