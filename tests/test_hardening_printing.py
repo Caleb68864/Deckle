@@ -22,6 +22,8 @@ seams for exactly this reason.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ast
 import json
 import logging
@@ -274,7 +276,7 @@ class _FakeWindow:
     offscreen platform kills the process outright.
     """
 
-    def __init__(self):
+    def __init__(self, pages=()):
         self.print_button = _FakeButton()
         self.save_pdf_button = _FakeButton()
         self.status_bar = _FakeStatusBar()
@@ -282,6 +284,10 @@ class _FakeWindow:
         self._printers = []
         self._printer_thread = None
         self._printer_query = None
+        # _apply_printers consults the document to decide what the status
+        # bar should say: with nothing loaded, "no printers" is not the
+        # user's next step, importing is. The double has to model that.
+        self.state = SimpleNamespace(project=SimpleNamespace(pages=list(pages)))
 
     _apply_printers = app_main.MainWindow._apply_printers
 
@@ -289,13 +295,40 @@ class _FakeWindow:
 def test_zero_printers_disables_print_but_leaves_save_pdf_alone():
     """Deckle is an imposition tool that happens to print. With no printer
     at all it must stay fully usable for Save PDF."""
-    window = _FakeWindow()
+    window = _FakeWindow(pages=["one page"])
     app_main.MainWindow._apply_printers(window, [])
 
     assert window.print_button.enabled is False
     assert window.save_pdf_button.enabled is True
     assert window.status_bar.message == app_main.NO_PRINTERS_MESSAGE
+    # The tooltip is what explains a disabled control to someone who
+    # hovers it wondering why they cannot click.
     assert window.print_button.tooltip == app_main.NO_PRINTERS_MESSAGE
+
+
+def test_with_no_document_the_status_bar_names_the_first_step_not_the_printer():
+    """Opening Deckle should not lead with a complaint about hardware.
+
+    Printing is the last step of the workflow and needs no printer until
+    then; importing is the first. With nothing loaded, say that instead.
+    """
+    window = _FakeWindow(pages=())
+    app_main.MainWindow._apply_printers(window, [])
+
+    assert window.status_bar.message == app_main.NO_DOCUMENT_MESSAGE
+    # Print is still correctly disabled -- only the wording changes.
+    assert window.print_button.enabled is False
+
+
+def test_a_document_with_printers_present_clears_the_status_bar():
+    window = _FakeWindow(pages=["one page"])
+    app_main.MainWindow._apply_printers(window, ["Brother HL-2270DW"])
+
+    assert window.print_button.enabled is True
+    assert window.status_bar.message in ("", None)
+    # With printers available there is nothing to explain, so the tooltip
+    # is cleared rather than left saying the opposite of what is true.
+    assert window.print_button.tooltip == ""
 
 
 def test_apply_printers_never_touches_the_save_pdf_button():

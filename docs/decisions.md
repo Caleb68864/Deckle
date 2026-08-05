@@ -227,3 +227,10 @@
 - Surfaces: Fold scheme deliberately sits ABOVE the tabs rather than inside one. It is a mode selector, not a setting -- putting it on the Signatures tab would mean reaching the disabled tab in order to enable it.
 - Watch: Tabs must not imply the two paths are independent. Folio still uses the gutter and margins from the first tab, so the Signatures hint says so explicitly and the Page tab stays enabled in both modes. Also: `&` is Qt's mnemonic marker, so a literal ampersand in a tab label must be written `&&` -- "Page && margins" renders as "Page & margins".
 - Commit: (this commit)
+
+## 2026-08-04 - Two front ends, two qualities of explanation
+- Symptom: Hardening passes 4-5 gave the CLI messages that name the file, the cause and the remedy. The desktop app, hitting the identical failures, showed `Export failed: {exc}` -- typically `[WinError 5] Access is denied` naming a scratch file the user has never seen. It also had no export-onto-source guard at all.
+- Fix: Moved the wording into `deckle/core/outputs.py` and had both front ends use it. It is knowledge about output paths, not about argparse or Qt, so the core is where it belongs. The module returns strings and prints nothing -- the CLI routes them to stderr, the app to its status bar.
+- Surfaces: Also fixed two empty-state inconsistencies found in the same audit. Save PDF stayed ENABLED with no document and scolded the user after they clicked, while Print in the identical situation was disabled with an explanatory tooltip -- same class of problem, two different affordances. And the only first-run message was "No printers installed", which is not the user's next step.
+- Watch: When adding a "say what to do next" hint, make sure it cannot suppress a message explaining a real failure. The first version of this replaced PRINTER_TIMEOUT_MESSAGE -- "could not reach the print spooler" -- with "import a PDF to begin" whenever no document was loaded, hiding a genuine fault behind a pleasantry. An explanation of something that went wrong outranks a next-step hint.
+- Commit: (this commit)

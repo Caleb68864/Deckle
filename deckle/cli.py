@@ -24,6 +24,7 @@ from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitch
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
+from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.project_io import SourceChangedWarning, save_project
 
 # A-6: `deckle --version` prints the app version plus the resolved versions
@@ -137,88 +138,14 @@ def _load_source_or_report(path: str) -> list[SourcePage] | None:
         return None
 
 
-def _output_path_problem(out_path: str) -> str | None:
-    """Why ``out_path`` cannot be written to, or ``None`` if it looks fine.
-
-    Checked in the CLI *before* any imposition work, so a mistyped
-    destination costs no time, and so the message names the path the user
-    typed rather than the temp file the exporter was about to rename.
-
-    This cannot be exhaustive -- a file locked by another process passes
-    every check here and still fails at the final rename -- so the callers
-    also handle ``OSError`` from the write itself.
-    """
-    if os.path.isdir(out_path):
-        return (
-            f"cannot write to {out_path}: that is an existing folder, not a "
-            "file. Give a file name instead, e.g. "
-            f"{os.path.join(out_path, 'booklet.pdf')}."
-        )
-
-    directory = os.path.dirname(os.path.abspath(out_path)) or "."
-    if not os.path.isdir(directory):
-        anchor = os.path.splitdrive(os.path.abspath(out_path))[0]
-        if anchor and not os.path.exists(anchor + os.sep):
-            return (
-                f"cannot write to {out_path}: the drive {anchor} does not "
-                "exist or is not connected. Check the drive letter, or "
-                "choose a folder on a drive that is available."
-            )
-        return (
-            f"cannot write to {out_path}: the folder {directory} does not "
-            "exist. Create it first, or choose a folder that does."
-        )
-    if not os.access(directory, os.W_OK):
-        return (
-            f"cannot write to {out_path}: the folder {directory} is not "
-            "writable. Choose another location, or grant yourself write "
-            "permission on that folder."
-        )
-    if os.path.exists(out_path) and not os.access(out_path, os.W_OK):
-        return (
-            f"cannot write to {out_path}: the file is read-only. Clear its "
-            "read-only flag, or choose a different output file."
-        )
-    return None
-
-
-def _same_file(a: str, b: str) -> bool:
-    """Whether two paths name the same file, tolerating an absent target.
-
-    ``os.path.samefile`` is the only check that sees through symlinks,
-    junctions, and ``..`` segments -- string comparison does not -- but it
-    raises if either path is missing, which is the normal case for an
-    output that has not been written yet.
-    """
-    try:
-        return os.path.samefile(a, b)
-    except OSError:
-        return os.path.abspath(a) == os.path.abspath(b)
-
-
 def _report_output_problem(out_path: str, source: str | None = None) -> bool:
     """Print the problem with ``out_path``, if any. ``True`` means stop.
 
     :param out_path: the destination the user asked for.
-    :param source: the input being imposed, when known. Passing it catches
-        the case where output and source are the same file.
+    :param source: the document being imposed, when known.
     :returns: ``True`` if the caller should stop.
-
-    Exporting onto the source is refused explicitly rather than being left
-    to fail at the final rename. It *does* fail there -- the source is held
-    open for reading, so the source survives -- but the resulting message
-    blames a PDF viewer holding the file, which is wrong and sends the user
-    off closing applications that were never involved. Being right about
-    the cause matters as much as stopping the write.
     """
-    if source is not None and _same_file(out_path, source):
-        problem = (
-            f"cannot write to {out_path}: that is the file being imposed. "
-            "Exporting onto the source would destroy the original. Choose a "
-            "different output name."
-        )
-    else:
-        problem = _output_path_problem(out_path)
+    problem = output_path_problem(out_path, source)
     if problem is None:
         return False
     print(f"error: {problem}", file=sys.stderr)
@@ -227,21 +154,12 @@ def _report_output_problem(out_path: str, source: str | None = None) -> bool:
 
 
 def _report_write_failure(out_path: str, exc: OSError) -> None:
-    """Explain an ``OSError`` raised while writing ``out_path``.
+    """Print why the write failed, and record it.
 
-    The overwhelmingly common case on Windows is that the previous export
-    is still open in a PDF viewer, which holds the file and makes the
-    exporter's final rename fail with a bare ``[WinError 5] Access is
-    denied`` naming a temp file the user has never heard of.
+    The wording lives in :mod:`deckle.core.outputs` so the desktop app says
+    the same thing; this only routes it to stderr.
     """
-    if isinstance(exc, PermissionError):
-        detail = (
-            "permission denied -- is the file already open in a PDF viewer? "
-            "Close it and try again, or export to a different name."
-        )
-    else:
-        detail = f"{exc.strerror or exc}. Check the path, the drive, and free disk space."
-    print(f"error: cannot write to {out_path}: {detail}", file=sys.stderr)
+    print(f"error: {describe_write_failure(out_path, exc)}", file=sys.stderr)
     log_exception("output_write_failed", exc, path=out_path)
 
 

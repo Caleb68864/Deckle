@@ -21,11 +21,28 @@ from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.print_dialog import PrintDialog
 from deckle.core.export import export
 from deckle.core.models import LayoutSettings, Project
+from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.profiles import BUILTIN_PRESETS
 
 LETTER_PT = (612.0, 792.0)
 
 NO_PRINTERS_MESSAGE = "No printers installed -- connect a printer to enable printing."
+
+NO_DOCUMENT_MESSAGE = "Import a PDF or a folder of images to begin."
+"""The first thing Deckle says when it opens with nothing loaded.
+
+Previously the only first-run message was :data:`NO_PRINTERS_MESSAGE`, so an
+empty Deckle led with a complaint about hardware the user does not need yet.
+The first message should name the first step.
+"""
+
+NOTHING_TO_EXPORT_MESSAGE = "Nothing to export yet -- import a PDF or images first."
+"""Why Save PDF is unavailable. Shown as the button's tooltip.
+
+Save PDF used to stay enabled with no document and scold the user *after*
+they clicked it, while Print in the identical situation was disabled with an
+explanation. Same class of problem deserves the same affordance.
+"""
 
 PRINTER_TIMEOUT_MESSAGE = (
     "Could not reach the print spooler -- printing is unavailable. "
@@ -276,7 +293,21 @@ class MainWindow:
         self._printers: list[str] = []
         self._printer_thread = None
         self._printer_query: _PrinterQuery | None = None
+        self._sync_document_actions()
         self.refresh_printers()
+
+    def _sync_document_actions(self) -> None:
+        """Enable the document actions only when there is a document.
+
+        Save PDF is gated here rather than checking inside its own click
+        handler, so an unavailable action looks unavailable instead of
+        accepting the click and then explaining itself. Print is gated
+        separately by :meth:`_apply_printers`, since it additionally needs
+        a printer.
+        """
+        has_pages = bool(self.state.project.pages)
+        self.save_pdf_button.setEnabled(has_pages)
+        self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
 
     def _on_layout_changed(self, plan) -> None:
         # Hand the preview the settings too, so its content-box guide
@@ -285,6 +316,7 @@ class MainWindow:
 
     def _on_imported(self, pages, warnings) -> None:
         self.arrange_view.refresh()
+        self._sync_document_actions()
         self.preview_view.on_layout_changed(recompute_plan(self.state.project))
 
     def refresh_printers(self, *, blocking: bool = False, timeout_ms: int | None = None) -> None:
@@ -352,11 +384,25 @@ class MainWindow:
         self.print_button.setEnabled(has_printers)
         if has_printers:
             self.print_button.setToolTip("")
-            self.status_bar.clearMessage()
+            if self.state.project.pages:
+                self.status_bar.clearMessage()
+            else:
+                self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
         else:
             message = no_printers_message or NO_PRINTERS_MESSAGE
             self.print_button.setToolTip(message)
-            self.status_bar.showMessage(message)
+            # An explanation of something that WENT WRONG outranks a
+            # next-step hint. `no_printers_message` is only ever passed when
+            # enumeration actually failed (it carries
+            # PRINTER_TIMEOUT_MESSAGE), and a user who cannot print needs to
+            # know the spooler was unreachable even if they have not
+            # imported anything yet. Routine "no printers installed",
+            # though, is not news on an empty Deckle -- say what to do
+            # first instead.
+            if no_printers_message or self.state.project.pages:
+                self.status_bar.showMessage(message)
+            else:
+                self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
 
     def _on_print_clicked(self) -> None:
         # Use the cached list rather than re-enumerating: a second query
@@ -392,7 +438,9 @@ class MainWindow:
         from PySide6.QtWidgets import QFileDialog
 
         if not self.state.project.pages:
-            self.status_bar.showMessage("Nothing to export -- import a PDF or images first.")
+            # Defensive: the button is disabled in this state. Never open a
+            # save dialog for a document that does not exist.
+            self.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
             return
 
         start_dir = os.path.dirname(self.state.project.pages[0].ref.path) or os.getcwd()
@@ -407,13 +455,32 @@ class MainWindow:
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
 
+        # Check the destination before doing any work, and say the same
+        # thing the CLI says -- one document, two front ends, one
+        # explanation. `deckle.core.outputs` owns the wording.
+        source = self.state.project.pages[0].ref.path
+        problem = output_path_problem(path, source)
+        if problem is not None:
+            self.status_bar.showMessage(problem)
+            log_event("output_path_rejected", path=path, detail=problem)
+            return
+
         plan = self.preview_view.plan
         sheets = len(plan.sheets)
         self.status_bar.showMessage(f"Exporting {sheets} sheet(s) to {os.path.basename(path)}...")
         try:
             export(plan, path)
-        except Exception as exc:  # surfaced, never swallowed
+        except OSError as exc:
+            # The common failures are all OSError and all explainable: the
+            # file is open in a viewer, the drive went away, the disk is
+            # full. Anything else is a bug and should still surface as one.
+            message = describe_write_failure(path, exc)
+            self.status_bar.showMessage(message)
+            log_exception("output_write_failed", exc, path=path)
+            return
+        except Exception as exc:  # noqa: BLE001 -- surfaced, never swallowed
             self.status_bar.showMessage(f"Export failed: {exc}")
+            log_exception("export_failed", exc, path=path)
             return
         self.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
 
