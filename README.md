@@ -20,12 +20,17 @@ with a reload instruction derived from your printer's own behaviour.
 ## Why this exists
 
 Every imposition tool worth surveying produces a PDF and then abandons you at
-the print dialog. Bookbinder JS runs sandboxed in a browser. Stirling PDF is a
-server. PDF Arranger has two controls. pdfimpose is a command that writes a
-file. None of them can talk to a printer, which means none of them can know
-what your printer does to a stack of paper on the second pass — and on a
+the print dialog. [Bookbinder JS](https://github.com/momijizukamori/bookbinder-js)
+is the closest peer and does the imposition well; it still ends at a download.
+[pdfimpose](https://pdfimpose.readthedocs.io/) is a command that writes a file.
+None of them can talk to a printer, which means none of them can know what
+your printer does to a stack of paper on the second pass — and on a
 manual-duplex job, that is the only thing standing between you and sixty
 sheets printed upside down.
+
+Bookbinder JS's own interface concedes the gap it cannot close: *"Remember!
+Printer skew is a real thing!"* It can warn you. It cannot measure your
+printer.
 
 Deckle owns the print path. That is the whole argument for it, and everything
 distinctive follows from it:
@@ -68,7 +73,7 @@ flowchart LR
 |---|---|
 | **Source page** | A page of your PDF, or one image from a folder. Nothing has been decided about it yet. |
 | **Output page** | That page with a placement transform, assigned to one face of one sheet. Or a blank filler, where the arithmetic needs one. |
-| **Sheet** | One physical piece of paper. Its **recto** side goes through the printer first, its **verso** second. |
+| **Sheet** | One physical piece of paper, with a **front** and a **back**. Under flat sheets its front carries a **recto** (a right-hand page) and its back a **verso**; under folio each face carries one of each. |
 | **Print pass** | The order sheets are *fed* for manual duplex. Pass 1 is every front; pass 2 is every back, in whatever order your printer's reload behaviour demands. |
 
 ---
@@ -422,8 +427,9 @@ a clean virtualenv took it to 160 MB with the AGPL library gone.
 | `pikepdf` | MPL-2.0 | All PDF manipulation and composition |
 | `pypdfium2` | BSD-3 / Apache-2.0 | Rasterisation for preview and print |
 | `img2pdf` | LGPL-3.0 | Lossless image → PDF at ingestion |
-| `PySide6` | LGPLv3 | UI and printing |
-| `natsort`, `Pillow` | MIT | Filename ordering, image metadata |
+| `PySide6` | LGPL-3.0 (or GPL, at your option) | UI and printing |
+| `natsort` | MIT | Natural filename ordering |
+| `Pillow` | MIT-CMU | Image metadata and pixel handling |
 
 PyInstaller is GPLv2-or-later *with an explicit exception* permitting
 distribution of programs under any licence. It is build-time only and never

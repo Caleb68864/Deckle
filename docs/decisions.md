@@ -342,3 +342,10 @@
 - Watch: All 14 passed on the first run, which is worth being suspicious of rather than pleased about. Verified by mutation -- corrupting `split_signatures` to duplicate a group failed 7 of them, including both permutation checks. A property test that has never failed is indistinguishable from one that cannot.
 - Licence: Hypothesis is MPL-2.0, read from its own LICENSE.txt rather than assumed -- its `License` metadata field is empty and only `License-Expression` carries it. Test-only, so it never enters the closure the licence audits guard.
 - Commit: (this commit)
+
+## 2026-08-05 - Reviewing the README the docs agent wrote
+- Symptom: `README.md` and `docs/GUIDE.md` were swept into a commit and pushed before the prose had been read. Badges, image links and CLI flags had been checked; the writing had not.
+- Fix: Two real defects. The intro asserted architectural facts about three competing tools -- that Stirling PDF is a server, PDF Arranger has two controls, Bookbinder JS runs sandboxed -- none of which appear in the research it was given. Replaced with the one comparison the research actually supports, cited, plus Bookbinder JS's own verbatim admission that it cannot measure a printer. And the four-level model table attributed `recto`/`verso` to a SHEET; they describe pages in a bound book, and the GUIDE and the code both use them correctly, so only the front page was wrong.
+- Surfaces: Also sharpened the licence table -- Pillow is MIT-CMU rather than plain MIT, and PySide6 is multi-licensed with LGPL-3.0 merely the relevant option.
+- Watch: The rest verified clean, which is the point of checking rather than assuming: all ten documented CLI defaults match the parser, every flag exists, the five settings documented as app-only really are absent from the CLI, and the 16-page schedule quoted as "verified output, not an illustration" reproduces byte for byte. An agent writing docs will state plausible things about neighbouring projects from memory; that is the specific failure to look for, because it is the one the reader cannot check and the one that costs the most credibility.
+- Commit: (this commit)
