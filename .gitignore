@@ -39,3 +39,4 @@ Thumbs.db
 # Tooling output, not source
 graphify-out/
 .forge-factory/
+.converge-scratch/

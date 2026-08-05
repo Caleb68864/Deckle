@@ -58,12 +58,17 @@ def settings(**kw):
 
 
 def flat_output_pages(plan):
+    """Every output page in the plan, front-then-back, sheet by sheet.
+
+    A side holds a *tuple* of output pages -- one under gutter shift, two
+    under folio -- so this flattens through ``side.pages`` rather than
+    treating a side as a page itself.
+    """
     flat = []
     for sheet in plan.sheets:
-        if sheet.front is not None:
-            flat.append(sheet.front)
-        if sheet.back is not None:
-            flat.append(sheet.back)
+        for side in (sheet.front, sheet.back):
+            if side is not None:
+                flat.extend(side.pages)
     return flat
 
 
@@ -461,7 +466,7 @@ def test_content_touches_the_content_box_on_the_binding_axis_only():
                  margin_top_pt=18.0, margin_bottom_pt=18.0)
     plan = impose(make_pages(2, size=TRAVELLER), s)
     x0, y0, x1, y1 = content_box_rect_pt(s, is_recto=True)
-    p = plan.sheets[0].front.placement
+    (p,) = (page.placement for page in plan.sheets[0].front.pages)
     scaled_w = TRAVELLER[0] * p.scale_x
     scaled_h = TRAVELLER[1] * p.scale_y
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 
-from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side
 from deckle.core.printing import PrintPass, PrintResult, plan_passes
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 
@@ -20,7 +20,11 @@ def _blank_output_page() -> OutputPage:
 
 def _make_plan(n_sheets: int) -> SheetPlan:
     sheets = [
-        Sheet(index=i, front=_blank_output_page(), back=_blank_output_page())
+        Sheet(
+            index=i,
+            front=Side(pages=(_blank_output_page(),)),
+            back=Side(pages=(_blank_output_page(),)),
+        )
         for i in range(n_sheets)
     ]
     return SheetPlan(sheets=sheets, paper_pt=(612.0, 792.0), warnings=[])

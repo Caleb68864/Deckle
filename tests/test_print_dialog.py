@@ -18,7 +18,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side
 from deckle.core.print_session import SessionSummary
 from deckle.core.profiles import PrinterProfile
 
@@ -47,7 +47,11 @@ def _blank_output_page() -> OutputPage:
 
 def _make_plan(n_sheets: int = 2) -> SheetPlan:
     sheets = [
-        Sheet(index=i, front=_blank_output_page(), back=_blank_output_page())
+        Sheet(
+            index=i,
+            front=Side(pages=(_blank_output_page(),)),
+            back=Side(pages=(_blank_output_page(),)),
+        )
         for i in range(n_sheets)
     ]
     return SheetPlan(sheets=sheets, paper_pt=(612.0, 792.0), warnings=[])

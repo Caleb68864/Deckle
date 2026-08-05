@@ -70,36 +70,37 @@ def _state_dir() -> Path:
     return Path(tempfile.gettempdir()) / "deckle" / "print_sessions"
 
 
-def _side_page_index(side) -> int | None:
-    """The source page index behind a side, or ``None`` for a filler/absent side.
-
-    ``Sheet.front``/``Sheet.back`` are populated with a single ``OutputPage``
-    per side in the current MVP layout (one source page per physical side).
-    A filler page carries ``source_ref=None``; that maps to the same sentinel
-    used for an entirely absent side, keeping the payload JSON-stable.
-    """
-    if side is None:
-        return None
-    ref = side.source_ref
-    return ref.page_index if ref is not None else None
-
-
 def _hash_plan(plan: SheetPlan) -> str:
     """A stable hash identifying a plan's sheet content.
 
-    Covers sheet index, side presence, and -- per side -- the source page
-    index behind that side's content (``None`` for a filler or absent side).
-    Two plans with identical sheet counts and side presence but different
-    page orderings must hash differently; see REQ-014.
+    Covers sheet index, side presence, and the **full ordered sequence** of
+    source page indices on each side. Presence plus a single index per side
+    was not enough: a ``Side`` carries as many ``OutputPage``s as the
+    imposition puts on that physical face -- two under ``fold_scheme="folio"``
+    -- so recording only the first collided two plans that laid the same
+    pages down in a different order. A resumed session could then bind to a
+    document that had since been re-imposed. See REQ-014.
+
+    A filler page has no ``source_ref`` and hashes as ``None``. An absent
+    side is ``None`` -- never ``Side(pages=())``, which ``Side.__post_init__``
+    rejects precisely so presence and content stay unambiguous here: the
+    ``front``/``back`` presence booleans are what keep an absent side
+    distinct from a side whose only page is filler.
     """
     payload = json.dumps(
         [
             {
                 "index": s.index,
                 "front": s.front is not None,
-                "front_page": _side_page_index(s.front),
+                "front_pages": None if s.front is None else [
+                    None if p.source_ref is None else p.source_ref.page_index
+                    for p in s.front.pages
+                ],
                 "back": s.back is not None,
-                "back_page": _side_page_index(s.back),
+                "back_pages": None if s.back is None else [
+                    None if p.source_ref is None else p.source_ref.page_index
+                    for p in s.back.pages
+                ],
             }
             for s in plan.sheets
         ],

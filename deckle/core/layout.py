@@ -443,7 +443,17 @@ class GutterShiftStrategy:
                 if sheet_index + 1 < len(slots)
                 else None
             )
-            sheets.append(Sheet(index=sheet_index // 2, front=front, back=back))
+            # One leaf per physical side under gutter shift -- but still a
+            # ``Side``, not a bare ``OutputPage``. Every consumer downstream
+            # of the imposer iterates ``side.pages``, and a 1-up sheet is
+            # just the degenerate case of that, not a separate shape.
+            sheets.append(
+                Sheet(
+                    index=sheet_index // 2,
+                    front=Side(pages=(front,)),
+                    back=None if back is None else Side(pages=(back,)),
+                )
+            )
 
         return SheetPlan(sheets=sheets, paper_pt=settings.paper, warnings=warnings)
 

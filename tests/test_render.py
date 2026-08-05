@@ -15,6 +15,7 @@ from deckle.core.models import (
     Placement,
     Sheet,
     SheetPlan,
+    Side,
     SourcePage,
     SourceRef,
 )
@@ -53,8 +54,8 @@ def _output_page(ref: SourceRef | None, is_filler: bool = False) -> OutputPage:
 def _one_sheet_plan(front_ref: SourceRef | None, back_ref: SourceRef | None) -> SheetPlan:
     sheet = Sheet(
         index=0,
-        front=_output_page(front_ref) if front_ref is not None else None,
-        back=_output_page(back_ref) if back_ref is not None else None,
+        front=Side(pages=(_output_page(front_ref),)) if front_ref is not None else None,
+        back=Side(pages=(_output_page(back_ref),)) if back_ref is not None else None,
     )
     return SheetPlan(sheets=[sheet], paper_pt=LETTER, warnings=[])
 

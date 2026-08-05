@@ -16,6 +16,7 @@ from deckle.core.models import (
     Placement,
     Sheet,
     SheetPlan,
+    Side,
     SourcePage,
     SourceRef,
 )
@@ -153,10 +154,11 @@ def test_export_receives_placements_identical_to_imposer_output(tmp_path):
     # no consumer-side (export-side) adjustment occurred anywhere in between.
     plan_again = GutterShiftStrategy().impose(pages, settings)
     for sheet_a, sheet_b in zip(plan.sheets, plan_again.sheets):
-        if sheet_a.front is not None:
-            assert sheet_a.front.placement == sheet_b.front.placement
-        if sheet_a.back is not None:
-            assert sheet_a.back.placement == sheet_b.back.placement
+        for side_a, side_b in ((sheet_a.front, sheet_b.front), (sheet_a.back, sheet_b.back)):
+            if side_a is not None:
+                assert [p.placement for p in side_a.pages] == [
+                    p.placement for p in side_b.pages
+                ]
 
     out_path = os.path.join(str(tmp_path), "out.pdf")
     export_fn(plan, out_path)
@@ -248,7 +250,11 @@ def test_export_to_unwritable_path_raises_before_writing(tmp_path):
 def test_filler_output_page_exports_as_blank_page(tmp_path):
     placement = Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
     filler = OutputPage(source_ref=None, placement=placement, is_filler=True)
-    plan = SheetPlan(sheets=[Sheet(index=0, front=filler, back=None)], paper_pt=LETTER, warnings=[])
+    plan = SheetPlan(
+        sheets=[Sheet(index=0, front=Side(pages=(filler,)), back=None)],
+        paper_pt=LETTER,
+        warnings=[],
+    )
 
     out_path = os.path.join(str(tmp_path), "out.pdf")
     export_fn(plan, out_path)

@@ -143,3 +143,10 @@
 - Surfaces: Any check command that interpolates an environment variable the worker's shell does not define. Git Bash on Windows leaves TMPDIR empty, so "$TMPDIR/out.pdf" resolves to /out.pdf -- an unwritable MSYS root -- and the command hangs rather than failing loudly.
 - Watch: Check commands referencing $TMPDIR, $TMP, or $HOME subpaths. Prefer a repo-relative path under a .gitignored scratch dir, which exists identically on every platform. Also audit `git status` for tracked files that .gitignore already covers -- ignore rules do not apply retroactively to files a worker force-added.
 - Commit: (this commit)
+
+## 2026-08-04 - SS-02's Side refactor was half-applied; the default path was broken
+- Symptom: 14 tests failed with `AttributeError: 'OutputPage' object has no attribute 'pages'` from export.py:301. The obvious reading -- stale test fixtures -- was wrong for 10 of them.
+- Fix: `GutterShiftStrategy.impose` (layout.py:446) still emitted `Sheet(front=<OutputPage>)`; only `SaddleStitchStrategy` (layout.py:707) wrapped sides in `Side(...)`. Wrapped the gutter-shift sides, then migrated the three consumers that treated a side as a page: `flat_output_pages`, test_layout.py:469, test_export.py:158. 318 passed / 3 skipped / 0 failed.
+- Surfaces: `fold_scheme="none"` -- the default, and every existing user's path. Every export, preview render and print went through the broken branch. The saddle path worked because it was the one the feature author was looking at.
+- Watch: SS-02 called its own change "atomic across layout.py, export.py and render.py" and predicted this exact tree state, then was marked complete having done half of it. When a sub-spec argues for exceeding its file budget because a change cannot be split, verify every named file actually moved -- the argument is evidence the author knew the risk, not that they discharged it. Tests passing is not evidence here: they asserted the un-migrated shape, so the green suite was measuring the bug.
+- Commit: (this commit)

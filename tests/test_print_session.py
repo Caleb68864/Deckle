@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from typing import Sequence
 
 import pytest
 
-from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, SourceRef
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side, SourceRef
 from deckle.core.print_session import PrintSession, _hash_plan
 from deckle.core.printing import PrintResult
 from deckle.core.profiles import PrinterProfile
@@ -37,7 +38,11 @@ def _source_output_page(page_index: int) -> OutputPage:
 
 def _make_plan(n_sheets: int) -> SheetPlan:
     sheets = [
-        Sheet(index=i, front=_blank_output_page(), back=_blank_output_page())
+        Sheet(
+            index=i,
+            front=Side(pages=(_blank_output_page(),)),
+            back=Side(pages=(_blank_output_page(),)),
+        )
         for i in range(n_sheets)
     ]
     return SheetPlan(sheets=sheets, paper_pt=(612.0, 792.0), warnings=[])
@@ -249,13 +254,23 @@ def test_state_persists_version_pass_index_sheet_cursor_and_printer_name():
     assert state["printer_name"] == "My Printer"
 
 
-def test_hash_plan_differs_for_same_sheet_count_and_presence_but_different_source_pages():
+def test_hash_plan_differs_for_different_page_orderings():
+    """REQ-014: same sheet count and side presence, different pages -> different hash.
+
+    Two cases, because the defect has two severities. The 1-up case (one
+    page per side) is the MVP shape. The folio case is where it bites: under
+    ``fold_scheme="folio"`` a side carries *two* output pages, and a hash
+    recording only the first collides on plans holding exactly the same four
+    source pages in a different order -- letting a resumed session bind to a
+    document that has since been re-imposed.
+    """
+    # 1-up: one page per side, the front differing.
     plan_a = SheetPlan(
         sheets=[
             Sheet(
                 index=0,
-                front=_source_output_page(0),
-                back=_source_output_page(1),
+                front=Side(pages=(_source_output_page(0),)),
+                back=Side(pages=(_source_output_page(1),)),
             )
         ],
         paper_pt=(612.0, 792.0),
@@ -265,8 +280,8 @@ def test_hash_plan_differs_for_same_sheet_count_and_presence_but_different_sourc
         sheets=[
             Sheet(
                 index=0,
-                front=_source_output_page(2),
-                back=_source_output_page(1),
+                front=Side(pages=(_source_output_page(2),)),
+                back=Side(pages=(_source_output_page(1),)),
             )
         ],
         paper_pt=(612.0, 792.0),
@@ -275,17 +290,90 @@ def test_hash_plan_differs_for_same_sheet_count_and_presence_but_different_sourc
 
     assert _hash_plan(plan_a) != _hash_plan(plan_b)
 
+    # Folio: two pages per side, the same four source pages, redistributed so
+    # each side's FIRST page is unchanged and only the second moves. This
+    # ordering is deliberate -- a payload recording one index per side reads
+    # (0, 2) for both plans and collides, so reversing each side instead
+    # would let this assertion pass for the wrong reason.
+    folio_a = SheetPlan(
+        sheets=[
+            Sheet(
+                index=0,
+                front=Side(pages=(_source_output_page(0), _source_output_page(1))),
+                back=Side(pages=(_source_output_page(2), _source_output_page(3))),
+            )
+        ],
+        paper_pt=(792.0, 612.0),
+        warnings=[],
+    )
+    folio_b = SheetPlan(
+        sheets=[
+            Sheet(
+                index=0,
+                front=Side(pages=(_source_output_page(0), _source_output_page(3))),
+                back=Side(pages=(_source_output_page(2), _source_output_page(1))),
+            )
+        ],
+        paper_pt=(792.0, 612.0),
+        warnings=[],
+    )
 
-def test_hash_plan_is_stable_across_construction_of_an_identical_plan():
+    assert _hash_plan(folio_a) != _hash_plan(folio_b)
+
+
+def test_hash_plan_distinguishes_absent_side_from_present_side():
+    """Side presence must stay in the payload alongside the page tuple.
+
+    A filler page carries ``source_ref=None`` -- the same sentinel an absent
+    side would suggest -- so presence cannot be inferred from the page tuple
+    alone. Both a real-page back and a filler-only back must hash distinctly
+    from no back at all, or a sheet printed single-sided would collide with
+    one whose back is blank.
+    """
+    def build(back) -> SheetPlan:
+        return SheetPlan(
+            sheets=[
+                Sheet(index=0, front=Side(pages=(_source_output_page(0),)), back=back)
+            ],
+            paper_pt=(612.0, 792.0),
+            warnings=[],
+        )
+
+    absent_back = _hash_plan(build(None))
+    real_back = _hash_plan(build(Side(pages=(_source_output_page(1),))))
+    filler_back = _hash_plan(build(Side(pages=(_blank_output_page(),))))
+
+    assert absent_back != real_back
+    assert absent_back != filler_back
+
+
+def test_hash_plan_handles_filler_pages_without_a_source_ref():
+    """A filler page has no ``source_ref``; it hashes as ``None``, not an error."""
+    def build(front_page) -> SheetPlan:
+        return SheetPlan(
+            sheets=[Sheet(index=0, front=Side(pages=(front_page,)), back=None)],
+            paper_pt=(612.0, 792.0),
+            warnings=[],
+        )
+
+    filler = _hash_plan(build(_blank_output_page()))  # must not raise
+    real = _hash_plan(build(_source_output_page(0)))
+
+    assert isinstance(filler, str) and len(filler) == 16
+    assert filler != real
+
+
+def test_hash_plan_is_stable_across_identical_construction():
+    """Equal plans hash equal -- the hash reads content, never object identity."""
     def build() -> SheetPlan:
         return SheetPlan(
             sheets=[
                 Sheet(
                     index=0,
-                    front=_source_output_page(0),
-                    back=_source_output_page(1),
+                    front=Side(pages=(_source_output_page(0), _source_output_page(1))),
+                    back=Side(pages=(_source_output_page(2),)),
                 ),
-                Sheet(index=1, front=_blank_output_page(), back=None),
+                Sheet(index=1, front=Side(pages=(_blank_output_page(),)), back=None),
             ],
             paper_pt=(612.0, 792.0),
             warnings=[],
@@ -296,13 +384,15 @@ def test_hash_plan_is_stable_across_construction_of_an_identical_plan():
 
 def test_print_session_public_surface_is_unchanged():
     """Pins the MVP public surface: SS-04 must not add or remove members."""
+    # Parameter names, not just presence: `resume(sheets_completed)` carries a
+    # per-pass-not-cumulative contract that a rename would silently break.
     expected_methods = {
-        "start",
-        "advance",
-        "confirm_test_sheet",
-        "resume",
-        "load",
-        "list_resumable",
+        "start": ("self",),
+        "advance": ("self",),
+        "confirm_test_sheet": ("self",),
+        "resume": ("self", "sheets_completed"),
+        "load": ("plan", "profile", "backend", "session_id"),
+        "list_resumable": (),
     }
     expected_properties = {
         "state",
@@ -312,15 +402,29 @@ def test_print_session_public_surface_is_unchanged():
         "last_error",
     }
 
-    for name in expected_methods:
+    for name, expected_params in expected_methods.items():
         assert hasattr(PrintSession, name), f"missing method: {name}"
-        assert callable(getattr(PrintSession, name)), f"not callable: {name}"
+        member = getattr(PrintSession, name)
+        assert callable(member), f"not callable: {name}"
+        actual_params = tuple(inspect.signature(member).parameters)
+        assert actual_params == expected_params, (
+            f"{name} signature moved: {actual_params} != {expected_params}"
+        )
 
+    # `getattr_static` bypasses the descriptor protocol, so a property that
+    # silently became a plain method is caught rather than passing on hasattr.
     for name in expected_properties:
         assert hasattr(PrintSession, name), f"missing property: {name}"
-        assert isinstance(getattr(PrintSession, name), property), (
+        assert isinstance(inspect.getattr_static(PrintSession, name), property), (
             f"{name} is no longer a property"
         )
+
+    assert inspect.isroutine(inspect.getattr_static(PrintSession, "list_resumable")), (
+        "list_resumable is no longer a staticmethod"
+    )
+    assert isinstance(inspect.getattr_static(PrintSession, "load"), classmethod), (
+        "load is no longer a classmethod"
+    )
 
     plan = _make_plan(2)
     profile = _profile()
