@@ -30,7 +30,14 @@ PYPROJECT_PATH = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 # Distribution/import names that would make Deckle undistributable if they
 # ever crept into the dependency closure -- see docs/CONTRIBUTING.md.
-FORBIDDEN_DISTRIBUTIONS = {"pymupdf", "fitz"}
+#
+# ``pdfimpose`` and its underlying ``cpdf`` are AGPL-3.0. ``pdfimpose`` is a
+# genuinely useful development-time reference tool for verifying Deckle's
+# own imposition math (see tools/README.md) but must never become a
+# dependency of anything shipped or tested -- this denylist is what turns
+# "someone installs it in the project venv" into a red test instead of a
+# license violation.
+FORBIDDEN_DISTRIBUTIONS = {"pymupdf", "fitz", "pdfimpose", "cpdf"}
 
 
 def _direct_dependencies() -> list[str]:
@@ -120,3 +127,40 @@ def test_no_pymupdf_or_fitz_dependency(dependency_closure):
         if FORBIDDEN_DISTRIBUTIONS & _top_level_names(dist):
             offenders.append(name)
     assert not offenders, f"forbidden AGPL PDF tooling present in dependency closure: {offenders}"
+
+
+class _FakeDistribution:
+    """Minimal stand-in for ``importlib.metadata.Distribution`` in tests."""
+
+    def __init__(self, top_level: set[str] | None = None) -> None:
+        self._top_level = top_level or set()
+
+    def read_text(self, filename: str) -> str:
+        if filename == "top_level.txt":
+            return "\n".join(sorted(self._top_level))
+        return ""
+
+
+def _check_forbidden(closure: dict[str, "metadata.Distribution"]) -> None:
+    """Re-runs the same denylist check exercised by
+    ``test_no_pymupdf_or_fitz_dependency``, against an arbitrary closure --
+    used to prove the denylist is actually wired to real distribution data,
+    not just declared.
+    """
+    offenders = []
+    for name, dist in closure.items():
+        if name in FORBIDDEN_DISTRIBUTIONS:
+            offenders.append(name)
+            continue
+        if FORBIDDEN_DISTRIBUTIONS & _top_level_names(dist):
+            offenders.append(name)
+    assert not offenders, f"forbidden AGPL PDF tooling present in dependency closure: {offenders}"
+
+
+def test_injected_pdfimpose_fails_the_denylist_check():
+    """Proves the denylist is wired, not merely declared: a fake ``pdfimpose``
+    distribution injected into the closure must make the check fail.
+    """
+    fake_closure = {"pdfimpose": _FakeDistribution(top_level={"pdfimpose"})}
+    with pytest.raises(AssertionError):
+        _check_forbidden(fake_closure)
