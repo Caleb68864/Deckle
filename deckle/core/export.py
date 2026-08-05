@@ -33,8 +33,9 @@ from typing import Sequence
 
 import pikepdf
 from pikepdf import Name, Page, Rectangle
+from pikepdf.canvas import ContentStreamBuilder
 
-from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan
+from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
 
 _CACHE_DIR_NAME = "deckle_export_cache"
 
@@ -45,6 +46,23 @@ _DEFAULT_CACHE_SIZE = 200
 # so source handles opened during composition don't accumulate across a
 # very large document (see "pikepdf - Performance and Memory").
 _BATCH_SHEETS = 50
+
+
+def _pages_and_marks(side: OutputPage | Side) -> tuple[tuple[OutputPage, ...], tuple[Mark, ...]]:
+    """Normalize a ``Sheet.front``/``Sheet.back`` value to ``(pages, marks)``.
+
+    ``Sheet.front``/``Sheet.back`` may carry either a single legacy
+    ``OutputPage`` (the one-page-per-side MVP layout) or a ``Side`` (one or
+    more ``OutputPage``s plus ``marks``). Both shapes render through the
+    same code path from here on.
+    """
+    if isinstance(side, Side):
+        return side.pages, side.marks
+    return (side,), ()
+
+
+def _mark_key(mark: Mark) -> str:
+    return f"{mark.kind}:{mark.x0}:{mark.y0}:{mark.x1}:{mark.y1}"
 
 
 def _plan_hash(plan: SheetPlan) -> str:
@@ -63,7 +81,11 @@ def _plan_hash(plan: SheetPlan) -> str:
             if side is None:
                 digest.update(b"none")
                 continue
-            digest.update(_output_page_key(side).encode("utf-8"))
+            pages, marks = _pages_and_marks(side)
+            for page in pages:
+                digest.update(_output_page_key(page).encode("utf-8"))
+            for mark in marks:
+                digest.update(f"|mark:{_mark_key(mark)}".encode("utf-8"))
     return digest.hexdigest()
 
 
@@ -195,13 +217,47 @@ def _place_output_page(
     dest_page.contents_add(content_stream)
 
 
-def _sides(sheet: Sheet) -> list[OutputPage]:
+def _sides(sheet: Sheet) -> list[tuple[tuple[OutputPage, ...], tuple[Mark, ...]]]:
+    """The physical faces of ``sheet`` -- front then back -- each normalized
+    to ``(pages, marks)`` via ``_pages_and_marks``. One physical PDF page is
+    produced per entry, regardless of how many ``OutputPage``s (Form
+    XObjects) it carries.
+    """
     sides = []
     if sheet.front is not None:
-        sides.append(sheet.front)
+        sides.append(_pages_and_marks(sheet.front))
     if sheet.back is not None:
-        sides.append(sheet.back)
+        sides.append(_pages_and_marks(sheet.back))
     return sides
+
+
+_DASHED_MARK_KINDS = frozenset({"fold_line"})
+
+
+def _draw_marks(dest_page: pikepdf.Page, marks: Sequence[Mark]) -> None:
+    """Draw ``marks`` as vector line segments via ``ContentStreamBuilder``.
+
+    Appended in its own balanced ``q...Q`` block after every page placement
+    so it never interferes with the Form XObject placements already added.
+    Every mark is a plain line segment stroked in the PDF default (black)
+    colour -- ``fold_line`` marks are dashed, ``sewing_station`` and
+    ``signature_order`` marks are solid.
+    """
+    if not marks:
+        return
+    builder = ContentStreamBuilder()
+    for mark in marks:
+        builder.push()
+        builder.set_line_width(0.5)
+        if mark.kind in _DASHED_MARK_KINDS:
+            builder.set_dashes([3, 3])
+        else:
+            builder.set_dashes(None)
+        builder.line(mark.x0, mark.y0, mark.x1, mark.y1)
+        builder.stroke_and_close()
+        builder.pop()
+    content_stream = b"q\n" + builder.build() + b"Q\n"
+    dest_page.contents_add(content_stream)
 
 
 def export(
@@ -255,9 +311,11 @@ def _export_batched(plan: SheetPlan, selected: list[Sheet], tmp_path: str) -> No
     source_cache: dict[str, pikepdf.Pdf] = {}
     try:
         for i, sheet in enumerate(selected, start=1):
-            for output_page in _sides(sheet):
+            for pages, marks in _sides(sheet):
                 dest_page = out.add_blank_page(page_size=plan.paper_pt)
-                _place_output_page(out, dest_page, output_page, source_cache)
+                for output_page in pages:
+                    _place_output_page(out, dest_page, output_page, source_cache)
+                _draw_marks(dest_page, marks)
 
             if i % _BATCH_SHEETS == 0 and i != len(selected):
                 _flush_batch(out, source_cache, tmp_path)
