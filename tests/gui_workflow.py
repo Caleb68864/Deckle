@@ -149,6 +149,32 @@ def main(source_pdf: str, out_pdf: str) -> int:
     panel.tabs.setCurrentIndex(panel._single_tab_index)
     report["fold_scheme_back"] = window.state.project.layout.fold_scheme
 
+    # Untick "start on a right-hand page" and confirm the click travels all
+    # the way to the imposed plan. The setting existed, persisted, and was
+    # read into a discarded variable -- the tick has to move paper.
+    def first_content_index(plan):
+        """Which output slot the first real page occupies."""
+        flat = [p for sheet in plan.sheets for side in (sheet.front, sheet.back)
+                if side is not None for p in side.pages]
+        for i, page in enumerate(flat):
+            if not page.is_filler:
+                return i
+        return -1
+
+    report["recto_content_index_before"] = first_content_index(
+        recompute_plan(window.state.project)
+    )
+    panel.start_on_recto_check.setChecked(False)
+    report["recto_setting_after_untick"] = window.state.project.layout.start_on_recto
+    after_plan = recompute_plan(window.state.project)
+    report["recto_content_index_after"] = first_content_index(after_plan)
+    report["recto_leading_filler"] = bool(
+        after_plan.sheets
+        and after_plan.sheets[0].front is not None
+        and after_plan.sheets[0].front.pages[0].is_filler
+    )
+    panel.start_on_recto_check.setChecked(True)
+
     from deckle.core.export import export
 
     plan = recompute_plan(window.state.project)

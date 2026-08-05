@@ -328,6 +328,20 @@ class MainWindow:
         # previewed -- and it needs no printer, so it stays enabled when
         # Print is disabled. They sit at the bottom of the controls column
         # because they are the end of the workflow, not part of it.
+        # Undo and redo. AppState has carried a bounded 50-step history
+        # since the MVP -- every view routes its mutations through
+        # `mutate` precisely so undo is uniform rather than per-view -- and
+        # until now nothing could invoke it. Reordering 266 pages without a
+        # way back is the kind of risk the machinery was built to remove.
+        history_row = QHBoxLayout()
+        self.undo_button = QPushButton("Undo", controls)
+        self.undo_button.setToolTip("Undo the last change (Ctrl+Z)")
+        self.redo_button = QPushButton("Redo", controls)
+        self.redo_button.setToolTip("Redo the change you just undid (Ctrl+Y)")
+        history_row.addWidget(self.undo_button)
+        history_row.addWidget(self.redo_button)
+        controls_layout.addLayout(history_row)
+
         # Opening and saving the project itself, above the two ways OUT of
         # the app. A project is the job you are working on; a PDF and a
         # print run are what you produce from it.
@@ -408,6 +422,8 @@ class MainWindow:
         self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
         self.print_button.clicked.connect(self._on_print_clicked)
         self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
+        self.undo_button.clicked.connect(self.undo)
+        self.redo_button.clicked.connect(self.redo)
         self.open_project_button.clicked.connect(self._on_open_project_clicked)
         self.save_project_button.clicked.connect(self._on_save_project_clicked)
 
@@ -422,6 +438,8 @@ class MainWindow:
         #: instruction up.
         self._printer_message = ""
         self._sync_document_actions()
+        self._sync_history_actions()
+        self._install_shortcuts()
         self.refresh_printers()
 
     def _sync_document_actions(self) -> None:
@@ -451,6 +469,9 @@ class MainWindow:
     def _on_imported(self, pages, warnings) -> None:
         self.arrange_view.refresh()
         self._sync_document_actions()
+        # An import is a project mutation like any other, so it lands on
+        # the undo stack -- the buttons have to notice.
+        self._sync_history_actions()
         # The status bar may still be telling the user to import something.
         # That message is correct only while nothing is loaded; leaving it up
         # after an import means the app is giving an instruction the user has
@@ -474,6 +495,7 @@ class MainWindow:
         )
         self._sync_document_actions()
         self._refresh_status_message()
+        self._sync_history_actions()
 
     def _refresh_status_message(self) -> None:
         """Say the most useful true thing about the current state.
@@ -601,6 +623,63 @@ class MainWindow:
             return "deckle-output.pdf"
         stem = os.path.splitext(os.path.basename(pages[0].ref.path))[0]
         return f"{stem}-deckle.pdf"
+
+    def _install_shortcuts(self) -> None:
+        """Bind Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z) to the history.
+
+        :returns: nothing.
+
+        Ctrl+Shift+Z as well as Ctrl+Y because both are muscle memory
+        depending on which applications someone lives in, and a shortcut
+        that silently does nothing is worse than one that does not exist.
+        """
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        self._shortcuts = [
+            QShortcut(QKeySequence.StandardKey.Undo, self.window, self.undo),
+            QShortcut(QKeySequence.StandardKey.Redo, self.window, self.redo),
+            QShortcut(QKeySequence("Ctrl+Shift+Z"), self.window, self.redo),
+        ]
+
+    def undo(self) -> None:
+        """Step the project back one change and re-show it.
+
+        :returns: nothing. A no-op when there is nothing to undo.
+        """
+        if not self.state.can_undo:
+            return
+        self.state.undo()
+        self._after_history_change()
+
+    def redo(self) -> None:
+        """Reapply the change just undone.
+
+        :returns: nothing. A no-op when there is nothing to redo.
+        """
+        if not self.state.can_redo:
+            return
+        self.state.redo()
+        self._after_history_change()
+
+    def _after_history_change(self) -> None:
+        """Re-show everything, because undo can change anything.
+
+        :returns: nothing.
+
+        A single undo may restore a page order, a rotation, a margin or the
+        fold scheme -- ``mutate`` is uniform, so history is too. Refreshing
+        only the view that happened to make the change would leave the
+        others describing a document that no longer exists.
+        """
+        self.arrange_view.refresh()
+        self.layout_panel.refresh_from_project()
+        self._on_pages_changed()
+        self._sync_history_actions()
+
+    def _sync_history_actions(self) -> None:
+        """Enable each button only when it would do something."""
+        self.undo_button.setEnabled(self.state.can_undo)
+        self.redo_button.setEnabled(self.state.can_redo)
 
     def _on_open_project_clicked(self) -> None:
         """Open a saved project, replacing whatever is loaded.

@@ -693,15 +693,6 @@ class PreviewView:
         self._refresh_sheet_counter()
         self.refresh()
 
-    def set_layout_settings(self, settings) -> None:
-        """Update the settings behind the content-box guide.
-
-        :param settings: the new ``LayoutSettings``.
-        :returns: nothing; re-renders the visible sheet.
-        """
-        self.layout_settings = settings
-        self.refresh()
-
     def on_layout_changed(self, plan: SheetPlan, settings=None) -> None:
         """Connected to ``LayoutPanel.layout_changed``: swap in the fresh
         whole-document plan but re-render only the sheet on screen.

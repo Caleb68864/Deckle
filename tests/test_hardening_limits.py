@@ -325,12 +325,16 @@ def test_lru_cache_evicts_beyond_maxsize_and_deletes_the_backing_file(tmp_path):
     assert os.path.exists(paths[1]) and os.path.exists(paths[2])
 
 
-def test_lru_cache_put_deletes_the_file_it_displaces(tmp_path):
-    """Two threads racing the same key each make a temp file.
+def test_lru_cache_put_retires_the_file_it_displaces_without_deleting_it(tmp_path):
+    """Two threads racing the same key each make a temp file, and both
+    call ``put``.
 
-    Both call ``put``. Overwriting the entry without deleting the path it
-    displaces strands that file permanently: the cache no longer refers to
-    it, so ``clear()`` cannot reach it either.
+    The loser's file must survive the call. Its exporter has already been
+    handed the path and is about to open it, so deleting it on the spot is
+    a use-after-free -- which is exactly what it was, surfacing as a
+    ``FileNotFoundError`` raised from inside pdfium against a scratch file
+    the user never saw. It must not be *stranded* either: the cache stops
+    referring to it, so only ``clear()`` can still reclaim it.
     """
     cache = export._LRUCache(maxsize=8)
     first = str(tmp_path / "first.pdf")
@@ -341,10 +345,31 @@ def test_lru_cache_put_deletes_the_file_it_displaces(tmp_path):
     cache.put((0, "h"), first)
     cache.put((0, "h"), second)
 
-    assert not os.path.exists(first), "displaced temp file was leaked"
-    assert cache.get((0, "h")) == second
+    assert os.path.exists(first), "the displaced file was deleted while still in use"
+    assert cache.get((0, "h")) == second, "the winner must be the live entry"
+
     cache.clear()
     assert not os.path.exists(second)
+    assert not os.path.exists(first), "the displaced file was stranded"
+
+
+def test_retired_files_are_bounded_so_racing_renders_cannot_fill_the_disk(tmp_path):
+    """Retiring rather than deleting trades a use-after-free for a leak if
+    it is unbounded. Anything this far back is long since closed."""
+    cache = export._LRUCache(maxsize=8)
+    paths = []
+    for i in range(export._MAX_RETIRED + 10):
+        p = str(tmp_path / f"race{i}.pdf")
+        open(p, "wb").close()
+        paths.append(p)
+        cache.put((0, "h"), p)
+
+    survivors = [p for p in paths if os.path.exists(p)]
+    assert len(survivors) <= export._MAX_RETIRED + 1, (
+        f"retired exports are unbounded: {len(survivors)} files still on disk"
+    )
+    assert os.path.exists(paths[-1]), "the live entry must survive"
+    assert not os.path.exists(paths[0]), "the oldest retired file was never reclaimed"
 
 
 def test_lru_cache_put_of_the_same_path_twice_keeps_the_file(tmp_path):
@@ -428,8 +453,15 @@ def test_render_sheet_cancellation_leaves_no_temp_file(tmp_path, monkeypatch):
     render.render_sheet(plan, 0, "front", dpi=72, cancel=cancel)
 
     assert made, "no temp file was created -- the test proved nothing"
-    for path in made:
-        assert not os.path.exists(path), f"temp file left behind: {path}"
+    # The invariant is that nothing is STRANDED, not that nothing survives.
+    # The exported sheet now belongs to the bounded sheet cache, which is
+    # the point of having one: a cancelled render leaves the work ready for
+    # the next request instead of discarding it. What must not happen is a
+    # file that no cache knows about and no cleanup can ever reach.
+    survivors = [path for path in made if os.path.exists(path)]
+    export.clear_sheet_cache()
+    stranded = [path for path in survivors if os.path.exists(path)]
+    assert not stranded, f"temp file the cache cannot reclaim: {stranded}"
 
 
 def test_render_sheet_removes_temp_file_when_export_fails(tmp_path, monkeypatch):

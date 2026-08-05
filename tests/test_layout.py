@@ -376,6 +376,35 @@ def test_seven_pages_pad_to_eight_with_exactly_one_filler():
     assert len([p for p in flat if p.is_filler]) == 1
 
 
+def test_starting_on_a_verso_pushes_the_first_page_off_index_zero():
+    """``start_on_recto=False`` was accepted, written into the ``.deckle``
+    file, and then ignored -- the imposer read the field into ``_`` and
+    moved on. Output index 0 is a recto, so landing content on a verso
+    takes one leading filler."""
+    plan = impose(make_pages(4), settings(start_on_recto=False))
+    flat = flat_output_pages(plan)
+
+    assert flat[0].is_filler, "the first content page is still on a recto"
+    assert not flat[1].is_filler
+    assert len([p for p in flat if p.is_filler]) == 2, (
+        "4 content pages behind one filler is 5 slots, padded to 6"
+    )
+
+
+def test_starting_on_a_recto_costs_nothing():
+    """The default must not gain a filler it never needed."""
+    plan = impose(make_pages(4), settings(start_on_recto=True))
+
+    assert len([p for p in flat_output_pages(plan) if p.is_filler]) == 0
+
+
+def test_an_empty_document_gains_no_leading_filler():
+    """A leading blank is a position for content. With no content there is
+    nothing to position, and a one-sheet 'document' of pure filler is not
+    an empty document."""
+    assert impose([], settings(start_on_recto=False)).sheets == []
+
+
 def test_even_page_counts_gain_no_filler():
     for n in (2, 4, 6, 8):
         plan = impose(make_pages(n), settings())

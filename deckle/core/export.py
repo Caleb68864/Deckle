@@ -28,7 +28,7 @@ import math
 import os
 import tempfile
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from typing import Sequence
 
 import pikepdf
@@ -42,6 +42,11 @@ _CACHE_DIR_NAME = "deckle_export_cache"
 
 # Default bound on the number of cached single-sheet exports kept on disk.
 _DEFAULT_CACHE_SIZE = 200
+
+# How many race-displaced exports to keep before reclaiming the oldest.
+# Only a concurrent render of the same sheet produces one, so this is
+# generously above anything a real session reaches.
+_MAX_RETIRED = 32
 
 # How many sheets to assemble before saving and reopening the output PDF,
 # so source handles opened during composition don't accumulate across a
@@ -392,6 +397,10 @@ class _LRUCache:
     def __init__(self, maxsize: int) -> None:
         self._maxsize = maxsize
         self._data: OrderedDict[tuple[int, str], str] = OrderedDict()
+        # Paths displaced by a racing put. They cannot be deleted on the
+        # spot -- see put() -- but they must stay reachable so clear()
+        # can still reclaim them.
+        self._retired: deque[str] = deque()
         self._lock = threading.Lock()
 
     def get(self, key: tuple[int, str]) -> str | None:
@@ -411,15 +420,22 @@ class _LRUCache:
     def put(self, key: tuple[int, str], path: str) -> None:
         with self._lock:
             # Two threads can race to export the same key: each makes its
-            # own temp file and both call put(). Overwriting the entry
-            # without deleting the file it displaces strands that file for
-            # the life of the process -- the cache no longer knows about
-            # it, so neither eviction nor clear() will ever reach it.
+            # own temp file and both call put(). The loser's file must not
+            # be deleted here -- the thread that exported it has already
+            # been handed the path and is about to open it, so removing it
+            # is a use-after-free that surfaces as a FileNotFoundError from
+            # deep inside pdfium. Retire it instead: not reachable as a
+            # cache hit, still reachable by clear(), so it is neither live
+            # nor stranded.
             displaced = self._data.get(key)
             self._data[key] = path
             self._data.move_to_end(key)
             if displaced is not None and displaced != path:
-                _safe_remove(displaced)
+                self._retired.append(displaced)
+                # Bounded, so a long session of racing renders cannot fill
+                # the disk. Anything this far back is long since closed.
+                while len(self._retired) > _MAX_RETIRED:
+                    _safe_remove(self._retired.popleft())
             while len(self._data) > self._maxsize:
                 _, evicted_path = self._data.popitem(last=False)
                 _safe_remove(evicted_path)
@@ -433,6 +449,8 @@ class _LRUCache:
             for path in self._data.values():
                 _safe_remove(path)
             self._data.clear()
+            while self._retired:
+                _safe_remove(self._retired.popleft())
 
 
 def _safe_remove(path: str) -> None:
@@ -484,6 +502,10 @@ def export_sheet_cached(plan: SheetPlan, sheet_index: int) -> str:
     global _call_count
 
     key = (sheet_index, _plan_hash(plan))
+    # A hit is already checked for existence by the cache itself: the OS
+    # cleans the temp directory on a schedule Deckle does not control, and
+    # an entry whose file has gone is reported as a miss and re-exported
+    # rather than handing back a path that pdfium will reject.
     cached = _cache.get(key)
     if cached is not None:
         return cached

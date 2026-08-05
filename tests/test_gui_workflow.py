@@ -115,6 +115,25 @@ def test_folio_produces_signatures(report):
     assert report["sheets"] >= 1
 
 
+def test_starting_on_a_verso_moves_paper(report):
+    """The setting was persisted into the project file and then read into
+    a discarded variable. A tick that changes nothing is a lie the user
+    only discovers after folding."""
+    assert report["recto_setting_after_untick"] is False, (
+        "the checkbox never reached the project"
+    )
+    assert report["recto_leading_filler"] is True
+
+    # Not a sheet-count assertion: a leading filler only adds a leaf when
+    # the content count is even, and this document's is odd. And not an
+    # absolute index either -- this document already opens with the blank
+    # inserted earlier in the workflow, so index 0 was a filler either way.
+    # What the setting guarantees is the shift.
+    assert (
+        report["recto_content_index_after"] == report["recto_content_index_before"] + 1
+    ), "page 1 did not move over by one -- the setting did nothing"
+
+
 # -- the artifact --------------------------------------------------------
 
 

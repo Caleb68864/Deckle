@@ -24,8 +24,6 @@ cache entry) and computed on demand -- never eagerly across a document.
 
 from __future__ import annotations
 
-import os
-import tempfile
 import threading
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -140,8 +138,14 @@ def render_sheet(
     before exporting, after exporting, and immediately before rasterizing
     -- rasterization is the single most expensive step here and scales with
     ``dpi`` squared, so a cancel that arrives while the export is running
-    must not still pay for it. Whichever checkpoint fires, the scratch PDF
-    is removed before returning; cancellation never leaks a temp file.
+    must not still pay for it.
+
+    The exported sheet comes from :func:`deckle.core.export.export_sheet_cached`
+    and belongs to that cache, so it is deliberately not deleted here --
+    including on cancellation. It is not stranded: the cache is a bounded
+    LRU that evicts and deletes, and :func:`~deckle.core.export.clear_sheet_cache`
+    empties it. A cancelled render therefore leaves the sheet ready for the
+    next request rather than throwing the work away.
 
     :param plan: the plan to render from. Only ``sheet_index`` is
         exported, but the whole plan is passed because that is what
@@ -164,11 +168,18 @@ def render_sheet(
     has_front = sheet is not None and sheet.front is not None
     has_back = sheet is not None and sheet.back is not None
 
-    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
-    os.close(fd)
+    # Route through the cache rather than exporting to a fresh temp file
+    # every time. The cache was built, bounded, tested -- and never called,
+    # so scrubbing back and forth across a book re-exported every sheet on
+    # every visit, and returning to a sheet cost exactly as much as seeing
+    # it the first time.
+    #
+    # The cache owns the file it hands back, so nothing here deletes it;
+    # `clear_sheet_cache` and the LRU eviction are what remove entries.
+    # Its key includes the plan hash, so any layout change invalidates
+    # rather than returning a stale sheet.
+    tmp_path = export.export_sheet_cached(plan, sheet_index)
     try:
-        export.export(plan, tmp_path, sheets=[sheet_index])
-
         if cancel is not None and cancel.is_set():
             return _empty_rendered_page()
 
@@ -195,11 +206,11 @@ def render_sheet(
         finally:
             pdf.close()
     finally:
-        # Never let cleanup failure mask the render's own outcome -- on
-        # Windows the scratch file can still be held for a moment after
-        # pdfium closes it. export._safe_remove logs and moves on.
-        if os.path.exists(tmp_path):
-            export._safe_remove(tmp_path)
+        # Deliberately no cleanup: the path belongs to the sheet cache, and
+        # deleting it here would evict an entry the cache still believes it
+        # holds -- the next hit would hand back a path that no longer
+        # exists.
+        pass
 
 
 def thumbnails(

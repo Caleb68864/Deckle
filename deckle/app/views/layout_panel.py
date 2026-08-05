@@ -751,6 +751,18 @@ class LayoutPanel:
         )
         form.addRow("Binding edge:", self.binding_edge_combo)
 
+        self.start_on_recto_check = QCheckBox("Start on a right-hand page", self.widget)
+        self.start_on_recto_check.setChecked(state.project.layout.start_on_recto)
+        self.start_on_recto_check.setToolTip(
+            "Where page 1 lands once the book is bound. Ticked, it falls on "
+            "a recto -- the right-hand page, which is where a title page "
+            "belongs.\n\n"
+            "Untick when the first page should face left, as it does when "
+            "your document already begins with its own title leaf. Deckle "
+            "adds one blank in front to shift everything over."
+        )
+        form.addRow("", self.start_on_recto_check)
+
         self.landscape_policy_combo = QComboBox(self.widget)
         self.landscape_policy_combo.addItems(list(LANDSCAPE_POLICIES))
         self.landscape_policy_combo.setCurrentText(state.project.layout.landscape_policy)
@@ -859,6 +871,7 @@ class LayoutPanel:
         self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
+        self.start_on_recto_check.toggled.connect(self._on_start_on_recto_toggled)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
         self.grain_combo.currentIndexChanged.connect(self._on_grain_changed)
         self.paper_combo.currentTextChanged.connect(self._on_paper_changed)
@@ -891,6 +904,7 @@ class LayoutPanel:
             self.unit_combo, self.paper_combo, self.orientation_combo,
             self.grain_combo, self.paper_thickness_spinbox, self.gutter_spinbox,
             self.slack_combo, self.link_margins_check, self.binding_edge_combo,
+            self.start_on_recto_check,
             self.landscape_policy_combo, self.sheets_per_signature_spinbox,
             self.blank_mode_combo, self.sewing_stations_spinbox, self.tabs,
             *self.margin_spinboxes.values(),
@@ -917,6 +931,7 @@ class LayoutPanel:
             for field, box in self.margin_spinboxes.items():
                 box.setValue(from_points(getattr(layout, field), self._unit))
             self.binding_edge_combo.setCurrentText(layout.binding_edge)
+            self.start_on_recto_check.setChecked(layout.start_on_recto)
             self.landscape_policy_combo.setCurrentText(layout.landscape_policy)
             self.sheets_per_signature_spinbox.setValue(layout.sheets_per_signature)
             self.blank_mode_combo.setCurrentText(layout.blank_mode)
@@ -1106,6 +1121,12 @@ class LayoutPanel:
 
     def _on_binding_edge_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_binding_edge(project, value))
+        self.layout_changed.emit(plan)
+
+    def _on_start_on_recto_toggled(self, checked: bool) -> None:
+        plan = apply_layout_change(
+            self.state, lambda project: set_start_on_recto(project, checked)
+        )
         self.layout_changed.emit(plan)
 
     def _on_landscape_policy_changed(self, value: str) -> None:

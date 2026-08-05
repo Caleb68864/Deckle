@@ -82,6 +82,30 @@ def _gutter_side_is_left(is_recto: bool, binding_edge: str) -> bool:
     return not is_recto
 
 
+def _lead_for_recto(
+    active: list[SourcePage | None], settings: LayoutSettings
+) -> list[SourcePage | None]:
+    """Prepend a filler when the first content page must fall on a verso.
+
+    Output index 0 is a recto by definition, so ``start_on_recto=True``
+    costs nothing. ``False`` is the case that needs work: the first content
+    page has to be pushed onto a left-hand page, which takes exactly one
+    leading filler. Without this the setting was accepted, persisted into
+    the ``.deckle`` file, and then ignored -- a control that silently does
+    nothing is worse than one that is missing.
+
+    An empty document gets no filler: a leading blank is a position for
+    content, and there is no content to position.
+
+    :param active: slots so far, ``None`` for a blank.
+    :param settings: read for ``start_on_recto``.
+    :returns: ``active``, with one leading ``None`` when one is needed.
+    """
+    if settings.start_on_recto or not active:
+        return active
+    return [None, *active]
+
+
 def _pad_to_even(pages: list[SourcePage]) -> tuple[list[SourcePage | None], bool]:
     """Pad an odd-length page list with exactly one trailing ``None`` filler.
 
@@ -540,10 +564,7 @@ class GutterShiftStrategy:
         # thing in the document and shrank every real page to fit it.
         active = [None if is_blank_page(p) else p for p in pages if not p.skipped]
 
-        # start_on_recto: the first content page always lands at output
-        # index 0, which is a recto by definition, so no leading filler is
-        # needed to honor it in this single-page-per-side MVP layout.
-        _ = settings.start_on_recto  # documented no-op branch, see above
+        active = _lead_for_recto(active, settings)
 
         slots, _padded = _pad_to_even(active)
 
@@ -728,6 +749,7 @@ class SaddleStitchStrategy:
         # PAPER, so measuring it as an ordinary page made it the widest
         # thing in the document and shrank every real page to fit it.
         active = [None if is_blank_page(p) else p for p in pages if not p.skipped]
+        active = _lead_for_recto(active, settings)
         warnings: list[LayoutWarning] = []
         grain = grain_warning(settings)
         if grain is not None:
