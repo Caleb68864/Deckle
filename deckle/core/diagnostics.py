@@ -136,6 +136,9 @@ def reset_for_tests() -> None:
 
     Without this, the first test to log would pin the log location for the
     whole session and later ``DECKLE_LOG_DIR`` changes would be ignored.
+
+    :returns: nothing, and raises nothing -- a handler that refuses to
+        close is skipped, per the module docstring.
     """
     global _configured
     logger = logging.getLogger(_LOGGER_NAME)

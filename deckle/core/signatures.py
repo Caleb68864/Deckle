@@ -44,6 +44,12 @@ def split_signatures(
     ``blank_mode="balanced"`` padding is a caller concern (page-padding
     happens at a higher level) -- this function only ever groups the sheet
     indices it is given.
+
+    :param sheet_count: how many sheets there are. ``0`` yields no groups.
+    :param sheets_per_signature: the size of every group but the last.
+    :returns: the groups, in binding order.
+    :raises ValueError: if ``sheet_count`` is negative, or
+        ``sheets_per_signature`` is not a positive integer.
     """
 
     if sheet_count < 0:
@@ -74,6 +80,12 @@ def saddle_order(n: int) -> list[int]:
 
     Raises ``ValueError`` unless ``n`` is a positive multiple of 4 -- a
     saddle signature always folds to a whole number of four-page sheets.
+
+    :param n: the signature's page count.
+    :returns: for each physical print slot in order, the reading-order page
+        index that belongs in it. ``n=8`` gives
+        ``[7, 0, 1, 6, 5, 2, 3, 4]``.
+    :raises ValueError: unless ``n`` is a positive multiple of 4.
     """
 
     if n <= 0 or n % 4 != 0:
@@ -108,6 +120,11 @@ def fold_reading_order(plan: SheetPlan) -> list[int]:
     slot orders concatenated, each offset by the page count of every
     signature already placed, so this function's output lines up 1:1 with
     ``saddle_order``'s per-signature output when the two are compared.
+
+    :param plan: the imposed plan. Only ``plan.signatures`` is read -- a
+        plan with no signatures yields an empty list.
+    :returns: the reading-order page index for every physical print slot,
+        concatenated across signatures in binding order.
     """
 
     order: list[int] = []

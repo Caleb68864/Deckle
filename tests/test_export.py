@@ -307,6 +307,25 @@ def test_large_document_export_peak_memory_under_4x_small_export(tmp_path):
     comparison. A background poll thread samples RSS during each export to
     catch the peak, since ``memory_info()`` only reports the *current*
     value.
+
+    **Read this before trusting it as the memory guard.** ``rss`` is
+    absolute process memory, and the interpreter plus pikepdf/pypdfium2
+    baseline is roughly 38 MB here, which dwarfs what either export
+    actually adds: measured on this machine the 50-page export's peak sat
+    ~0.6 MB above its own pre-export baseline and the 500-page export's
+    ~6.4 MB above its. So the ratio this test computes is ~1.16, against a
+    bound of 4 -- there is enough slack that a genuine order-of-magnitude
+    regression in export()'s working set would still pass. It is a
+    blow-up alarm, not a tight bound, and it is deliberately left at A-8's
+    stated threshold rather than retuned here.
+
+    What batching actually bounds is *concurrently open source PDF
+    handles*, not total memory -- the assembled output document is
+    necessarily resident until it is saved, so peak memory scales with
+    output size no matter how the work is batched. That real invariant is
+    asserted deterministically, with no RSS sampling involved, by
+    ``tests/test_hardening_limits.py::
+    test_export_bounds_concurrently_open_source_handles``.
     """
     psutil = pytest.importorskip("psutil")
 

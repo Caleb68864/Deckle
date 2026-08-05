@@ -35,7 +35,7 @@ import pikepdf
 from pikepdf import Name, Page, Rectangle
 from pikepdf.canvas import ContentStreamBuilder
 
-from deckle.core.diagnostics import log_exception
+from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
 
 _CACHE_DIR_NAME = "deckle_export_cache"
@@ -53,12 +53,34 @@ def _mark_key(mark: Mark) -> str:
     return f"{mark.kind}:{mark.x0}:{mark.y0}:{mark.x1}:{mark.y1}"
 
 
+def _update_delimited(digest: "hashlib._Hash", tag: str, value: str) -> None:
+    """Feed ``value`` into ``digest`` length-prefixed, not just concatenated.
+
+    Running variable-length keys together makes the boundary between them
+    recoverable from their content rather than fixed by the framing: a
+    ``SourceRef.path`` that happens to contain the field separators can
+    reproduce, on its own, the exact bytes that two *different* pages would
+    contribute, so two genuinely different plans hash identically and the
+    second one is handed the first one's cached PDF.
+
+    A cache that returns the wrong page is worse than no cache at all, so
+    every variable-length component announces its own byte length and no
+    content can straddle a boundary.
+    """
+    encoded = value.encode("utf-8")
+    digest.update(f"|{tag}[{len(encoded)}]:".encode("utf-8"))
+    digest.update(encoded)
+
+
 def _plan_hash(plan: SheetPlan) -> str:
     """A stable hash of everything that affects rendered output.
 
     Deliberately built from the plan's own field values (not Python's
     ``id()`` or ``hash()``, which are unstable across processes) so the
     same layout settings always produce the same cache key.
+
+    Every variable-length component is fed in length-prefixed -- see
+    :func:`_update_delimited` for why plain concatenation is not safe here.
     """
     digest = hashlib.sha256()
     digest.update(repr(plan.paper_pt).encode("utf-8"))
@@ -70,9 +92,9 @@ def _plan_hash(plan: SheetPlan) -> str:
                 digest.update(b"none")
                 continue
             for page in side.pages:
-                digest.update(_output_page_key(page).encode("utf-8"))
+                _update_delimited(digest, "page", _output_page_key(page))
             for mark in side.marks:
-                digest.update(f"|mark:{_mark_key(mark)}".encode("utf-8"))
+                _update_delimited(digest, "mark", _mark_key(mark))
     return digest.hexdigest()
 
 
@@ -259,6 +281,27 @@ def export(
 
     Raises before any bytes are written if ``out_path`` isn't writable, so a
     partial file never appears on disk.
+
+    The scratch file is removed on every exit path -- success, exception, or
+    cancellation upstream. Cleanup itself never raises: on Windows the
+    scratch file can still be held briefly by a handle the failing export
+    was using, and letting that ``PermissionError`` escape the ``finally``
+    would replace the real cause of the failure with a misleading one.
+
+    :param plan: the imposed sheets to render.
+    :param out_path: the PDF to write. Written atomically -- composition
+        goes to a scratch file beside it, which is renamed into place only
+        once the whole document is assembled.
+    :param sheets: the sheet indices to export, in the order given, or
+        ``None`` for the whole plan. An index not present in the plan is
+        skipped rather than raising.
+    :returns: nothing.
+    :raises OSError: the output directory does not exist, or the scratch
+        file cannot be created.
+    :raises PermissionError: the output directory or an existing
+        ``out_path`` is not writable. Checked *before* any bytes are
+        written, so a partial file never appears on disk.
+    :raises pikepdf.PdfError: a source page cannot be read or copied.
     """
     target_indices = (
         [s.index for s in plan.sheets] if sheets is None else list(sheets)
@@ -275,7 +318,7 @@ def export(
         os.replace(tmp_path, out_path)
     finally:
         if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            _safe_remove(tmp_path)
 
 
 def _check_writable(out_path: str) -> None:
@@ -322,10 +365,18 @@ def _flush_batch(
 
     Called mid-assembly on very large documents so source PDFs stay open
     only for the batch that references them, not for the whole export.
+
+    Clearing ``source_cache`` is the load-bearing half: without it the
+    handles are closed but the dict keeps growing, and a project assembled
+    from one PDF per page would hold an open handle for every page in the
+    document by the end. The bound this establishes is on *concurrently
+    open source handles*, not on total output size -- the assembled output
+    document is necessarily in memory until it is saved.
     """
     out.remove_unreferenced_resources()
     out.save(tmp_path)
     out.close()
+    log_event("export_batch_flushed", open_sources=len(source_cache))
     for src in source_cache.values():
         src.close()
     source_cache.clear()
@@ -359,11 +410,23 @@ class _LRUCache:
 
     def put(self, key: tuple[int, str], path: str) -> None:
         with self._lock:
+            # Two threads can race to export the same key: each makes its
+            # own temp file and both call put(). Overwriting the entry
+            # without deleting the file it displaces strands that file for
+            # the life of the process -- the cache no longer knows about
+            # it, so neither eviction nor clear() will ever reach it.
+            displaced = self._data.get(key)
             self._data[key] = path
             self._data.move_to_end(key)
+            if displaced is not None and displaced != path:
+                _safe_remove(displaced)
             while len(self._data) > self._maxsize:
                 _, evicted_path = self._data.popitem(last=False)
                 _safe_remove(evicted_path)
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._data)
 
     def clear(self) -> None:
         with self._lock:
@@ -403,6 +466,20 @@ def export_sheet_cached(plan: SheetPlan, sheet_index: int) -> str:
     ``(sheet_index, plan_hash)`` twice performs the export only once.
     Changing any layout setting changes ``plan_hash`` and so invalidates
     the cache for that sheet.
+
+    A failed export leaves nothing behind: the placeholder temp file is
+    removed before the exception propagates. Otherwise every failure --
+    a corrupt source page, a full disk, a cancelled preview -- would strand
+    a file in the cache directory that no ``clear_sheet_cache()`` can ever
+    find, because it never reached the cache.
+
+    :param plan: the plan the sheet belongs to. Its content hash is half
+        the cache key, so changing any layout setting invalidates the
+        entry rather than returning a stale render.
+    :param sheet_index: which sheet, by ``Sheet.index``.
+    :returns: the path to the cached single-sheet PDF. Owned by the cache
+        -- callers must not delete it; use :func:`clear_sheet_cache`.
+    :raises Exception: whatever :func:`export` raises, unchanged.
     """
     global _call_count
 
@@ -415,7 +492,14 @@ def export_sheet_cached(plan: SheetPlan, sheet_index: int) -> str:
     os.close(fd)
     with _call_count_lock:
         _call_count += 1
-    export(plan, out_path, sheets=[sheet_index])
+    try:
+        export(plan, out_path, sheets=[sheet_index])
+    except BaseException as exc:
+        log_exception(
+            "cached_sheet_export_failed", exc, sheet_index=sheet_index, path=out_path
+        )
+        _safe_remove(out_path)
+        raise
     _cache.put(key, out_path)
     return out_path
 
@@ -425,5 +509,8 @@ def clear_sheet_cache() -> None:
 
     Call on project close so scrubbing a large document doesn't leak temp
     files across sessions.
+
+    :returns: nothing. A temp file that cannot be deleted is logged and
+        skipped -- cleanup failing must not fail the close.
     """
     _cache.clear()

@@ -76,6 +76,9 @@ class StaleSessionError(Exception):
     two cases without parsing prose, and a ``detail`` written for the person
     at the printer rather than for a log.
 
+    :param session_id: the session that was refused.
+    :param reason: ``"plan"`` or ``"version"``.
+    :param detail: the user-facing explanation.
     :ivar session_id: the session that was refused.
     :ivar reason: ``"plan"`` -- the document's layout changed; or
         ``"version"`` -- the state file came from an incompatible build.
@@ -138,7 +141,20 @@ def _hash_plan(plan: SheetPlan) -> str:
 
 @dataclass(frozen=True)
 class SessionSummary:
-    """A lightweight description of a resumable session, for a picker UI."""
+    """A lightweight description of a resumable session, for a picker UI.
+
+    Deliberately read straight off the state file's JSON rather than by
+    constructing a :class:`PrintSession`, so listing resumable sessions
+    never needs the plan they belong to.
+
+    :ivar session_id: the identifier :meth:`PrintSession.load` takes.
+    :ivar printer_name: the printer the run was submitted to.
+    :ivar started_at: Unix timestamp of when the run began.
+    :ivar pass_index: which pass was in progress -- ``0`` fronts, ``1``
+        backs.
+    :ivar sheet_cursor: how far into that pass the session had submitted.
+    :ivar state_path: the state file on disk.
+    """
 
     session_id: str
     printer_name: str
@@ -196,6 +212,22 @@ class PrintSession:
     of 60 sheets emerged supplies ``30``, not some running total that also
     includes pass 1's sheets. Guessing the wrong convention here reprints or
     skips sheets, so it is documented explicitly rather than left implicit.
+
+    :param plan: the imposed sheets to print.
+    :param profile: the printer's calibrated manual-duplex behaviour, which
+        decides pass order and the reload instruction.
+    :param backend: where sheets are submitted. Injected as a
+        ``PrintBackend`` Protocol so tests never touch a printer.
+    :param sheets: a subset of sheet indices to print, or ``None`` for the
+        whole plan. This is how a single signature gets reprinted -- the
+        normal path with a smaller input, not a separate branch.
+    :param test_first: submit exactly one sheet and park awaiting
+        :meth:`confirm_test_sheet` before continuing.
+    :param printer_name: recorded in the state file and the session log.
+    :param dpi: rasterization resolution handed to the backend.
+    :param copies: copies per submitted chunk.
+    :param chunk_size: sheets submitted per chunk. Chunking is what bounds
+        the blast radius of a mid-run failure to one chunk.
     """
 
     def __init__(
@@ -249,11 +281,22 @@ class PrintSession:
 
     @property
     def state_path(self) -> Path:
+        """Where this session's state file lives.
+
+        :returns: ``<state dir>/<session_id>.json``. The directory is
+            ``DECKLE_SESSION_STATE_DIR`` when set, otherwise a
+            ``deckle/print_sessions`` folder under the OS temp dir.
+        """
         return _state_dir() / f"{self._state.session_id}.json"
 
     @property
     def state(self) -> dict:
-        """A read-only snapshot of the session's persisted state."""
+        """A read-only snapshot of the session's persisted state.
+
+        :returns: the same JSON-shaped dict written to disk. Callers read
+            ``pass_index`` and ``test_sheet_pending`` from here rather than
+            recomputing either.
+        """
         return self._state.to_json()
 
     def _current_pass(self) -> PrintPass | None:
@@ -263,7 +306,13 @@ class PrintSession:
 
     @property
     def reload_instruction(self) -> str | None:
-        """The reload instruction for the pass currently in progress, if any."""
+        """The reload instruction for the pass currently in progress, if any.
+
+        :returns: the plain-language instruction computed by
+            ``deckle.core.printing.plan_passes``, or ``None`` once every
+            pass is done. The UI shows this verbatim; it never composes its
+            own.
+        """
         current = self._current_pass()
         return current.reload_instruction if current else None
 
@@ -291,6 +340,17 @@ class PrintSession:
     ) -> "PrintSession":
         """Reconstruct a session from its on-disk state file.
 
+        :param plan: the *current* plan, checked against the one the
+            session was started with.
+        :param profile: the printer profile to resume under.
+        :param backend: where the remaining sheets will be submitted.
+        :param session_id: which session to load, as reported by
+            :meth:`list_resumable`.
+        :returns: the restored session, positioned where it left off.
+        :raises FileNotFoundError: no state file for ``session_id``.
+        :raises json.JSONDecodeError: the state file is corrupt. Unlike
+            :meth:`list_resumable`, an explicit load does not skip past
+            this -- the user asked for this session by name.
         :raises StaleSessionError: if ``plan`` no longer matches the plan the
             session was started against, or the state file was written by an
             incompatible version of Deckle.
@@ -357,7 +417,15 @@ class PrintSession:
 
     @staticmethod
     def list_resumable() -> list[SessionSummary]:
-        """Enumerate every interrupted session with a state file on disk."""
+        """Enumerate every interrupted session with a state file on disk.
+
+        :returns: one summary per readable state file, in filename order.
+            Empty when the state directory does not exist.
+
+        Never raises. A state file that cannot be read or parsed is skipped
+        and logged rather than failing the whole listing -- one corrupt
+        file must not hide every other resumable session.
+        """
         directory = _state_dir()
         if not directory.exists():
             return []
@@ -397,7 +465,13 @@ class PrintSession:
         return result
 
     def start(self) -> None:
-        """Begin the session: submit the first chunk (or test sheet) of pass 1."""
+        """Begin the session: submit the first chunk (or test sheet) of pass 1.
+
+        :returns: nothing. A submission failure is recorded on
+            :attr:`last_error` and persisted, not raised -- the point of the
+            state file is that a failed run can be resumed rather than
+            restarted.
+        """
         pass_ = self._current_pass()
         if pass_ is None:
             return
@@ -415,7 +489,11 @@ class PrintSession:
         self._submit_chunk()
 
     def confirm_test_sheet(self) -> None:
-        """Acknowledge the test sheet printed correctly and resume the pass."""
+        """Acknowledge the test sheet printed correctly and resume the pass.
+
+        :returns: nothing. Clears the pending-test flag and submits the
+            next chunk immediately.
+        """
         self._state.test_first = False
         self._state.test_sheet_pending = False
         self._save()
@@ -462,6 +540,9 @@ class PrintSession:
 
         A no-op once the session has finished, or while a test sheet is
         pending confirmation.
+
+        :returns: nothing. Check :attr:`last_error` and :attr:`finished`
+            afterwards; neither condition is signalled by an exception.
         """
         if self._finished:
             return
@@ -474,6 +555,11 @@ class PrintSession:
         number of sheets that physically emerged during the pass that was
         interrupted, since software cannot observe that count directly and
         must take it as caller-supplied ground truth.
+
+        :param sheets_completed: sheets that emerged **during the
+            interrupted pass**, not cumulative across the job.
+        :returns: nothing. Submission resumes immediately, or the pass
+            advances if the count already covers it.
         """
         pass_ = self._current_pass()
         if pass_ is None:
@@ -488,8 +574,19 @@ class PrintSession:
 
     @property
     def finished(self) -> bool:
+        """Whether every pass has been submitted.
+
+        :returns: ``True`` once the last pass completed, at which point the
+            state file has been deleted -- a finished job is not resumable.
+        """
         return self._finished
 
     @property
     def last_error(self) -> str | None:
+        """The most recent submission failure, if the run is stalled.
+
+        :returns: the backend's error text, or ``None`` if the last
+            submission succeeded. A non-``None`` value means the state file
+            is still on disk and the run can be resumed.
+        """
         return self._last_error

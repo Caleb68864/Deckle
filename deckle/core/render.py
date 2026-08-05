@@ -18,7 +18,7 @@ explicit page range, never "all pages", so scrubbing a thousand-page
 document doesn't rasterize the whole thing up front.
 
 Ink bounding boxes are cached per ``SourceRef`` (frozen dataclasses hash
-by value, so two ``SourceRef``s describing the same page hit the same
+by value, so two ``SourceRef``\\ s describing the same page hit the same
 cache entry) and computed on demand -- never eagerly across a document.
 """
 
@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
@@ -39,10 +40,27 @@ from deckle.core.models import SheetPlan, SourcePage, SourceRef
 # as "paper", not ink, when scanning for a page's content bounds.
 _BACKGROUND_THRESHOLD = 250
 
+# Upper bound on remembered ink boxes. Generous -- an entry is five floats
+# and a SourceRef -- but finite: the cache is module-level and survives
+# closing a project, so a session that opens several long documents would
+# otherwise keep one entry per page of every document it has ever seen.
+_INK_BBOX_CACHE_MAX = 4096
+
 
 @dataclass(frozen=True)
 class RenderedPage:
-    """A rasterized page as a raw RGBA buffer -- no Qt/PIL types."""
+    """A rasterized page as a raw RGBA buffer -- no Qt/PIL types.
+
+    :ivar width: pixel width.
+    :ivar height: pixel height.
+    :ivar rgba: tightly packed RGBA8888 bytes, ``width * height * 4`` long.
+        Handed straight to ``QImage`` by the callers that need a Qt type;
+        this module never constructs one.
+
+    A degenerate page -- ``0`` by ``0`` with empty bytes -- is how "there
+    is nothing to show" is expressed: an absent side, or a render that was
+    cancelled. Callers check ``width``/``height`` rather than catching.
+    """
 
     width: int
     height: int
@@ -73,6 +91,26 @@ def render_sheet(
     the ``Sheet``/output-page transforms on ``plan``. If ``cancel`` is
     already set, returns a degenerate page promptly without exporting or
     rasterizing.
+
+    ``cancel`` is honoured at every point where the next step is expensive:
+    before exporting, after exporting, and immediately before rasterizing
+    -- rasterization is the single most expensive step here and scales with
+    ``dpi`` squared, so a cancel that arrives while the export is running
+    must not still pay for it. Whichever checkpoint fires, the scratch PDF
+    is removed before returning; cancellation never leaks a temp file.
+
+    :param plan: the plan to render from. Only ``sheet_index`` is
+        exported, but the whole plan is passed because that is what
+        ``export`` takes.
+    :param sheet_index: which sheet, by ``Sheet.index``.
+    :param side: which physical face.
+    :param dpi: rasterization resolution. Cost scales with its square.
+    :param cancel: optional event; when set, the call returns a degenerate
+        page at the next checkpoint.
+    :returns: the rasterized side, or a degenerate ``0x0`` page when the
+        sheet or side does not exist, or the render was cancelled.
+    :raises OSError: the scratch PDF cannot be written.
+    :raises pypdfium2.PdfiumError: the exported PDF cannot be rasterized.
     """
     if cancel is not None and cancel.is_set():
         return _empty_rendered_page()
@@ -105,14 +143,19 @@ def render_sheet(
         try:
             if page_index >= len(pdf):
                 return _empty_rendered_page()
+            if cancel is not None and cancel.is_set():
+                return _empty_rendered_page()
             page = pdf[page_index]
             bitmap = page.render(scale=dpi / 72)
             return _pil_to_rendered_page(bitmap.to_pil())
         finally:
             pdf.close()
     finally:
+        # Never let cleanup failure mask the render's own outcome -- on
+        # Windows the scratch file can still be held for a moment after
+        # pdfium closes it. export._safe_remove logs and moves on.
         if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+            export._safe_remove(tmp_path)
 
 
 def thumbnails(
@@ -120,11 +163,30 @@ def thumbnails(
     start: int,
     count: int,
     dpi: int = 36,
+    cancel: threading.Event | None = None,
 ) -> list[RenderedPage]:
     """Rasterize an explicit range ``pages[start:start + count]``.
 
     Deliberately not "render every page" -- callers virtualize a scroll
     view and only ask for the pages currently visible.
+
+    :param pages: the full page list. Only the requested window is opened.
+    :param start: index of the first page in the window.
+    :param count: how many pages to rasterize. A window that falls entirely
+        past the end returns an empty list.
+    :param dpi: rasterization resolution, low by default -- these are
+        thumbnails.
+    :param cancel: optional event checked before each page. A fast scrub
+        through a long document queues window after window, and without a
+        way to abandon one the rasterizer keeps working on windows the user
+        has already scrolled past. Returns the pages completed so far
+        rather than raising -- a superseded window's partial result is
+        discarded by the caller anyway. Omitting ``cancel`` renders the
+        whole window exactly as before.
+    :returns: one rendered page per page in the window, in order, or the
+        pages completed before cancellation.
+    :raises pypdfium2.PdfiumError: a referenced source cannot be opened or
+        rasterized.
     """
     window = list(pages)[start : start + count]
     if not window:
@@ -134,6 +196,8 @@ def thumbnails(
     open_docs: dict[str, pdfium.PdfDocument] = {}
     try:
         for source_page in window:
+            if cancel is not None and cancel.is_set():
+                break
             ref = source_page.ref
             doc = open_docs.get(ref.path)
             if doc is None:
@@ -153,7 +217,7 @@ def _rotation_quarter_turns(rotate_deg: int) -> int:
     return (rotate_deg // 90) % 4
 
 
-_ink_bbox_cache: dict[SourceRef, tuple[float, float, float, float]] = {}
+_ink_bbox_cache: OrderedDict[SourceRef, tuple[float, float, float, float]] = OrderedDict()
 _ink_bbox_cache_lock = threading.Lock()
 
 
@@ -178,10 +242,24 @@ def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]
     Cached per ``SourceRef`` -- calling this twice for the same ref
     rasterizes only once. A page with no non-background pixels (blank)
     returns a degenerate ``(0.0, 0.0, 0.0, 0.0)`` box rather than raising.
+
+    The cache is LRU-bounded at :data:`_INK_BBOX_CACHE_MAX` entries; past
+    that, the least recently used ref is dropped and would be recomputed on
+    demand. Eviction costs one rasterization, never a wrong answer.
+
+    :param ref: the page to scan. ``SourceRef`` is a frozen dataclass and
+        hashes by value, so two refs describing the same page share one
+        cache entry.
+    :param dpi: scan resolution. Low on purpose -- ink bounds do not need
+        detail, and this runs on demand while the user waits.
+    :returns: ``(x0, y0, x1, y1)`` in PDF points, bottom-left origin.
+    :raises pypdfium2.PdfiumError: the source cannot be opened or
+        rasterized.
     """
     with _ink_bbox_cache_lock:
         cached = _ink_bbox_cache.get(ref)
         if cached is not None:
+            _ink_bbox_cache.move_to_end(ref)
             return cached
 
     pil_image = _rasterize_for_bbox(ref, dpi)
@@ -200,6 +278,9 @@ def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]
 
     with _ink_bbox_cache_lock:
         _ink_bbox_cache[ref] = result
+        _ink_bbox_cache.move_to_end(ref)
+        while len(_ink_bbox_cache) > _INK_BBOX_CACHE_MAX:
+            _ink_bbox_cache.popitem(last=False)
     return result
 
 
@@ -223,6 +304,9 @@ def _scale_bbox_to_points(
 
 
 def clear_ink_bbox_cache() -> None:
-    """Drop every cached ink bbox. Mainly useful for test isolation."""
+    """Drop every cached ink bbox. Mainly useful for test isolation.
+
+    :returns: nothing.
+    """
     with _ink_bbox_cache_lock:
         _ink_bbox_cache.clear()

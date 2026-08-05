@@ -17,6 +17,17 @@ class Placement:
     """An affine placement of a page's content on a sheet, in PDF points.
 
     Origin is bottom-left, matching PDF page-coordinate conventions.
+
+    :ivar scale_x: horizontal scale factor applied to the source content.
+    :ivar scale_y: vertical scale factor. Equal to ``scale_x`` for every
+        placement Deckle emits -- aspect ratio is never distorted.
+    :ivar tx: translation of the content's lower-left corner, in sheet
+        points.
+    :ivar ty: translation of the content's lower-left corner, in sheet
+        points.
+    :ivar rotate_deg: rotation applied about the placement's own footprint
+        centre. ``0``, ``90``, ``180`` or ``270``; ``tx``/``ty`` already
+        describe the *post*-rotation footprint.
     """
 
     scale_x: float
@@ -28,7 +39,18 @@ class Placement:
 
 @dataclass(frozen=True)
 class SourceRef:
-    """A reference to a single page within a source file on disk."""
+    """A reference to a single page within a source file on disk.
+
+    :ivar path: the file the page lives in. Empty for a blank inserted in
+        the arrange view -- see ``deckle.app.state.BLANK_SOURCE_PATH``.
+    :ivar page_index: zero-based index within that file. ``-1`` for an
+        inserted blank.
+    :ivar sha256: the content hash of the whole file at import time. This
+        is what lets ``deckle.core.project_io.load_project`` tell "the
+        source moved" apart from "the source changed underneath us".
+    :ivar width_pt: the page's upright width in PDF points.
+    :ivar height_pt: the page's upright height in PDF points.
+    """
 
     path: str
     page_index: int
@@ -39,7 +61,16 @@ class SourceRef:
 
 @dataclass(frozen=True)
 class SourcePage:
-    """A page as it exists in the input, before placement is decided."""
+    """A page as it exists in the input, before placement is decided.
+
+    :ivar ref: where the page's content comes from.
+    :ivar rotate_deg: the user's own rotation for this page, applied on top
+        of whatever the source file says. Distinct from
+        ``Placement.rotate_deg``, which is the imposer's decision.
+    :ivar skipped: whether the page is excluded from imposition entirely.
+        A skipped page keeps its position in ``Project.pages`` so
+        un-skipping restores it where it was.
+    """
 
     ref: SourceRef
     rotate_deg: int
@@ -48,7 +79,14 @@ class SourcePage:
 
 @dataclass(frozen=True)
 class OutputPage:
-    """A source page (or blank filler) assigned a placement on a sheet."""
+    """A source page (or blank filler) assigned a placement on a sheet.
+
+    :ivar source_ref: the content placed here, or ``None`` for a filler.
+    :ivar placement: the exact geometry the exporter will reproduce.
+    :ivar is_filler: whether this slot is padding rather than content.
+        Filler pages exist so signature arithmetic works out; the exporter
+        leaves their page blank.
+    """
 
     source_ref: SourceRef | None
     placement: Placement
@@ -62,6 +100,15 @@ class Mark:
     Origin is bottom-left, matching PDF page-coordinate conventions. Every
     mark is a line segment regardless of ``kind`` -- no colour, no width, no
     fill. Stroke styling is entirely the renderer's concern.
+
+    :ivar kind: what the segment means to a binder. ``fold_line`` is where
+        the sheet folds, ``sewing_station`` where a needle goes through,
+        ``signature_order`` the staircase bar that makes a miscollated
+        stack visible before a single stitch.
+    :ivar x0: start of the segment, in sheet points.
+    :ivar y0: start of the segment, in sheet points.
+    :ivar x1: end of the segment, in sheet points.
+    :ivar y1: end of the segment, in sheet points.
     """
 
     kind: Literal["sewing_station","signature_order","fold_line"]
@@ -73,7 +120,17 @@ class Mark:
 
 @dataclass(frozen=True)
 class Side:
-    """One printable face of a sheet: its output pages plus any marks."""
+    """One printable face of a sheet: its output pages plus any marks.
+
+    :ivar pages: the leaves imposed onto this face -- one under gutter
+        shift, two under folio. Never empty: an absent side is ``None``,
+        never ``Side(pages=())``, which is what keeps "this face does not
+        exist" distinct from "this face carries only filler". See
+        ``deckle.core.print_session`` for why that distinction is
+        load-bearing.
+    :ivar marks: bindery marks drawn on this face.
+    :raises ValueError: if ``pages`` is empty.
+    """
 
     pages: tuple[OutputPage, ...]
     marks: tuple[Mark, ...] = ()
@@ -88,7 +145,14 @@ class Side:
 
 @dataclass(frozen=True)
 class Sheet:
-    """One physical piece of paper with an optional front and back."""
+    """One physical piece of paper with an optional front and back.
+
+    :ivar index: the sheet's position in the plan, and the identifier every
+        pass, export subset and cache key refers to it by.
+    :ivar front: the first face through the printer, or ``None``.
+    :ivar back: the second face, or ``None`` -- an odd final sheet under
+        gutter shift has no back at all.
+    """
 
     index: int
     front: Side | None
@@ -97,7 +161,19 @@ class Sheet:
 
 @dataclass(frozen=True)
 class LayoutWarning:
-    """A non-fatal issue surfaced while planning a sheet's layout."""
+    """A non-fatal issue surfaced while planning a sheet's layout.
+
+    Advisory by construction: a warning never stops an imposition and never
+    changes an exit code. It is said out loud so the user can decide, which
+    is why every consumer -- the CLI, the preview badge -- surfaces them
+    rather than filtering them.
+
+    :ivar sheet_index: the sheet the warning is about, so a viewer can show
+        it beside that sheet instead of as a global modal. ``-1`` for a
+        warning raised at import time, before sheets exist.
+    :ivar kind: a stable identifier for the class of problem.
+    :ivar detail: the user-facing explanation.
+    """
 
     sheet_index: int
     kind: Literal[
@@ -115,7 +191,16 @@ class LayoutWarning:
 
 @dataclass(frozen=True)
 class Signature:
-    """A group of sheets folded and nested together as one signature."""
+    """A group of sheets folded and nested together as one signature.
+
+    :ivar index: the signature's position in binding order, and what the
+        ``signature_order`` mark encodes as its staircase step.
+    :ivar sheet_indices: the ``Sheet.index`` values in this signature,
+        contiguous and in binding order. Concatenating every signature's
+        indices reproduces the plan's sheets exactly once each -- an
+        invariant ``SaddleStitchStrategy`` asserts rather than assumes.
+    :ivar blank_count: how many of this signature's slots are padding.
+    """
 
     index: int
     sheet_indices: tuple[int, ...]
@@ -124,7 +209,16 @@ class Signature:
 
 @dataclass(frozen=True)
 class SheetPlan:
-    """The full set of sheets produced by imposing a project's pages."""
+    """The full set of sheets produced by imposing a project's pages.
+
+    :ivar sheets: every sheet, in print order.
+    :ivar paper_pt: the paper size the sheets were laid out for, as
+        ``(width, height)`` in points.
+    :ivar warnings: everything non-fatal noticed while planning. Advisory,
+        never a failure -- but callers are expected to surface them.
+    :ivar signatures: the signature grouping, empty under
+        ``fold_scheme="none"`` where there is nothing to gather.
+    """
 
     sheets: list[Sheet]
     paper_pt: tuple[float, float]
@@ -134,7 +228,38 @@ class SheetPlan:
 
 @dataclass(frozen=True)
 class LayoutSettings:
-    """User-configurable layout and binding options for imposition."""
+    """User-configurable layout and binding options for imposition.
+
+    The three margin fields, ``gutter_pt`` and ``slack_to`` carry their own
+    extended documentation below -- they are the settings whose behaviour
+    is not recoverable from their names.
+
+    :ivar paper: sheet size as ``(width, height)`` in points.
+    :ivar gutter_pt: the spine margin. See ``margin_outer_pt`` for why this
+        is the fourth margin and not a separate concept.
+    :ivar binding_edge: which edge the book is bound on. Under
+        ``fold_scheme="folio"`` this changes meaning to *reading
+        direction* -- see ``deckle.core.layout.SaddleStitchStrategy``.
+    :ivar start_on_recto: whether the first content page is a right-hand
+        page. Honoured for free in the one-page-per-side layout, where
+        output index 0 is a recto by definition.
+    :ivar landscape_policy: what to do with a landscape page in a portrait
+        cell. ``rotate`` turns it and warns.
+    :ivar margin_top_pt: head margin, in points.
+    :ivar margin_bottom_pt: tail margin, in points.
+    :ivar fold_scheme: ``none`` for one page per side, ``folio`` for
+        saddle-stitch signatures.
+    :ivar sheets_per_signature: how many sheets are nested into one
+        gathering under ``folio``.
+    :ivar paper_thickness_pt: stock thickness, used **only** to predict
+        fore-edge creep as an advisory. No placement Deckle emits ever
+        differs because of this value.
+    :ivar sewing_stations: how many sewing-station marks per signature.
+        ``0`` disables them.
+    :ivar blank_mode: where padding blanks land -- all in the final
+        signature (``end``), or spread so no gathering is more than one
+        sheet thinner than its neighbours (``balanced``).
+    """
 
     paper: tuple[float, float]
     gutter_pt: float
@@ -206,7 +331,15 @@ class LayoutSettings:
 
 @dataclass(frozen=True)
 class Project:
-    """The document model: source pages plus layout and printer settings."""
+    """The document model: source pages plus layout and printer settings.
+
+    :ivar pages: the ordered page list, including skipped pages and
+        inserted blanks. Plain Python value objects -- never a
+        ``pikepdf.Pdf.pages`` proxy; see
+        ``deckle.app.views.arrange_view`` for why that boundary matters.
+    :ivar layout: the imposition settings.
+    :ivar printer: the printer name recorded with the project, or ``None``.
+    """
 
     pages: list[SourcePage]
     layout: LayoutSettings

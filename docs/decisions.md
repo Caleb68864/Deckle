@@ -206,3 +206,10 @@
 - Surfaces: Any hardening that stops the bad thing but misattributes the cause. The user follows the advice given -- closing PDF viewers that were never involved -- and the real problem stays invisible.
 - Watch: This is what pass 10 is for. Nine passes of adding correct behaviour still left a message that was confidently wrong, and no test caught it because every test asserted the refusal, not the reason. When auditing error handling, read what the message CLAIMS and check that claim independently -- a passing test proves the guard fired, not that it told the truth.
 - Commit: (this commit)
+
+## 2026-08-04 - The export cache key could hand back the wrong PDF
+- Symptom: `_plan_hash` fed per-page keys into the digest end to end with no framing. `_output_page_key` starts with `SourceRef.path`, an arbitrary user-supplied string, so a path containing the field separators reproduces by itself the exact bytes two different pages contribute. A two-page side and a one-page side then hash identically, and `export_sheet_cached` hands the second plan the first plan's exported PDF.
+- Fix: Every variable-length component is now length-prefixed (`_update_delimited`), so no content can straddle a boundary. A cache that returns the wrong page is worse than no cache.
+- Surfaces: Preview specifically -- it renders through the same cache, so the symptom is a preview showing pages that are not in the document. Silent: nothing crashes, nothing warns.
+- Watch: A mutation test is only as good as the mutation. Reverting this fix to a *tagged* prefix (`|page:{value}`) left the tests passing and briefly looked like they were vacuous -- but tagging still frames the values, so it was not the original bug. Only reverting to the true un-tagged concatenation made the test fail, which it does. Verify that a mutation actually reproduces the defect before concluding a test is worthless.
+- Commit: (this commit)

@@ -40,6 +40,9 @@ class SourceChangedWarning(Exception):
     Carries the offending file's ``path`` so a caller can report exactly
     which source needs attention, without ``load_project`` ever
     substituting the new content in place of what was saved.
+
+    :param path: the file whose content hash no longer matches.
+    :ivar path: the same, for a caller composing its own message.
     """
 
     def __init__(self, path: str):
@@ -58,6 +61,10 @@ class SourceMissingError(Exception):
     affordance rather than a bare failure. ``relocate(new_path)`` records
     the path the caller found the file at, for use in a subsequent
     load/save cycle.
+
+    :param expected_path: where the project expected the file to be.
+    :ivar expected_path: the same.
+    :ivar relocated_path: ``None`` until :meth:`relocate` is called.
     """
 
     def __init__(self, expected_path: str):
@@ -69,6 +76,9 @@ class SourceMissingError(Exception):
         """Record ``new_path`` as the relocated location of the missing
         source and return it, for the caller to use when re-loading or
         re-saving the project.
+
+        :param new_path: where the user found the file.
+        :returns: ``new_path``, so the call can be used inline.
         """
         self.relocated_path = new_path
         return new_path
@@ -84,6 +94,12 @@ class PathOutsideRootsWarning(Exception):
     A path that fails this check is never opened silently. The caller
     (CLI or UI) decides whether to prompt the user for confirmation and,
     if approved, retry with an expanded ``allowed_roots``.
+
+    :param path: the source path that resolved outside every root.
+    :param allowed_roots: the roots it was checked against.
+    :ivar path: the offending path.
+    :ivar allowed_roots: the roots that were considered acceptable, so a
+        caller can show the user what it would be widening.
     """
 
     def __init__(self, path: str, allowed_roots: tuple[str, ...]):
@@ -213,6 +229,13 @@ def save_project(project: Project, path: str) -> None:
 
     Only references (path/page_index/sha256) and per-page overrides are
     written -- never page content.
+
+    :param project: the project to serialize.
+    :param path: the ``.deckle`` file to write.
+    :returns: nothing.
+    :raises OSError: the path cannot be opened for writing (missing
+        directory, read-only file, absent drive). Not caught here: the
+        caller owns the message, and it names the path the user typed.
     """
     payload = {
         "version": FORMAT_VERSION,
@@ -250,6 +273,32 @@ def load_project(
     file's ``expected_path``; a file that exists but hashes differently
     raises ``SourceChangedWarning``. Either way the project is never
     loaded with silently substituted content.
+
+    :param path: the ``.deckle`` file to read.
+    :param check_sources: whether to verify that every referenced source
+        still exists and still hashes the same. The containment check runs
+        regardless.
+    :param allowed_roots: directories the user has chosen to work in,
+        beyond the project's own. Sources outside all of them are not
+        opened silently.
+    :param on_outside_roots: a decision callback taking
+        ``(path, roots)`` and returning whether to allow it. When omitted,
+        an out-of-roots path emits :class:`PathOutsideRootsAdvisory` and
+        proceeds -- refusing outright would break the normal case, where a
+        project's sources live in Downloads or a scanner folder.
+    :returns: the loaded project.
+    :raises OSError: ``path`` cannot be read.
+    :raises json.JSONDecodeError: ``path`` is not valid JSON.
+    :raises KeyError: the file is JSON but not a ``.deckle`` document.
+    :raises PathOutsideRootsWarning: a source resolves outside every
+        allowed root and ``on_outside_roots`` vetoed it.
+    :raises SourceMissingError: a referenced source is gone, carrying
+        ``expected_path`` and a ``relocate`` affordance.
+    :raises SourceChangedWarning: a referenced source exists but its
+        content hash no longer matches.
+    :raises UnknownLayoutFieldsWarning: never raised -- emitted through
+        :mod:`warnings` when the file carries layout keys this build does
+        not recognise, so field drift in either direction still opens.
     """
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)

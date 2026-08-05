@@ -59,12 +59,22 @@ class _PrinterQueryWorker:
     Plain class, not a ``QObject`` -- same shape as ``ThumbnailWorker`` and
     ``PreviewWorker``. Exists because printer enumeration can block for the
     OS spooler's timeout when a network printer is unreachable.
+
+    :ivar names: the enumerated printer names, or an empty list if
+        enumeration failed. Read only after the thread finishes.
     """
 
     def __init__(self) -> None:
         self.names: list[str] = []
 
     def run(self) -> None:
+        """Enumerate printers into :attr:`names`.
+
+        :returns: nothing, and never raises. A spooler failure degrades to
+            an empty list -- the app is fully usable for Save PDF with no
+            printers at all -- and is recorded, because "the printer list
+            was empty" is otherwise a support report with nothing behind it.
+        """
         try:
             self.names = available_printer_names()
         except Exception as exc:  # noqa: BLE001 -- degraded, not fatal

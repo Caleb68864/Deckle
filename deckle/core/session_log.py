@@ -52,7 +52,12 @@ def _data_dir() -> Path:
 
 
 def session_log_path() -> Path:
-    """The path to the current session log file."""
+    """The path to the current session log file.
+
+    :returns: ``<data dir>/session_log.jsonl``. The directory is
+        ``DECKLE_SESSION_LOG_DIR`` when set, otherwise the OS-appropriate
+        application data directory. May not exist yet.
+    """
     return _data_dir() / "session_log.jsonl"
 
 
@@ -68,6 +73,19 @@ def log_print_job(
     Called once per submitted chunk (see ``PrintSession._submit_sheets``).
     Includes a timestamp so the log can reconstruct exactly what was sent
     to the printer and when, after the fact.
+
+    :param printer: the printer the chunk went to.
+    :param profile: the calibrated profile in force. Its five behavioural
+        fields are recorded individually -- reproducing a duplex fault
+        needs to know which way the stack was meant to go.
+    :param sheets: the sheet indices in this chunk.
+    :param dpi: the rasterization resolution used.
+    :param pass_index: ``0`` for the front pass, ``1`` for the back pass.
+    :returns: nothing.
+    :raises OSError: the log directory cannot be created or the file
+        cannot be written. Unlike :mod:`deckle.core.diagnostics`, this log
+        is a hard constraint from the Intent doc rather than a best-effort
+        trace, so a failure to record a submitted job is not swallowed.
     """
     record = {
         "timestamp": time.time(),

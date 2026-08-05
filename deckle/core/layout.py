@@ -51,7 +51,17 @@ class LayoutStrategy(Protocol):
 
     def impose(
         self, pages: Sequence[SourcePage], settings: LayoutSettings
-    ) -> SheetPlan: ...
+    ) -> SheetPlan:
+        """Lay ``pages`` out onto sheets under ``settings``.
+
+        :param pages: the project's pages in reading order. Implementations
+            drop ``skipped`` pages themselves rather than expecting a
+            pre-filtered list.
+        :param settings: every configuration knob. Nothing else is passed;
+            that is what keeps this signature stable across strategies.
+        :returns: the imposed sheets, plus any advisory warnings.
+        """
+        ...
 
 
 def _is_recto(output_index: int) -> bool:
@@ -105,6 +115,11 @@ def content_box_size(
 
     ``cell`` defaults to the whole sheet -- ``GutterShiftStrategy``'s only
     cell. ``SaddleStitchStrategy`` passes one of the two folio cells.
+
+    :param settings: supplies the paper size and all four margins.
+    :param cell: the region to measure inside, or ``None`` for the whole
+        sheet.
+    :returns: ``(width, height)`` in points.
     """
     if cell is None:
         cell = _full_sheet_cell(settings.paper)
@@ -150,6 +165,15 @@ def document_scale(
     Note this is distinct from the predecessor script's defect, which applied
     page 0's *aspect ratio* to every page's geometry. Per-page geometry is
     correct; per-page scale is not.
+
+    :param pages: the pages to fit. Skipped pages and ``None`` slots are
+        ignored, as are pages with a non-positive dimension.
+    :param settings: supplies the margins that define the content box.
+    :param cell: the region pages are fitted into, or ``None`` for the
+        whole sheet. Under folio every cell is identical, so any one of
+        them gives the document-wide answer.
+    :returns: the scale factor. ``1.0`` when there is nothing to fit --
+        an empty document has no constraint to satisfy.
     """
     box_w, box_h = content_box_size(settings, cell)
     scales = []
@@ -338,6 +362,17 @@ def content_box_rect_pt(
     sheet edge -- pass the cell explicitly and give ``spine_side`` rather
     than ``is_recto``, since the folio spine is a function of cell position,
     not output-page parity.
+
+    :param settings: supplies the paper size, gutter and margins.
+    :param is_recto: whether this is a right-hand page, which together with
+        ``settings.binding_edge`` decides which side the gutter falls on.
+        Ignored when ``spine_side`` is given.
+    :param spine_side: which edge of ``cell`` carries the spine directly,
+        bypassing page parity. The folio path.
+    :param cell: the region to measure inside, or ``None`` for the whole
+        sheet.
+    :returns: ``(x0, y0, x1, y1)`` in PDF points. Falls back to the bare
+        cell when the margins would consume it entirely.
     """
     if cell is None:
         cell = _full_sheet_cell(settings.paper)
@@ -382,6 +417,20 @@ def actual_margins_pt(
     right-hand-cell leaf's margins are measured against ``x0 = 396``, not
     ``0`` -- and pass ``spine_side`` instead of ``is_recto``, since the
     folio spine is a function of cell position, not page parity.
+
+    :param output_page: the placed page to measure. A filler page has no
+        content, so it measures as all zeros rather than raising.
+    :param paper: the sheet size, used only to derive the default cell.
+    :param is_recto: whether this is a right-hand page. Ignored when
+        ``spine_side`` is given.
+    :param binding_edge: ``"left"`` or ``"right"``, paired with
+        ``is_recto`` to decide which measured edge is the spine.
+    :param spine_side: which edge of ``cell`` is the spine, bypassing page
+        parity.
+    :param cell: the region to measure against, or ``None`` for the whole
+        sheet.
+    :returns: ``(inner, outer, top, bottom)`` in points. Negative means
+        the content overflows that edge.
     """
     if cell is None:
         cell = _full_sheet_cell(paper)
@@ -416,6 +465,14 @@ class GutterShiftStrategy:
     def impose(
         self, pages: Sequence[SourcePage], settings: LayoutSettings
     ) -> SheetPlan:
+        """Impose ``pages`` one per physical side.
+
+        :param pages: the project's pages; ``skipped`` ones are dropped
+            here rather than by the caller.
+        :param settings: paper, gutter, margins and binding edge.
+        :returns: a plan whose sheets carry a single-page ``Side`` each,
+            and no signatures -- there is nothing gathered to group.
+        """
         active = [p for p in pages if not p.skipped]
 
         # start_on_recto: the first content page always lands at output
@@ -469,6 +526,10 @@ def cell_geometry(paper: tuple[float, float]) -> tuple[Cell, Cell]:
     For letter landscape (792 x 612) this returns ``(0, 0, 396, 612)`` and
     ``(396, 0, 792, 612)`` -- matching the vault recipe's recorded
     ``1 0 0 1 0 0 cm`` / ``1 0 0 1 396 0 cm``.
+
+    :param paper: the sheet size as ``(width, height)`` in points.
+    :returns: ``(left_cell, right_cell)``, each an
+        :data:`~deckle.core.layout.Cell`.
     """
     paper_w, paper_h = paper
     fold_x = paper_w / 2.0
@@ -572,6 +633,27 @@ class SaddleStitchStrategy:
     """
 
     def impose(self, pages: Sequence[SourcePage], settings: LayoutSettings) -> SheetPlan:
+        """Impose ``pages`` as folio signatures, two leaves per sheet side.
+
+        :param pages: the project's pages; ``skipped`` ones are dropped
+            here. The list is padded to a multiple of four in a single
+            pass, and the padding is reported as a ``signature_padding``
+            warning rather than done silently.
+        :param settings: paper, margins, ``sheets_per_signature``,
+            ``blank_mode``, ``sewing_stations`` and ``binding_edge`` (which
+            here means reading direction).
+        :returns: a plan whose sheets carry two-page ``Side``\\ s, plus fold
+            lines, sewing stations and signature-order marks, and a
+            populated ``signatures`` tuple.
+        :raises AssertionError: if the signature grouping does not cover
+            every sheet exactly once in binding order, or the per-signature
+            slot counts do not reconstruct the padded page list. These are
+            verified rather than trusted: a grouping bug is invisible until
+            a book is folded, sewn and out of order.
+
+        Portrait paper is a warning, never a refusal -- Deckle advises and
+        proceeds rather than overriding the caller's paper choice.
+        """
         active = [p for p in pages if not p.skipped]
         warnings: list[LayoutWarning] = []
 

@@ -36,6 +36,11 @@ def sewing_stations(
     below the head. ``count <= 0`` returns ``()`` -- how
     ``settings.sewing_stations = 0`` disables stations without a new boolean.
     A single station is centred on the sheet.
+
+    :param sheet_h: the sheet height in points.
+    :param fold_x: the x coordinate of the fold, which the ticks straddle.
+    :param count: how many stations. ``<= 0`` returns no marks.
+    :returns: the station ticks, tail to head.
     """
     if count <= 0:
         return ()
@@ -65,6 +70,14 @@ def signature_order_mark(
     staircase down the spine; a misordered one is instantly visible before a
     single stitch. Index 0 sits at the tail margin, ``sig_count - 1`` at the
     head margin.
+
+    :param sig_index: which signature this is, zero-based -- the step's
+        position on the staircase.
+    :param sig_count: how many signatures the book has, which sets the step
+        height. A single-signature book puts its one bar at the tail.
+    :param sheet_h: the sheet height in points.
+    :param fold_x: the x coordinate of the spine fold.
+    :returns: the order bar, lying along the fold.
     """
     step = (sheet_h - 2 * SEWING_MARGIN_PT - ORDER_BAR_PT) / max(1, sig_count - 1)
     y0 = SEWING_MARGIN_PT + sig_index * step
@@ -73,5 +86,10 @@ def signature_order_mark(
 
 
 def fold_line(sheet_h: float, fold_x: float) -> Mark:
-    """The cell boundary, head to tail. Dashing is the renderer's concern."""
+    """The cell boundary, head to tail. Dashing is the renderer's concern.
+
+    :param sheet_h: the sheet height in points; the line spans all of it.
+    :param fold_x: the x coordinate of the fold.
+    :returns: the fold line.
+    """
     return Mark(kind="fold_line", x0=fold_x, y0=0.0, x1=fold_x, y1=sheet_h)

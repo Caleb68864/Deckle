@@ -216,7 +216,14 @@ def _render_sheet_side(
 
 @dataclass(frozen=True)
 class DuplexModes:
-    """Duplex options a given printer can offer for a pass."""
+    """Duplex options a given printer can offer for a pass.
+
+    :ivar manual: always ``True``. Deckle's two-pass reload flow needs no
+        hardware support -- it exists for printers that have none.
+    :ivar single_pass_duplex: whether the printer reports a real duplexer.
+        Offered alongside manual duplex because a user who *does* own a
+        duplexer should not be worse off for using Deckle.
+    """
 
     manual: bool
     single_pass_duplex: bool
@@ -227,6 +234,23 @@ class QtPrintBackend:
 
     ``profile`` supplies the imageable area (never Qt's own default
     margins) and is what gets logged with every submitted chunk.
+
+    :param profile: the calibrated printer profile.
+    :param chunk_size: sheets per Qt print job. Chunking bounds the blast
+        radius of a mid-job failure to one chunk, not a ream.
+    :param drivers_ignoring_rotate: printer names known to discard a PDF's
+        ``/Rotate`` key, for which rotation is baked into the content
+        instead. Deliberately empty by default -- a driver is added only
+        once divergence has actually been observed.
+    :ivar submitted_sheets: sheet indices the last pass definitely got to
+        the spooler.
+    :ivar uncertain_sheets: the sheets in the chunk that failed. Genuinely
+        unknown: a chunk can fail on its first sheet or its last, and
+        telling a user they printed is how a reprint comes out with holes
+        in it. ``PrintResult`` carries only a count, and
+        ``deckle.core.printing`` is a frozen seam, so the indices live here.
+    :ivar unsubmitted_sheets: sheets never sent, because the failure
+        cancelled the rest of the pass.
     """
 
     def __init__(
@@ -273,6 +297,22 @@ class QtPrintBackend:
         A printer that has disappeared since it was chosen is reported as
         such before anything is painted, rather than as whatever Qt says
         when ``QPainter.begin()`` fails on a queue that no longer exists.
+
+        :param plan: the imposed sheets.
+        :param sheets: the sheet indices in this chunk, in submission order.
+        :param printer_name: the target queue. Empty means the system
+            default, which is not ours to second-guess.
+        :param copies: copies of the chunk.
+        :param dpi: rasterization resolution.
+        :param side: which physical face to paint.
+        :param rotate_backs: whether back sides need a 180-degree turn to
+            land right side up, per the profile's flip axis.
+        :param pass_index: recorded in the session log and diagnostics.
+        :returns: a :class:`~deckle.core.printing.PrintResult`. **Never
+            raises for a print failure** -- offline, out of paper, driver
+            rejection and a printer removed mid-run all come back as
+            ``PrintResult.error``, because the caller's job is to offer a
+            resume rather than to unwind a stack.
         """
         if not printer_is_available(printer_name):
             error = f"printer {printer_name!r} is no longer available"
@@ -331,6 +371,16 @@ class QtPrintBackend:
         on its first sheet or its last, so its sheets are genuinely
         unknown, and telling a user they printed is how a reprint comes out
         with holes in it.
+
+        :param plan: the imposed sheets.
+        :param print_pass: the pass to submit, supplying sheet order, side
+            and ``rotate_backs``. None of that is recomputed here.
+        :param printer_name: the target queue.
+        :param copies: copies per chunk.
+        :param dpi: rasterization resolution.
+        :returns: a ``PrintResult`` whose ``submitted`` is the count
+            actually submitted before any failure. A failure is reported
+            through ``error``, never raised.
         """
         chunks = _chunked(print_pass.sheet_order, self.chunk_size)
         self.submitted_sheets = []
@@ -436,6 +486,10 @@ class QtPrintBackend:
         it: a printer that already has a duplexer should not be *worse*
         off using Deckle than using its own driver directly, and the user
         may not own this printer forever.
+
+        :param printer_name: the printer to ask about.
+        :returns: the available modes. A printer Qt does not recognise
+            reports manual duplex only, which is the safe direction.
         """
         info = _printer_info(printer_name)
         supported = set(info.supportedDuplexModes()) if not info.isNull() else set()
@@ -459,6 +513,15 @@ class QtPrintBackend:
 
         Tracks the same submitted/uncertain/unsubmitted split as
         :meth:`submit_pass`.
+
+        :param plan: the imposed sheets.
+        :param sheets: the sheet indices to print.
+        :param printer_name: the target queue, which must actually have a
+            duplexer -- check :meth:`duplex_modes` first.
+        :param copies: copies per chunk.
+        :param dpi: rasterization resolution.
+        :returns: a ``PrintResult``. As with :meth:`submit`, a print
+            failure is reported through ``error`` rather than raised.
         """
         chunks_all = _chunked(list(sheets), self.chunk_size)
         self.submitted_sheets = []

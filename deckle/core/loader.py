@@ -92,7 +92,7 @@ def _evict_lru_cache_entries(cache_dir: str, max_bytes: int) -> None:
 
 
 class SourceLoadError(Exception):
-    """Base for every refusal to turn a path into ``SourcePage``s.
+    """Base for every refusal to turn a path into ``SourcePage``\\ s.
 
     Loading is the first thing Deckle does and the first thing that goes
     wrong: a path typed with a typo, a PDF that finished downloading
@@ -106,6 +106,10 @@ class SourceLoadError(Exception):
     message that names three things: what failed, which file, and what the
     user can do next. Callers that only need "did the import fail, and what
     do I tell the user" can catch this base class and print ``str(exc)``.
+
+    :param path: the offending path.
+    :param message: the user-facing explanation, ending in a remedy.
+    :ivar path: the offending path, available on every subclass.
     """
 
     def __init__(self, path: str, message: str):
@@ -159,7 +163,14 @@ class CorruptImageError(SourceLoadError):
 
 
 class EncryptedPdfError(SourceLoadError):
-    """Raised by ``load_pdf`` when the PDF is password-protected."""
+    """Raised by ``load_pdf`` when the PDF is password-protected.
+
+    Deckle cannot supply a password, so the message tells the user to save
+    an unprotected copy rather than offering an option that does not exist.
+
+    :param path: the encrypted PDF. The message is composed here, so this
+        is the only subclass whose constructor takes no ``message``.
+    """
 
     def __init__(self, path: str):
         super().__init__(
@@ -176,6 +187,13 @@ class ImportedPages(list):
     ``load_image_dir`` behaves as a plain ``list[SourcePage]`` for every
     caller that only cares about pages, while still surfacing warnings
     (e.g. mixed DPI across an import) via the ``.warnings`` attribute.
+
+    :param pages: the loaded pages.
+    :param warnings: non-fatal import advisories, or ``None`` for none.
+    :ivar warnings: the advisories. Callers read them via
+        ``getattr(pages, "warnings", [])`` so a plain list works too --
+        which is exactly why wrapping the result in ``list()`` silently
+        drops every one of them.
     """
 
     def __init__(self, pages, warnings: list[LayoutWarning] | None = None):
@@ -484,7 +502,7 @@ def load_image_dir(
 
     Writes a single normalized PDF (one page per image, in natural sort
     order) into a cache directory under the OS temp dir, and returns
-    ``SourcePage``s whose ``SourceRef``s point at that cached PDF.
+    ``SourcePage``\\ s whose ``SourceRef``\\ s point at that cached PDF.
 
     The cache directory is bounded (A-7): before writing, least-recently-used
     entries are evicted until the directory's total size is at or under
@@ -492,9 +510,18 @@ def load_image_dir(
     exists mainly so tests can exercise eviction without writing 2 GB of
     fixtures; production callers should leave it at the default.
 
+    :param path: the directory of images to import.
+    :param cache_max_bytes: the normalization cache's size budget, or
+        ``None`` for the 2 GB default.
+    :returns: an :class:`ImportedPages` -- a ``list[SourcePage]`` that also
+        carries ``.warnings``. Do **not** wrap it in ``list()``; that
+        discards the mixed-DPI and skipped-file advisories.
     :raises MissingSourceError: ``path`` does not exist.
     :raises UnreadableSourceError: ``path`` is a file, or cannot be listed.
     :raises NoImagesFoundError: the folder contains no importable images.
+    :raises CorruptImageError: a file with an image extension cannot be
+        decoded or converted. Fatal to the whole import by design -- a page
+        quietly missing from a book is discovered after it is folded.
     """
     max_bytes = _CACHE_MAX_BYTES if cache_max_bytes is None else cache_max_bytes
     image_paths, skipped_names = _scan_image_dir(path)
