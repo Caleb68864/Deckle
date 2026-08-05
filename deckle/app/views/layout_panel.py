@@ -317,12 +317,15 @@ def _qt_widgets():
         QPushButton,
         QRadioButton,
         QSpinBox,
+        QTabWidget,
+        QVBoxLayout,
         QWidget,
     )
 
     return (
         QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-        QLabel, QPushButton, QRadioButton, QSpinBox, QWidget,
+        QLabel, QPushButton, QRadioButton, QSpinBox, QTabWidget,
+        QVBoxLayout, QWidget,
     )
 
 
@@ -359,6 +362,8 @@ class LayoutPanel:
             QPushButton,
             QRadioButton,
             QSpinBox,
+            QTabWidget,
+            QVBoxLayout,
             QWidget,
         ) = _qt_widgets()
 
@@ -370,7 +375,36 @@ class LayoutPanel:
 
         self.state = state
         self.widget = QWidget(parent)
-        form = QFormLayout(self.widget)
+        outer = QVBoxLayout(self.widget)
+
+        # Fold scheme sits ABOVE the tabs, not inside one. It is a mode
+        # selector, not a setting: it decides which tab's controls are
+        # live, so burying it in a tab would mean switching to the tab you
+        # cannot use in order to enable it.
+        mode_form = QFormLayout()
+        self.fold_scheme_combo = QComboBox(self.widget)
+        self.fold_scheme_combo.addItems(list(FOLD_SCHEMES))
+        self.fold_scheme_combo.setCurrentText(state.project.layout.fold_scheme)
+        self.fold_scheme_combo.setToolTip(
+            "'none' shifts a gutter and prints one page per side -- the "
+            "proven path. 'folio' imposes two-up saddle-stitch signatures "
+            "and is experimental; see the README before trusting it with "
+            "paper."
+        )
+        mode_form.addRow("Fold scheme:", self.fold_scheme_combo)
+        outer.addLayout(mode_form)
+
+        self.tabs = QTabWidget(self.widget)
+        outer.addWidget(self.tabs)
+
+        page_tab = QWidget(self.widget)
+        form = QFormLayout(page_tab)
+        self.tabs.addTab(page_tab, "Page && margins")
+
+        signature_tab = QWidget(self.widget)
+        signature_form = QFormLayout(signature_tab)
+        self.tabs.addTab(signature_tab, "Signatures")
+        self._signature_tab_index = self.tabs.indexOf(signature_tab)
 
         # Lengths are stored in points but entered in whatever unit suits the
         # job -- inches for a US letter binder, cm for metric stock.
@@ -379,6 +413,11 @@ class LayoutPanel:
         self.unit_combo.setCurrentText("in")
         self._unit = "in"
         form.addRow("Units:", self.unit_combo)
+        self.unit_combo.setToolTip(
+            "The unit every length on this tab is typed in. Values are "
+            "stored in points regardless, so switching units re-displays "
+            "the same measurement -- it never changes your layout."
+        )
 
         self.gutter_spinbox = QDoubleSpinBox(self.widget)
         self.gutter_spinbox.setDecimals(3)
@@ -386,6 +425,14 @@ class LayoutPanel:
         self.gutter_spinbox.setRange(0.0, from_points(288.0, self._unit))
         self.gutter_spinbox.setValue(from_points(state.project.layout.gutter_pt, self._unit))
         form.addRow("Gutter:", self.gutter_spinbox)
+        self.gutter_spinbox.setToolTip(
+            "The margin on the spine edge -- the strip swallowed by the "
+            "binding. It alternates side by side so it always falls on "
+            "the bound edge. This is a MINIMUM: if a page is narrower "
+            "than the others, the spare width lands here by default, so "
+            "the gutter you get can exceed the gutter you asked for. "
+            "Change that with 'Spare width to'."
+        )
 
         # Pages of differing widths produce differing slack; this picks
         # which margin absorbs it -- i.e. which stays constant.
@@ -406,20 +453,48 @@ class LayoutPanel:
         self.link_margins_check = QCheckBox("Link margins (one value for all)", self.widget)
         self.link_margins_check.setChecked(state.project.layout.margins_linked)
         form.addRow("", self.link_margins_check)
+        self.link_margins_check.setToolTip(
+            "Edit head, tail and fore-edge as a single value. Untick to "
+            "set them independently -- useful when the fore-edge needs "
+            "room for a thumb but the head does not."
+        )
 
         # Three editable margins; the fourth edge is the spine, whose margin
         # is the gutter above.
         self.margin_spinboxes: dict[str, object] = {}
-        for field, label in (
-            ("margin_top_pt", "Margin top (head):"),
-            ("margin_bottom_pt", "Margin bottom (tail):"),
-            ("margin_outer_pt", "Margin outer (fore-edge):"),
+        for field, label, tip in (
+            (
+                "margin_top_pt",
+                "Margin top (head):",
+                "The blank strip along the top edge, called the head. Most "
+                "printers cannot print to the very edge of the paper, so a "
+                "head margin of zero usually means clipped content -- see "
+                "'Use printer margins'.",
+            ),
+            (
+                "margin_bottom_pt",
+                "Margin bottom (tail):",
+                "The blank strip along the bottom edge, called the tail. "
+                "Traditionally set larger than the head: it looks balanced "
+                "to the eye, and it is where a thumb rests when the book is "
+                "held open.",
+            ),
+            (
+                "margin_outer_pt",
+                "Margin outer (fore-edge):",
+                "The blank strip on the edge opposite the spine -- the edge "
+                "you see when the book is closed and the one you turn pages "
+                "by.\n\nThis is the margin most worth keeping consistent, "
+                "which is why 'Spare width to' sends leftover space to the "
+                "gutter by default.",
+            ),
         ):
             box = QDoubleSpinBox(self.widget)
             box.setDecimals(3)
             box.setSingleStep(0.125)
             box.setRange(0.0, from_points(216.0, self._unit))
             box.setValue(from_points(getattr(state.project.layout, field), self._unit))
+            box.setToolTip(tip)
             form.addRow(label, box)
             self.margin_spinboxes[field] = box
         self._sync_margin_enabled()
@@ -434,33 +509,71 @@ class LayoutPanel:
         self.binding_edge_combo = QComboBox(self.widget)
         self.binding_edge_combo.addItems(list(BINDING_EDGES))
         self.binding_edge_combo.setCurrentText(state.project.layout.binding_edge)
+        self.binding_edge_combo.setToolTip(
+            "Which edge the book is bound on. Left is conventional for "
+            "left-to-right languages; right suits Arabic, Hebrew, or "
+            "Japanese tate-gaki. This mirrors which side the gutter "
+            "falls on for every page."
+        )
         form.addRow("Binding edge:", self.binding_edge_combo)
 
         self.landscape_policy_combo = QComboBox(self.widget)
         self.landscape_policy_combo.addItems(list(LANDSCAPE_POLICIES))
         self.landscape_policy_combo.setCurrentText(state.project.layout.landscape_policy)
+        self.landscape_policy_combo.setToolTip(
+            "What to do with a landscape page in a portrait book.\n\n"
+            "rotate: turn it 90 degrees so it fills the page (the default "
+            "-- the reader turns the book).\n"
+            "scale: shrink it to fit upright.\n"
+            "letterbox: leave it upright with bands above and below."
+        )
         form.addRow("Landscape policy:", self.landscape_policy_combo)
 
-        # -- signature/binding controls --------------------------------
-        self.fold_scheme_combo = QComboBox(self.widget)
-        self.fold_scheme_combo.addItems(list(FOLD_SCHEMES))
-        self.fold_scheme_combo.setCurrentText(state.project.layout.fold_scheme)
-        form.addRow("Fold scheme:", self.fold_scheme_combo)
+        # -- signature/binding controls (folio only) --------------------
+        # Everything below lands on the Signatures tab. Under
+        # fold_scheme="none" these values are read by nothing, so the tab is
+        # disabled rather than left looking editable -- a control that
+        # accepts input and changes nothing is worse than one that is
+        # visibly unavailable.
+        self.signature_hint_label = QLabel("", signature_tab)
+        self.signature_hint_label.setWordWrap(True)
+        signature_form.addRow(self.signature_hint_label)
 
         self.sheets_per_signature_spinbox = QSpinBox(self.widget)
         self.sheets_per_signature_spinbox.setRange(1, 100)
         self.sheets_per_signature_spinbox.setValue(state.project.layout.sheets_per_signature)
-        form.addRow("Sheets per signature:", self.sheets_per_signature_spinbox)
+        self.sheets_per_signature_spinbox.setToolTip(
+            "How many sheets are nested inside one another to make a single "
+            "folded gathering.\n\n"
+            "Each sheet becomes 4 pages once folded, so 4 sheets is a "
+            "16-page signature -- a common choice. More sheets means fewer "
+            "gatherings to sew, but a thicker fold that bulges at the "
+            "fore-edge and needs trimming."
+        )
+        signature_form.addRow("Sheets per signature:", self.sheets_per_signature_spinbox)
 
         self.blank_mode_combo = QComboBox(self.widget)
         self.blank_mode_combo.addItems(list(BLANK_MODES))
         self.blank_mode_combo.setCurrentText(state.project.layout.blank_mode)
-        form.addRow("Blank mode:", self.blank_mode_combo)
+        self.blank_mode_combo.setToolTip(
+            "A folded book needs a page count that is a multiple of 4, so "
+            "blanks get added. This chooses where.\n\n"
+            "end: all blanks at the back of the book.\n"
+            "balanced: spread across signatures, so no single gathering is "
+            "noticeably emptier than its neighbours."
+        )
+        signature_form.addRow("Blank mode:", self.blank_mode_combo)
 
         self.sewing_stations_spinbox = QSpinBox(self.widget)
         self.sewing_stations_spinbox.setRange(0, 20)
         self.sewing_stations_spinbox.setValue(state.project.layout.sewing_stations)
-        form.addRow("Sewing stations:", self.sewing_stations_spinbox)
+        self.sewing_stations_spinbox.setToolTip(
+            "Marks printed on the fold line showing where to pierce for "
+            "sewing. Three is the traditional pamphlet stitch; five suits a "
+            "taller book.\n\nSet to 0 to print no sewing marks -- useful if "
+            "you are stapling rather than sewing."
+        )
+        signature_form.addRow("Sewing stations:", self.sewing_stations_spinbox)
 
         self.paper_thickness_spinbox = QDoubleSpinBox(self.widget)
         self.paper_thickness_spinbox.setDecimals(3)
@@ -469,14 +582,29 @@ class LayoutPanel:
         self.paper_thickness_spinbox.setValue(
             from_points(state.project.layout.paper_thickness_pt, self._unit)
         )
-        form.addRow("Paper thickness:", self.paper_thickness_spinbox)
+        self.paper_thickness_spinbox.setToolTip(
+            "The thickness of one sheet of your paper, used to estimate "
+            "creep.\n\nWhen sheets nest inside one another, the inner ones "
+            "stick out further at the fore-edge -- the thicker the stock and "
+            "the more sheets per signature, the worse it gets. Leave at 0 if "
+            "you plan to trim the fore-edge after binding, which removes the "
+            "problem entirely."
+        )
+        signature_form.addRow("Paper thickness:", self.paper_thickness_spinbox)
 
         # Live readout -- "17 signatures · 67 sheets · 2 blanks" -- derived
         # from the recomputed SheetPlan, since that arithmetic is the thing
         # a binder actually decides on.
         self.binding_readout_label = QLabel("", self.widget)
-        form.addRow("Binding:", self.binding_readout_label)
+        self.binding_readout_label.setToolTip(
+            "What your current settings actually produce, recomputed live. "
+            "This is the arithmetic a binder decides on -- how many "
+            "gatherings to sew, how much paper to cut, and how many blank "
+            "pages the fold count forced."
+        )
+        signature_form.addRow("Binding:", self.binding_readout_label)
         self.binding_readout_label.setText(binding_readout_str(recompute_plan(state.project)))
+        self._sync_signature_tab()
 
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
         for field, box in self.margin_spinboxes.items():
@@ -496,6 +624,35 @@ class LayoutPanel:
         self.blank_mode_combo.currentTextChanged.connect(self._on_blank_mode_changed)
         self.sewing_stations_spinbox.valueChanged.connect(self._on_sewing_stations_changed)
         self.paper_thickness_spinbox.valueChanged.connect(self._on_paper_thickness_changed)
+
+    def _sync_signature_tab(self) -> None:
+        """Enable the Signatures tab only when the fold scheme uses it.
+
+        Under ``fold_scheme="none"`` the imposer never reads sheets per
+        signature, blank mode, sewing stations or paper thickness. Leaving
+        them editable invites the user to set a value, watch the preview not
+        change, and conclude the app is broken -- so the tab is disabled and
+        says which setting would turn it on.
+        """
+        folio = self.state.project.layout.fold_scheme == "folio"
+        self.tabs.setTabEnabled(self._signature_tab_index, folio)
+        if folio:
+            self.signature_hint_label.setText(
+                "Saddle-stitch signatures. Gutter and margins still come from "
+                "the Page & margins tab -- these settings only control how "
+                "sheets are folded and gathered.\n\n"
+                "Experimental: fold a test signature on scrap and read it "
+                "before committing a book."
+            )
+            self.tabs.setTabToolTip(self._signature_tab_index, "")
+        else:
+            self.signature_hint_label.setText(
+                'These settings apply only when Fold scheme is "folio".'
+            )
+            self.tabs.setTabToolTip(
+                self._signature_tab_index,
+                'Set Fold scheme to "folio" to use signature settings.',
+            )
 
     def _on_gutter_changed(self, value: float) -> None:
         points = to_points(value, self._unit)
@@ -594,6 +751,7 @@ class LayoutPanel:
     def _on_fold_scheme_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_fold_scheme(project, value))
         self._refresh_binding_readout(plan)
+        self._sync_signature_tab()
         self.layout_changed.emit(plan)
 
     def _on_sheets_per_signature_changed(self, value: int) -> None:

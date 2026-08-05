@@ -220,3 +220,10 @@
 - Surfaces: `deckle/core/printing.py` and `deckle/core/profiles.py` are contractually frozen, so they are documented via autodoc WITHOUT being edited -- not even their docstrings. Both still diff clean against main.
 - Watch: The instruction that mattered was to preserve the existing prose verbatim. These docstrings explain *why* -- why presence-only hashing was insufficient, why the gutter IS the inner margin, which Traveller measurements motivated `document_scale` -- and a generator that replaces explanation with `:param x: the x` boilerplate destroys the most valuable thing in the codebase. Field lists were added AROUND the prose. When commissioning doc work, say this explicitly; the default instinct is to normalise.
 - Commit: (this commit)
+
+## 2026-08-04 - Layout panel split into tabs; every control got a tooltip
+- Symptom: One flat 13-row form mixed universal settings, gutter-path settings, and five signature-only controls that are read by nothing under fold_scheme="none" -- yet stayed visible and editable. A user could set sheets per signature, watch the preview not move, and reasonably conclude the app was broken.
+- Fix: A "Page & margins" tab and a "Signatures" tab, with the Signatures tab disabled unless the fold scheme uses it and a label saying which setting turns it on. Tooltips on all fourteen controls, written to explain the bookbinding reason rather than restate the label.
+- Surfaces: Fold scheme deliberately sits ABOVE the tabs rather than inside one. It is a mode selector, not a setting -- putting it on the Signatures tab would mean reaching the disabled tab in order to enable it.
+- Watch: Tabs must not imply the two paths are independent. Folio still uses the gutter and margins from the first tab, so the Signatures hint says so explicitly and the Page tab stays enabled in both modes. Also: `&` is Qt's mnemonic marker, so a literal ampersand in a tab label must be written `&&` -- "Page && margins" renders as "Page & margins".
+- Commit: (this commit)

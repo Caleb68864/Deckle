@@ -505,3 +505,63 @@ def test_folio_guides_mirror_when_the_binding_edge_is_right():
     assert [p for _, p in left_guides] == [p for _, p in right_guides]
     # ...but the gutter moves, so the rects themselves differ.
     assert [r for r, _ in left_guides] != [r for r, _ in right_guides]
+
+
+# -- the layout panel's two tabs ----------------------------------------
+
+
+def _panel(**layout_overrides):
+    """A real LayoutPanel over a real AppState, without showing anything."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8, **layout_overrides))
+    return layout_panel.LayoutPanel(state)
+
+
+def test_signature_tab_is_disabled_until_the_fold_scheme_uses_it():
+    """Under fold_scheme="none" the imposer reads none of these settings.
+
+    Leaving them editable invites the user to change a value, watch the
+    preview not move, and conclude the app is broken.
+    """
+    panel = _panel(fold_scheme="none")
+
+    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is False
+    assert "folio" in panel.signature_hint_label.text()
+    assert "folio" in panel.tabs.tabToolTip(panel._signature_tab_index)
+
+
+def test_signature_tab_enables_when_the_fold_scheme_becomes_folio():
+    panel = _panel(fold_scheme="none")
+    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is False
+
+    panel.fold_scheme_combo.setCurrentText("folio")
+
+    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is True
+    text = panel.signature_hint_label.text()
+    # Says the gutter still comes from the other tab -- folio uses both.
+    assert "margins" in text.lower()
+    # And carries the experimental caveat where it will actually be read.
+    assert "xperimental" in text
+
+
+def test_the_fold_scheme_selector_is_not_inside_the_tabs():
+    """It is a mode selector, not a setting.
+
+    If it lived on the Signatures tab, enabling signatures would require
+    reaching the tab that is disabled until signatures are enabled.
+    """
+    panel = _panel(fold_scheme="none")
+
+    for index in range(panel.tabs.count()):
+        page = panel.tabs.widget(index)
+        assert panel.fold_scheme_combo.parent() is not page
+
+
+def test_page_and_margins_tab_stays_enabled_under_folio():
+    """Folio still uses the gutter and margins -- the tabs are not modes."""
+    panel = _panel(fold_scheme="folio")
+
+    page_tab_index = 1 - panel._signature_tab_index
+    assert panel.tabs.isTabEnabled(page_tab_index) is True
+    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is True
