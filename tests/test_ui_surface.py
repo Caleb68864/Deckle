@@ -785,3 +785,114 @@ def test_the_flat_sheets_tab_is_not_called_single_pages(qapp):
 
     assert "Single pages" not in titles
     assert "Flat sheets" in titles
+
+
+# -- paper size and orientation -----------------------------------------
+
+
+def test_the_panel_offers_paper_size_and_orientation(qapp):
+    """The GUI had no paper control at all -- only the CLI's --paper.
+
+    Folio needs landscape stock, so without this the imposer could warn
+    about portrait paper and nothing else could be done about it.
+    """
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8)))
+
+    assert panel.paper_combo.currentText() == "Letter"
+    assert panel.orientation_combo.currentText() == "Portrait"
+
+
+def test_choosing_landscape_turns_the_sheet(qapp):
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8, paper=(612.0, 792.0)))
+    panel = layout_panel.LayoutPanel(state)
+
+    panel.orientation_combo.setCurrentText("Landscape")
+
+    assert state.project.layout.paper == (792.0, 612.0)
+
+
+def test_changing_paper_size_keeps_the_chosen_orientation(qapp):
+    """Picking A4 while in landscape must not silently flip back."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8, paper=(612.0, 792.0)))
+    panel = layout_panel.LayoutPanel(state)
+    panel.orientation_combo.setCurrentText("Landscape")
+
+    panel.paper_combo.setCurrentText("A4")
+
+    assert layout_panel.paper_is_landscape(state.project.layout.paper)
+    assert round(state.project.layout.paper[0], 2) == 841.89
+
+
+def test_a_landscape_project_opens_showing_landscape(qapp):
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, paper=(792.0, 612.0))))
+
+    assert panel.orientation_combo.currentText() == "Landscape"
+    assert panel.paper_combo.currentText() == "Letter"
+
+
+def test_a_custom_paper_size_is_offered_rather_than_snapped_to_a_preset(qapp):
+    """A project imposed from the CLI with --paper 500x700pt is legitimate.
+
+    Rounding it to the nearest preset on open would silently change the
+    user's paper, which is a worse outcome than an odd-looking dropdown.
+    """
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8, paper=(500.0, 700.0)))
+    panel = layout_panel.LayoutPanel(state)
+
+    assert "Custom" in panel.paper_combo.currentText()
+    assert state.project.layout.paper == (500.0, 700.0)
+
+
+def test_folio_on_landscape_letter_imposes_without_an_orientation_warning(qapp):
+    """The whole point: 16 pages, landscape Letter, four sheets, no
+    complaint about the paper being the wrong way round."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(16, paper=(612.0, 792.0), gutter_pt=0.0))
+    panel = layout_panel.LayoutPanel(state)
+    panel.orientation_combo.setCurrentText("Landscape")
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+
+    plan = layout_panel.recompute_plan(state.project)
+
+    assert len(plan.signatures) == 1
+    assert len(plan.sheets) == 4
+    kinds = {w.kind for w in plan.warnings}
+    assert "sheet_orientation" not in kinds
+
+
+def test_folio_on_portrait_paper_still_warns(qapp):
+    """Deckle advises rather than rotating the user's paper for them, so
+    the warning must survive the new control."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(16, paper=(612.0, 792.0), gutter_pt=0.0))
+    panel = layout_panel.LayoutPanel(state)
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+
+    plan = layout_panel.recompute_plan(state.project)
+
+    assert "sheet_orientation" in {w.kind for w in plan.warnings}
+
+
+def test_paper_helpers_are_pure_and_orientation_aware():
+    """No Qt needed: these are the arithmetic behind the two combos."""
+    assert layout_panel.paper_is_landscape((792.0, 612.0)) is True
+    assert layout_panel.paper_is_landscape((612.0, 792.0)) is False
+    # A square has to land somewhere; portrait, consistently.
+    assert layout_panel.paper_is_landscape((600.0, 600.0)) is False
+
+    assert layout_panel.preset_name_for((612.0, 792.0)) == "Letter"
+    # Recognised in either orientation.
+    assert layout_panel.preset_name_for((792.0, 612.0)) == "Letter"
+    assert layout_panel.preset_name_for((500.0, 700.0)) is None

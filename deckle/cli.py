@@ -165,8 +165,15 @@ def _report_write_failure(out_path: str, exc: OSError) -> None:
 
 
 def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
+    paper = args.paper
+    if getattr(args, "landscape", False):
+        # Turn whatever was asked for, rather than assuming the preset came
+        # out portrait: `--paper 792x612pt --landscape` must stay landscape
+        # instead of being flipped back.
+        short, long = sorted(paper)
+        paper = (long, short)
     return LayoutSettings(
-        paper=args.paper,
+        paper=paper,
         gutter_pt=args.gutter,
         binding_edge=args.binding_edge,
         fold_scheme=args.fold_scheme,
@@ -195,6 +202,11 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--paper", type=_parse_paper, default=LETTER_PT,
         help="paper size: a preset (letter, a4, legal) or WxH[unit] (default: letter)",
+    )
+    parser.add_argument(
+        "--landscape", action="store_true",
+        help="turn the sheet on its side. Signatures want this: two portrait "
+        "book pages sit side by side on one landscape sheet",
     )
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",

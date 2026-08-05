@@ -290,3 +290,10 @@
 - Surfaces: The experimental caveat moved onto the Signatures description, where folio is actually configured, rather than living only in the README.
 - Watch: Naming a mode after an incidental property invites exactly the confusion the mode selector exists to remove. Name it after what distinguishes it -- here, whether the paper gets folded.
 - Commit: (this commit)
+
+## 2026-08-05 - The GUI had no paper control at all
+- Symptom: Deckle offered no way to choose paper size or orientation from the app -- only the CLI accepted --paper. Folio needs landscape stock, since two portrait book pages sit side by side on one sheet, so a user working in the GUI got the sheet_orientation warning and squeezed output with no way to act on it.
+- Fix: Paper and Orientation combos in Page setup, above the mode tabs where both ways of making a book can reach them. Added --landscape to the CLI so the two front ends can express the same thing.
+- Surfaces: Orientation is stored as the paper tuple itself, not a separate flag, so nothing downstream needs to know about it. Changing the SIZE preserves the chosen orientation -- picking A4 while in landscape must not silently flip back to portrait.
+- Watch: A custom size (from --paper 500x700pt, or an older project) is offered verbatim in the dropdown rather than snapped to the nearest preset. Rounding a user's paper on open would be a silent data change, which is worse than an odd-looking entry. Deckle still WARNS about portrait paper under folio rather than rotating it -- advise, do not refuse, and do not quietly rearrange someone's settings.
+- Commit: (this commit)

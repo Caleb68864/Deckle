@@ -177,6 +177,72 @@ def set_binding_edge(project: Project, binding_edge: Literal["left", "right"]) -
     return replace(project, layout=replace(project.layout, binding_edge=binding_edge))
 
 
+#: Paper sizes offered in the UI, in points, portrait. Landscape is the
+#: same tuple swapped -- see :func:`set_paper`. These mirror
+#: ``deckle/cli.py``'s ``--paper`` presets so both front ends offer the
+#: same stock.
+PAPER_PRESETS: tuple[tuple[str, tuple[float, float]], ...] = (
+    ("Letter", (612.0, 792.0)),
+    ("A4", (595.28, 841.89)),
+    ("Legal", (612.0, 1008.0)),
+    ("A3", (841.89, 1190.55)),
+    ("Tabloid", (792.0, 1224.0)),
+)
+
+ORIENTATIONS: tuple[str, ...] = ("Portrait", "Landscape")
+
+
+def paper_is_landscape(paper: tuple[float, float]) -> bool:
+    """Whether ``paper`` is wider than it is tall.
+
+    :param paper: ``(width, height)`` in points.
+    :returns: ``True`` for landscape. A perfect square counts as portrait,
+        arbitrarily but consistently -- it has to go somewhere and nothing
+        downstream distinguishes them.
+    """
+    return paper[0] > paper[1]
+
+
+def preset_name_for(paper: tuple[float, float]) -> str | None:
+    """The preset whose dimensions match ``paper`` in either orientation.
+
+    :param paper: ``(width, height)`` in points.
+    :returns: the preset's name, or ``None`` for a custom size -- a project
+        imposed from the CLI with ``--paper 500x700pt`` is legitimate and
+        must not be silently snapped to the nearest preset.
+    """
+    upright = tuple(sorted(paper))
+    for name, dimensions in PAPER_PRESETS:
+        if tuple(sorted(dimensions)) == upright:
+            return name
+    return None
+
+
+def set_paper(
+    project: Project,
+    paper: tuple[float, float],
+    *,
+    landscape: bool | None = None,
+) -> Project:
+    """Set the sheet size, optionally forcing an orientation.
+
+    :param project: the project to derive a new one from.
+    :param paper: ``(width, height)`` in points, in any orientation.
+    :param landscape: force landscape (``True``) or portrait (``False``).
+        ``None`` keeps ``paper`` exactly as given.
+    :returns: a new project.
+
+    This is the setting folio most needs and the UI longest lacked: two
+    portrait pages side by side want a landscape sheet, and without a way
+    to ask for one the imposer could only warn and carry on squeezing them
+    onto portrait stock.
+    """
+    if landscape is not None:
+        short, long = sorted(paper)
+        paper = (long, short) if landscape else (short, long)
+    return replace(project, layout=replace(project.layout, paper=paper))
+
+
 def set_landscape_policy(
     project: Project, landscape_policy: Literal["rotate", "scale", "letterbox"]
 ) -> Project:
@@ -469,6 +535,48 @@ class LayoutPanel:
         self.unit_combo.setCurrentText("in")
         self._unit = "in"
         form.addRow("Units:", self.unit_combo)
+
+        # Paper size and orientation. Folio needs landscape stock -- two
+        # portrait pages side by side do not fit on a portrait sheet -- and
+        # until now the GUI offered no way to say so at all, only the CLI's
+        # --paper. The imposer could warn about it and nothing else.
+        self.paper_combo = QComboBox(self.widget)
+        for name, _dimensions in PAPER_PRESETS:
+            self.paper_combo.addItem(name)
+        self._paper_names = [name for name, _ in PAPER_PRESETS]
+        current_preset = preset_name_for(state.project.layout.paper)
+        if current_preset is None:
+            # A custom size from the CLI or an older project. Offer it as an
+            # option rather than snapping it to the nearest preset.
+            width, height = sorted(state.project.layout.paper)
+            self._custom_paper_label = f"Custom ({width:.0f} x {height:.0f}pt)"
+            self.paper_combo.addItem(self._custom_paper_label)
+            self._paper_names.append(self._custom_paper_label)
+            current_preset = self._custom_paper_label
+        else:
+            self._custom_paper_label = None
+        self.paper_combo.setCurrentIndex(self._paper_names.index(current_preset))
+        self.paper_combo.setToolTip(
+            "The size of the paper you are printing on -- not the size of a "
+            "page in the book.\n\n"
+            "Under Signatures a sheet is folded in half, so each book page "
+            "ends up half the sheet."
+        )
+        form.addRow("Paper:", self.paper_combo)
+
+        self.orientation_combo = QComboBox(self.widget)
+        self.orientation_combo.addItems(list(ORIENTATIONS))
+        self.orientation_combo.setCurrentText(
+            "Landscape" if paper_is_landscape(state.project.layout.paper) else "Portrait"
+        )
+        self.orientation_combo.setToolTip(
+            "Which way round the sheet goes through the printer.\n\n"
+            "Signatures want LANDSCAPE: two portrait book pages sit side by "
+            "side on one sheet, and the fold runs down the middle. On "
+            "portrait stock they get squeezed, and Deckle warns rather than "
+            "silently rotating your paper for you."
+        )
+        form.addRow("Orientation:", self.orientation_combo)
         self.unit_combo.setToolTip(
             "The unit every length on this tab is typed in. Values are "
             "stored in points regardless, so switching units re-displays "
@@ -705,6 +813,8 @@ class LayoutPanel:
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
+        self.paper_combo.currentTextChanged.connect(self._on_paper_changed)
+        self.orientation_combo.currentTextChanged.connect(self._on_orientation_changed)
         self.tabs.currentChanged.connect(self._on_mode_tab_changed)
         self.sheets_per_signature_spinbox.valueChanged.connect(
             self._on_sheets_per_signature_changed
@@ -889,6 +999,44 @@ class LayoutPanel:
 
     def _on_landscape_policy_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_landscape_policy(project, value))
+        self.layout_changed.emit(plan)
+
+    def _current_paper_pt(self) -> tuple[float, float]:
+        """The paper dimensions the combos currently describe."""
+        name = self.paper_combo.currentText()
+        for preset_name, dimensions in PAPER_PRESETS:
+            if preset_name == name:
+                return dimensions
+        # The custom entry: keep whatever the project already has.
+        return self.state.project.layout.paper
+
+    def _on_paper_changed(self, _name: str) -> None:
+        """Apply a new sheet size, preserving the chosen orientation.
+
+        :returns: nothing.
+        """
+        landscape = self.orientation_combo.currentText() == "Landscape"
+        plan = apply_layout_change(
+            self.state,
+            lambda project: set_paper(
+                project, self._current_paper_pt(), landscape=landscape
+            ),
+        )
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_orientation_changed(self, value: str) -> None:
+        """Turn the sheet, keeping its size.
+
+        :returns: nothing.
+        """
+        plan = apply_layout_change(
+            self.state,
+            lambda project: set_paper(
+                project, project.layout.paper, landscape=value == "Landscape"
+            ),
+        )
+        self._refresh_binding_readout(plan)
         self.layout_changed.emit(plan)
 
     def _on_mode_tab_changed(self, index: int) -> None:
