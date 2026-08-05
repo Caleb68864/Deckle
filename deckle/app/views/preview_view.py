@@ -53,6 +53,11 @@ def imageable_rect_pt(
     ``QtPrintBackend._paint_rendered_page``, the other consumer of this same
     field) -- the top/bottom pair is flipped here to translate from that
     top-left-origin convention into PDF's bottom-left one.
+
+    :param paper_pt: the sheet size as ``(width, height)`` in points.
+    :param imageable_area_pt: ``(left, top, right, bottom)`` margins from
+        the paper edges.
+    :returns: ``(x0, y0, x1, y1)`` in PDF points.
     """
     paper_w, paper_h = paper_pt
     left, top, right, bottom = imageable_area_pt
@@ -99,6 +104,14 @@ def clipping_warnings_for_sheet(
     if content is already off the page, reporting it as *also* outside the
     (page-relative) imageable area would be redundant and would blur the
     two distinct causes this function exists to keep apart.
+
+    :param sheet: the sheet to check, front and back.
+    :param paper_pt: the physical page size in points.
+    :param imageable_area_pt: the printer's calibrated non-printable
+        insets, ``(left, top, right, bottom)``.
+    :returns: the warnings, each already tagged with ``sheet.index`` so a
+        viewer can show it beside that sheet. Filler pages contribute
+        nothing -- there is no content to have escaped anything.
     """
     paper_rect = (0.0, 0.0, paper_pt[0], paper_pt[1])
     imageable_rect = imageable_rect_pt(paper_pt, imageable_area_pt)
@@ -145,6 +158,12 @@ def warnings_for_plan(plan: SheetPlan, profile: PrinterProfile) -> dict[int, lis
     Grouping by ``sheet_index`` -- rather than a flat list -- is what lets a
     viewer show only the warnings for the sheet currently on screen, per
     sheet, never a global modal.
+
+    :param plan: the imposed plan, supplying both the sheets and the
+        imposer's own warnings.
+    :param profile: supplies the imageable area the clipping check needs.
+    :returns: warnings keyed by sheet index. A sheet with no warnings is
+        absent from the mapping rather than present with an empty list.
     """
     by_sheet: dict[int, list[LayoutWarning]] = {}
     for warning in plan.warnings:
@@ -160,12 +179,21 @@ def badge_text(warnings: Sequence[LayoutWarning]) -> str:
 
     Deliberately not a dialog -- just text a caller sticks on a label next
     to the sheet it describes.
+
+    :param warnings: the sheet's warnings.
+    :returns: the details, one per line, or the empty string for none.
     """
     return "\n".join(w.detail for w in warnings)
 
 
 def signature_index_for_sheet(plan: SheetPlan, sheet_index: int) -> int | None:
-    """Which signature (by ``Signature.index``) owns ``sheet_index``, if any."""
+    """Which signature (by ``Signature.index``) owns ``sheet_index``, if any.
+
+    :param plan: the imposed plan.
+    :param sheet_index: the sheet to locate.
+    :returns: the signature's index, or ``None`` under
+        ``fold_scheme="none"`` where there are no signatures at all.
+    """
     for signature in plan.signatures:
         if sheet_index in signature.sheet_indices:
             return signature.index
@@ -185,6 +213,15 @@ def content_box_guides_for_side(
     right of the fold), each fitted independently, so this returns one
     guide per cell -- two per side. Under the MVP default (``"none"``) a
     side is a single cell, matching prior behaviour: exactly one guide.
+
+    :param settings: the ``LayoutSettings`` behind the guide, or ``None``
+        for the single-cell fallback.
+    :param side: the rendered side whose pages the guides are paired with.
+    :param is_recto: whether this side is a right-hand page. Used only on
+        the single-cell path -- under folio the spine is decided by cell
+        position, never by parity.
+    :returns: one ``(rect, output_page)`` pair per cell. The page is
+        ``None`` when the side has no pages.
     """
     if settings is not None and settings.fold_scheme == "folio" and len(side.pages) > 1:
         cells = cell_geometry(settings.paper)
@@ -212,6 +249,12 @@ def cell_label(plan: SheetPlan, sheet_index: int, output_page: OutputPage | None
 
     Empty for a filler cell (no source page) or when the sheet belongs to
     no signature (MVP, ``fold_scheme="none"``).
+
+    :param plan: the imposed plan, used to find the containing signature.
+    :param sheet_index: the sheet the cell is on.
+    :param output_page: the placed page, or ``None``.
+    :returns: the label. Page numbers are one-based for the reader, not
+        zero-based like ``SourceRef.page_index``.
     """
     if output_page is None or output_page.is_filler or output_page.source_ref is None:
         return ""
@@ -240,6 +283,15 @@ def render_visible_sheet(
     the Qt class below) so the preview's own render path is the thing
     ``tests/test_preview_fidelity.py`` patches and asserts against -- not
     an implementation detail one layer down.
+
+    :param plan: the plan to render from.
+    :param sheet_index: which sheet, by ``Sheet.index``.
+    :param side: which physical face.
+    :param dpi: rasterization resolution.
+    :param cancel: optional event; when set, returns a degenerate page.
+    :returns: the rasterized side, or a degenerate ``0x0`` page.
+    :raises OSError: the scratch PDF cannot be written.
+    :raises pypdfium2.PdfiumError: the exported PDF cannot be rasterized.
     """
     return render_sheet(plan, sheet_index, side, dpi, cancel=cancel)
 
@@ -250,6 +302,12 @@ class PreviewFrame:
 
     Plain data -- no Qt/PIL types -- so the composition of "which sheet,
     which side, what warnings apply" can be exercised headlessly.
+
+    :ivar sheet_index: the sheet this frame shows.
+    :ivar side: which face.
+    :ivar rendered: the rasterized side.
+    :ivar warnings: only this sheet's warnings -- warnings are per-sheet,
+        never a global list.
     """
 
     sheet_index: int
@@ -266,7 +324,19 @@ def build_preview_frame(
     dpi: int = 150,
     cancel: threading.Event | None = None,
 ) -> PreviewFrame:
-    """Render sheet ``sheet_index``/``side`` and attach only its own warnings."""
+    """Render sheet ``sheet_index``/``side`` and attach only its own warnings.
+
+    :param plan: the plan to render from.
+    :param profile: supplies the imageable area for the clipping warnings.
+    :param sheet_index: which sheet.
+    :param side: which face.
+    :param dpi: rasterization resolution.
+    :param cancel: optional event; when set, the frame carries a
+        degenerate rendered page.
+    :returns: the frame.
+    :raises OSError: the scratch PDF cannot be written.
+    :raises pypdfium2.PdfiumError: the exported PDF cannot be rasterized.
+    """
     rendered = render_visible_sheet(plan, sheet_index, side, dpi=dpi, cancel=cancel)
     warnings = warnings_for_plan(plan, profile).get(sheet_index, [])
     return PreviewFrame(sheet_index=sheet_index, side=side, rendered=rendered, warnings=warnings)
@@ -312,6 +382,13 @@ def fit_scale(
     Capped at ``max_scale`` (default 1.0) so a large window shows the sheet at
     100% rather than blurrily upscaling a raster. Pure arithmetic, no Qt, so
     the fit rule is unit-testable without a display.
+
+    :param pixmap_size: the rendered sheet's ``(width, height)`` in pixels.
+    :param viewport_size: the visible area's ``(width, height)`` in pixels.
+    :param max_scale: the upper bound on the returned scale.
+    :returns: the scale factor. ``max_scale`` when either size is
+        degenerate, so a not-yet-laid-out viewport does not produce a
+        zero-size pixmap.
     """
     pw, ph = pixmap_size
     vw, vh = viewport_size
@@ -321,7 +398,14 @@ def fit_scale(
 
 
 def next_zoom_stop(current: float, direction: int) -> float:
-    """The next discrete stop above (+1) or below (-1) ``current``."""
+    """The next discrete stop above (+1) or below (-1) ``current``.
+
+    :param current: the scale in use now, which need not itself be a stop
+        -- fit-to-window resolves to an arbitrary number.
+    :param direction: positive to zoom in, negative to zoom out.
+    :returns: the neighbouring stop, clamped to the ends of
+        :data:`ZOOM_STOPS`.
+    """
     if direction > 0:
         for stop in ZOOM_STOPS:
             if stop > current + 1e-9:
@@ -366,6 +450,20 @@ class PreviewWorker:
 
     Plain class, not a ``QObject`` -- mirrors ``ThumbnailWorker`` in
     ``arrange_view.py``.
+
+    :param plan: the plan to render from.
+    :param profile: supplies the imageable area for warnings.
+    :param sheet_index: which sheet.
+    :param side: the primary face, reported on :attr:`frame`.
+    :param sides: every face to render, or ``None`` for just ``side``.
+        Spread mode passes both so the two halves come from the same plan
+        revision -- rendering them as independent jobs could show a stale
+        front beside a fresh back.
+    :ivar frame: the first rendered frame, or ``None``.
+    :ivar frames: every rendered frame, in ``sides`` order.
+    :ivar cancel: set when a newer request supersedes this one. Threaded
+        into the renderer, so a scrubbed-past sheet stops rasterizing
+        rather than finishing work nobody will see.
     """
 
     def __init__(
@@ -393,6 +491,12 @@ class PreviewWorker:
         self.cancel = threading.Event()
 
     def run(self) -> None:
+        """Render every requested side, unless superseded.
+
+        :returns: nothing -- results land on :attr:`frames` and
+            :attr:`frame`. A cancelled render leaves both untouched, so a
+            superseded job never repaints over a newer one.
+        """
         frames = []
         for s in self.sides:
             if self.cancel.is_set():
@@ -417,6 +521,15 @@ class PreviewView:
     everywhere, rasterize only what's visible" split documented on
     ``LayoutPanel``. Warnings for the current sheet are shown as a
     non-modal label directly on the view, never a dialog.
+
+    :param plan: the whole-document plan to preview.
+    :param profile: supplies the imageable-area guide and the clipping
+        warnings.
+    :param parent: the parent ``QWidget``, or ``None``.
+    :param layout_settings: the settings behind the content-box guide.
+        Optional, so the view stays constructible from a bare plan -- the
+        guide is simply not drawn without them.
+    :ivar widget: the ``QWidget`` to place in a layout.
     """
 
     def __init__(
@@ -532,13 +645,22 @@ class PreviewView:
         self.refresh()
 
     def set_layout_settings(self, settings) -> None:
-        """Update the settings behind the content-box guide."""
+        """Update the settings behind the content-box guide.
+
+        :param settings: the new ``LayoutSettings``.
+        :returns: nothing; re-renders the visible sheet.
+        """
         self.layout_settings = settings
         self.refresh()
 
     def on_layout_changed(self, plan: SheetPlan, settings=None) -> None:
         """Connected to ``LayoutPanel.layout_changed``: swap in the fresh
         whole-document plan but re-render only the sheet on screen.
+
+        :param plan: the recomputed whole-document plan.
+        :param settings: the settings that produced it, or ``None`` to
+            leave the content-box guide's settings as they are.
+        :returns: nothing.
         """
         self.plan = plan
         if settings is not None:
@@ -554,6 +676,9 @@ class PreviewView:
         Supersedes any render still in flight. Without that, scrubbing
         sheets quickly left several threads racing and the *last to finish*
         won -- which is not necessarily the one the user is looking at.
+
+        :returns: nothing, immediately; the frame is painted when the
+            background thread finishes, and only if it is still current.
         """
         if self._worker is not None:
             self._worker.cancel.set()
@@ -724,7 +849,12 @@ class PreviewView:
     # -- zoom ----------------------------------------------------------------
 
     def current_scale(self) -> float:
-        """The scale actually in use, resolving fit-to-window to a number."""
+        """The scale actually in use, resolving fit-to-window to a number.
+
+        :returns: the effective scale. ``self._zoom is None`` means
+            fit-to-window, which has no fixed value until there is both a
+            rendered pixmap and a laid-out viewport to measure against.
+        """
         if self._source_pixmap is None:
             return self._zoom or 1.0
         if self._zoom is not None:

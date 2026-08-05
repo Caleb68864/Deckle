@@ -213,3 +213,10 @@
 - Surfaces: Preview specifically -- it renders through the same cache, so the symptom is a preview showing pages that are not in the document. Silent: nothing crashes, nothing warns.
 - Watch: A mutation test is only as good as the mutation. Reverting this fix to a *tagged* prefix (`|page:{value}`) left the tests passing and briefly looked like they were vacuous -- but tagging still frames the values, so it was not the original bug. Only reverting to the true un-tagged concatenation made the test fail, which it does. Verify that a mutation actually reproduces the defect before concluding a test is worthless.
 - Commit: (this commit)
+
+## 2026-08-04 - Sphinx docs added around the existing prose, never over it
+- Symptom: No generated API reference, and the exception contracts created by the hardening passes were undocumented -- callers had no way to know what raises what.
+- Fix: sphinx + autodoc + napoleon over the whole package, built with `-W` so warnings are errors and a docstring that drifts from the code fails the build. `run.bat docs` regenerates. Sphinx is an optional `[docs]` extra, never a runtime dependency, because Deckle is MIT and must install without it.
+- Surfaces: `deckle/core/printing.py` and `deckle/core/profiles.py` are contractually frozen, so they are documented via autodoc WITHOUT being edited -- not even their docstrings. Both still diff clean against main.
+- Watch: The instruction that mattered was to preserve the existing prose verbatim. These docstrings explain *why* -- why presence-only hashing was insufficient, why the gutter IS the inner margin, which Traveller measurements motivated `document_scale` -- and a generator that replaces explanation with `:param x: the x` boilerplate destroys the most valuable thing in the codebase. Field lists were added AROUND the prose. When commissioning doc work, say this explicitly; the default instinct is to normalise.
+- Commit: (this commit)

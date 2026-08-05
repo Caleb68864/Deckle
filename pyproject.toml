@@ -25,6 +25,11 @@ dependencies = [
 dev = [
     "pytest",
 ]
+# Documentation tooling only. Deliberately NOT a runtime dependency:
+# Deckle is MIT and must install and run without Sphinx present.
+docs = [
+    "sphinx>=7",
+]
 
 [tool.setuptools.packages.find]
 include = ["deckle*"]

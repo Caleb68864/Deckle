@@ -31,6 +31,15 @@ def load_and_apply_import(state: AppState, source_path: str) -> tuple[list[Sourc
     Returns ``(pages, warnings)``. Routed through ``AppState.mutate`` like
     every other project change, so importing participates in undo and
     triggers the same debounced autosave.
+
+    :param state: the app state whose project is replaced.
+    :param source_path: a PDF file, or a directory of images.
+    :returns: ``(pages, warnings)`` -- the warnings come from
+        :class:`~deckle.core.loader.ImportedPages` and are empty for a PDF
+        import.
+    :raises deckle.core.loader.SourceLoadError: any refusal from the
+        loader, unchanged. Its message already names the file and the
+        remedy, so nothing is caught or reworded on the way through.
     """
     pages = _load_source(source_path)
     warnings = list(getattr(pages, "warnings", []))
@@ -71,6 +80,12 @@ class ImportWorker:
     never requires PySide6's ``QObject``/``Signal`` machinery to already
     be usable -- only the code path that actually launches a real import
     does.
+
+    :param state: the app state to import into.
+    :param source_path: a PDF file, or a directory of images.
+    :ivar pages: the imported pages, once :meth:`run` has finished.
+    :ivar warnings: non-fatal import advisories.
+    :ivar error: a message when the import failed, else ``None``.
     """
 
     def __init__(self, state: AppState, source_path: str) -> None:
@@ -81,6 +96,17 @@ class ImportWorker:
         self.error: str | None = None
 
     def run(self) -> None:
+        """Perform the import, recording the outcome on ``self``.
+
+        :returns: nothing -- results land on :attr:`pages`,
+            :attr:`warnings` and :attr:`error`, because this runs as a
+            ``QThread.run`` override and has nowhere to return to.
+        :raises deckle.core.loader.SourceLoadError: every load failure
+            except :class:`~deckle.core.loader.EncryptedPdfError`, which is
+            turned into a message on :attr:`error` instead. The rest are
+            left to propagate rather than silently producing an empty
+            import.
+        """
         try:
             self.pages, self.warnings = load_and_apply_import(self.state, self.source_path)
         except EncryptedPdfError as exc:
@@ -94,6 +120,13 @@ class ImportView:
     blocks the UI thread. ``imported`` fires on the main thread once the
     background worker finishes, carrying ``(pages, warnings)``; ``failed``
     fires with an error message instead.
+
+    :param state: the app state to import into.
+    :param parent: the parent ``QWidget``, or ``None``.
+    :ivar imported: ``Signal(list, list)`` carrying ``(pages, warnings)``.
+    :ivar failed: ``Signal(str)`` carrying an error message.
+    :ivar widget: the ``QWidget`` to place in a layout. This class is not
+        itself a widget.
     """
 
     def __init__(self, state: AppState, parent=None) -> None:
@@ -138,7 +171,13 @@ class ImportView:
             self.import_path(path)
 
     def import_path(self, source_path: str) -> None:
-        """Kick off a background import of ``source_path``."""
+        """Kick off a background import of ``source_path``.
+
+        :param source_path: a PDF file, or a directory of images.
+        :returns: nothing, immediately. The import runs on a ``QThread``
+            so a 300-page source never blocks the UI; completion arrives as
+            ``imported`` or ``failed``.
+        """
         self.status_label.setText(f"Importing {source_path}...")
         worker = ImportWorker(self.state, source_path)
         thread = self._QThread(self.widget)

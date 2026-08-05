@@ -10,6 +10,7 @@ rem    run.bat test            run the test suite
 rem    run.bat test -k layout  run a subset
 rem    run.bat deps            install/refresh dependencies
 rem    run.bat doctor          check the environment without launching
+rem    run.bat docs            build the HTML API reference
 rem ===================================================================
 
 rem Always work from the repo root, so a double-click resolves imports.
@@ -33,6 +34,7 @@ if /i "%CMD%"=="cli"    goto :cli
 if /i "%CMD%"=="test"   goto :test
 if /i "%CMD%"=="deps"   goto :deps
 if /i "%CMD%"=="doctor" goto :doctor
+if /i "%CMD%"=="docs"   goto :docs
 if /i "%CMD%"=="-h"     goto :usage
 if /i "%CMD%"=="--help" goto :usage
 if /i "%CMD%"=="help"   goto :usage
@@ -67,6 +69,22 @@ echo [deckle] installing dependencies...
 if errorlevel 1 goto :fail
 goto :done
 
+:docs
+echo [deckle] building API reference...
+rem -W turns warnings into errors, so a docstring that drifts from the code
+rem fails this build instead of quietly rotting. --keep-going reports every
+rem problem in one run rather than stopping at the first.
+"%PY%" -c "import sphinx" >nul 2>&1
+if errorlevel 1 (
+    echo [deckle] Sphinx not installed.
+    echo          Install it with: %PY% -m pip install -e .[docs]
+    goto :fail
+)
+"%PY%" -m sphinx -b html -W --keep-going docs\api docs\api\_build\html
+if errorlevel 1 goto :fail
+echo [deckle] wrote docs\api\_build\html\index.html
+goto :done
+
 :doctor
 echo [deckle] interpreter:
 "%PY%" -c "import sys; print('  ', sys.executable); print('  ', sys.version.split()[0])"
@@ -85,6 +103,7 @@ echo     run.bat cli ^<args...^>    headless CLI
 echo     run.bat test [args]      run the test suite
 echo     run.bat deps             install/refresh dependencies
 echo     run.bat doctor           check environment, list printers
+echo     run.bat docs             build the HTML API reference
 echo.
 echo   Examples:
 echo     run.bat cli info book.pdf

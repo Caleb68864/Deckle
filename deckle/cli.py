@@ -397,6 +397,15 @@ def _cmd_impose(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """The full argument parser for ``deckle``.
+
+    Three subcommands -- ``impose``, ``export`` and ``info`` -- sharing one
+    set of layout options, so a plan previewed with ``info`` is the plan
+    ``export`` writes.
+
+    :returns: the parser. Each subparser sets a ``func`` default, which is
+        what :func:`main` dispatches on.
+    """
     parser = argparse.ArgumentParser(prog="deckle", description="Impose and print booklets.")
     # A-6: --version must work without a subcommand. argparse's "version"
     # action exits immediately when encountered, before the subparsers'
@@ -447,6 +456,9 @@ def _make_output_encoding_safe() -> None:
     somewhere that expects the code page. Replacing the unencodable
     characters degrades the *display* of a path while keeping the program
     alive and the exit code honest.
+
+    :returns: nothing, and never raises -- hardening must not be the thing
+        that breaks startup.
     """
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -460,6 +472,21 @@ def _make_output_encoding_safe() -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Run one CLI invocation.
+
+    :param argv: the arguments, or ``None`` to read ``sys.argv``.
+    :returns: the process exit code -- ``0`` on success, ``1`` for a source
+        that could not be loaded or a destination that could not be
+        written. Layout warnings go to stderr and never change this: a
+        warning is advice, not a failure.
+    :raises SystemExit: from argparse, for ``--help``, ``--version`` and
+        malformed arguments.
+
+    Loader and write failures are caught and reported as messages, because
+    they are the user's problem and already name the remedy. Nothing else
+    is: an unexpected exception should still produce a traceback, because a
+    traceback is a bug report and a swallowed one is not.
+    """
     _make_output_encoding_safe()
     parser = build_parser()
     args = parser.parse_args(argv)

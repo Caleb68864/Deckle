@@ -36,6 +36,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Generated API reference -- regenerate with `run.bat docs`, never commit
+docs/api/_build/
+
 # Tooling output, not source
 graphify-out/
 .forge-factory/

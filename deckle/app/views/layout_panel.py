@@ -34,6 +34,13 @@ BLANK_MODES: tuple[str, ...] = ("end", "balanced")
 
 
 def set_gutter_pt(project: Project, gutter_pt: float) -> Project:
+    """Set the gutter -- which is also the spine margin.
+
+    :param project: the project to derive a new one from.
+    :param gutter_pt: the new gutter, in points.
+    :returns: a new project. Nothing is rasterized; the caller recomputes
+        the plan.
+    """
     return replace(project, layout=replace(project.layout, gutter_pt=gutter_pt))
 
 
@@ -44,12 +51,31 @@ MARGIN_FIELDS: tuple[str, ...] = ("margin_top_pt", "margin_bottom_pt", "margin_o
 
 
 def set_margin(project: Project, field: str, points: float, *, linked: bool = False) -> Project:
-    """Set one margin, or all three when ``linked``."""
+    """Set one margin, or all three when ``linked``.
+
+    :param project: the project to derive a new one from.
+    :param field: which margin, one of :data:`MARGIN_FIELDS`. Ignored when
+        ``linked``.
+    :param points: the new value, in points.
+    :param linked: apply to all three margins at once.
+    :returns: a new project.
+    :raises TypeError: ``field`` is not a ``LayoutSettings`` field.
+    """
     updates = {f: points for f in MARGIN_FIELDS} if linked else {field: points}
     return replace(project, layout=replace(project.layout, **updates))
 
 
 def set_margins_linked(project: Project, linked: bool) -> Project:
+    """Record whether the UI edits the three margins as one value.
+
+    Purely presentational -- the imposer always reads the three fields
+    independently. Persisted so reopening restores how you were working,
+    not just the numbers.
+
+    :param project: the project to derive a new one from.
+    :param linked: the new setting.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, margins_linked=linked))
 
 
@@ -62,6 +88,13 @@ SLACK_TARGETS: tuple[tuple[str, str], ...] = (
 
 
 def set_slack_to(project: Project, slack_to: str) -> Project:
+    """Choose which margin absorbs spare horizontal width.
+
+    :param project: the project to derive a new one from.
+    :param slack_to: ``"gutter"``, ``"outer"`` or ``"split"``. See
+        ``LayoutSettings.slack_to`` for what each one keeps constant.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, slack_to=slack_to))
 
 
@@ -71,12 +104,24 @@ LENGTH_UNITS: dict[str, float] = {"pt": 1.0, "in": 72.0, "cm": 72.0 / 2.54, "mm"
 
 
 def to_points(value: float, unit: str) -> float:
-    """Convert a displayed value in ``unit`` to PDF points."""
+    """Convert a displayed value in ``unit`` to PDF points.
+
+    :param value: the displayed number.
+    :param unit: a key of :data:`LENGTH_UNITS`.
+    :returns: the value in points, which is what the model stores.
+    :raises KeyError: ``unit`` is not a known unit.
+    """
     return value * LENGTH_UNITS[unit]
 
 
 def from_points(points: float, unit: str) -> float:
-    """Convert PDF points to a displayed value in ``unit``."""
+    """Convert PDF points to a displayed value in ``unit``.
+
+    :param points: the stored value.
+    :param unit: a key of :data:`LENGTH_UNITS`.
+    :returns: the number to display.
+    :raises KeyError: ``unit`` is not a known unit.
+    """
     return points / LENGTH_UNITS[unit]
 
 
@@ -93,43 +138,105 @@ def imageable_inset_pt(imageable_area_pt: tuple[float, float, float, float]) -> 
     Used by "Use printer margins": a margin at least this large clears the
     non-printable border on every edge, which is the condition that stops
     ``clipped_by_imageable_area`` firing.
+
+    :param imageable_area_pt: ``(left, top, right, bottom)`` margins from
+        the paper edges -- **not** an ``(x0, y0, x1, y1)`` rect.
+    :returns: the largest of the four insets, in points, floored at ``0``.
     """
     return max(*imageable_area_pt, 0.0)
 
 
 def set_binding_edge(project: Project, binding_edge: Literal["left", "right"]) -> Project:
+    """Set which edge the book is bound on.
+
+    :param project: the project to derive a new one from.
+    :param binding_edge: ``"left"`` or ``"right"``. Under
+        ``fold_scheme="folio"`` this means reading direction rather than
+        which side of a page gets the gutter -- see
+        ``deckle.core.layout.SaddleStitchStrategy``.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, binding_edge=binding_edge))
 
 
 def set_landscape_policy(
     project: Project, landscape_policy: Literal["rotate", "scale", "letterbox"]
 ) -> Project:
+    """Set what happens to a landscape page in a portrait cell.
+
+    :param project: the project to derive a new one from.
+    :param landscape_policy: ``"rotate"`` turns the content and warns.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, landscape_policy=landscape_policy))
 
 
 def set_start_on_recto(project: Project, start_on_recto: bool) -> Project:
+    """Set whether the first content page is a right-hand page.
+
+    :param project: the project to derive a new one from.
+    :param start_on_recto: the new setting.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, start_on_recto=start_on_recto))
 
 
 def set_fold_scheme(project: Project, fold_scheme: Literal["none", "folio"]) -> Project:
+    """Switch between one-page-per-side and saddle-stitch imposition.
+
+    :param project: the project to derive a new one from.
+    :param fold_scheme: ``"none"`` or ``"folio"``. This is what
+        :func:`recompute_plan` dispatches on.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, fold_scheme=fold_scheme))
 
 
 def set_sheets_per_signature(project: Project, sheets_per_signature: int) -> Project:
+    """Set how many sheets nest into one gathering.
+
+    :param project: the project to derive a new one from.
+    :param sheets_per_signature: the new count. Larger signatures mean more
+        fore-edge creep, which the imposer reports as an advisory.
+    :returns: a new project.
+    """
     return replace(
         project, layout=replace(project.layout, sheets_per_signature=sheets_per_signature)
     )
 
 
 def set_blank_mode(project: Project, blank_mode: Literal["end", "balanced"]) -> Project:
+    """Set where padding blanks land across signatures.
+
+    :param project: the project to derive a new one from.
+    :param blank_mode: ``"end"`` puts the whole remainder in the final
+        gathering; ``"balanced"`` spreads it so no gathering is more than
+        one sheet thinner than its neighbours.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, blank_mode=blank_mode))
 
 
 def set_sewing_stations(project: Project, sewing_stations: int) -> Project:
+    """Set how many sewing-station marks each signature gets.
+
+    :param project: the project to derive a new one from.
+    :param sewing_stations: the count. ``0`` disables the marks -- which is
+        why there is no separate boolean.
+    :returns: a new project.
+    """
     return replace(project, layout=replace(project.layout, sewing_stations=sewing_stations))
 
 
 def set_paper_thickness_pt(project: Project, paper_thickness_pt: float) -> Project:
+    """Set the stock thickness used to predict fore-edge creep.
+
+    :param project: the project to derive a new one from.
+    :param paper_thickness_pt: thickness per sheet, in points. Used
+        **only** for the creep advisory -- no placement the imposer emits
+        ever differs because of this value.
+    :returns: a new project.
+    """
     return replace(
         project, layout=replace(project.layout, paper_thickness_pt=paper_thickness_pt)
     )
@@ -141,6 +248,10 @@ def recompute_plan(project: Project) -> SheetPlan:
     Dispatches on ``fold_scheme``: ``"folio"`` groups sheets into saddle-
     stitched signatures via ``SaddleStitchStrategy``; ``"none"`` (the MVP
     default) stays on ``GutterShiftStrategy``, one source page per side.
+
+    :param project: the project to impose.
+    :returns: the fresh whole-document plan. Cheap enough to run on every
+        control change because it rasterizes nothing.
     """
     if project.layout.fold_scheme == "folio":
         return SaddleStitchStrategy().impose(project.pages, project.layout)
@@ -154,6 +265,10 @@ def binding_readout_str(plan: SheetPlan) -> str:
     sheet count and total filler/blank count are the arithmetic a binder
     actually decides on, so this reads straight off ``plan`` rather than
     re-deriving anything from ``LayoutSettings``.
+
+    :param plan: the recomputed plan.
+    :returns: the readout text. Under ``fold_scheme="none"`` the signature
+        and blank counts are legitimately zero.
     """
     blank_count = sum(sig.blank_count for sig in plan.signatures)
     return (
@@ -169,6 +284,12 @@ def apply_layout_change(state: AppState, mutator) -> SheetPlan:
 
     Returns the fresh plan so a caller (the Qt panel below, or a test) can
     hand it to a preview without any rendering happening here.
+
+    :param state: the app state to mutate.
+    :param mutator: one of the ``set_*`` functions above, already bound to
+        its new value.
+    :returns: the freshly recomputed whole-document plan.
+    :raises Exception: whatever ``mutator`` raises, unchanged.
     """
     state.mutate(mutator)
     return recompute_plan(state.project)
@@ -211,6 +332,15 @@ class LayoutPanel:
     Every control change routes through ``apply_layout_change`` above and
     emits ``layout_changed`` with the freshly recomputed ``SheetPlan`` --
     it never rasterizes anything itself.
+
+    :param state: the app state whose layout the controls edit.
+    :param parent: the parent ``QWidget``, or ``None``.
+    :param profile: the printer profile supplying the imageable inset for
+        "Use printer margins". Optional, so the panel stays constructible
+        without a printer.
+    :ivar layout_changed: ``Signal(object)`` carrying the recomputed
+        ``SheetPlan``.
+    :ivar widget: the ``QWidget`` to place in a layout.
     """
 
     def __init__(self, state: AppState, parent=None, profile=None) -> None:

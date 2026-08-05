@@ -41,6 +41,14 @@ def visible_range(scroll_index: int, viewport_count: int, total: int) -> tuple[i
     Deliberately bounded to the visible viewport (plus a small prefetch
     margin) rather than "all pages" -- scrubbing a thousand-page document
     must not rasterize the whole thing up front.
+
+    :param scroll_index: the first page currently in view.
+    :param viewport_count: how many pages the viewport shows.
+    :param total: the document's page count.
+    :returns: ``(start, count)``, clamped to the document and widened by
+        :data:`THUMBNAIL_PREFETCH` on each side so a small scroll does not
+        immediately trigger another fetch. ``(0, 0)`` for an empty
+        document or a zero-height viewport.
     """
     if total <= 0 or viewport_count <= 0:
         return (0, 0)
@@ -57,6 +65,15 @@ def request_visible_thumbnails(
     Returns ``(start, rendered_pages)`` so a caller can place results at
     the right offset. Never called with the full page list -- see
     ``visible_range``.
+
+    :param pages: the full page list. Only the visible window is
+        rasterized.
+    :param scroll_index: the first page currently in view.
+    :param viewport_count: how many pages the viewport shows.
+    :param dpi: thumbnail resolution.
+    :returns: ``(start, rendered_pages)`` -- the index the first result
+        belongs at, and the results.
+    :raises pypdfium2.PdfiumError: a source page cannot be rasterized.
     """
     start, count = visible_range(scroll_index, viewport_count, len(pages))
     return start, thumbnails(pages, start, count, dpi=dpi)
@@ -66,18 +83,48 @@ def request_visible_thumbnails(
 
 
 def reorder(state: AppState, old_index: int, new_index: int) -> None:
+    """Move a page, through ``AppState.mutate``.
+
+    :param state: the app state to mutate.
+    :param old_index: where the page is now.
+    :param new_index: where it should end up.
+    :returns: nothing; read the result back from ``state.project``.
+    :raises IndexError: ``old_index`` is out of range.
+    """
     state.mutate(lambda project: reorder_pages(project, old_index, new_index))
 
 
 def rotate(state: AppState, index: int, rotate_deg: int) -> None:
+    """Set a page's rotation, through ``AppState.mutate``.
+
+    :param state: the app state to mutate.
+    :param index: which page.
+    :param rotate_deg: the new rotation; normalised downstream, so a caller
+        can keep adding 90 without wrapping it.
+    :returns: nothing.
+    :raises IndexError: ``index`` is out of range.
+    """
     state.mutate(lambda project: set_rotation(project, index, rotate_deg))
 
 
 def skip(state: AppState, index: int) -> None:
+    """Toggle a page's skipped flag, through ``AppState.mutate``.
+
+    :param state: the app state to mutate.
+    :param index: which page.
+    :returns: nothing.
+    :raises IndexError: ``index`` is out of range.
+    """
     state.mutate(lambda project: toggle_skip(project, index))
 
 
 def insert_blank_page(state: AppState, index: int) -> None:
+    """Insert a blank page, through ``AppState.mutate``.
+
+    :param state: the app state to mutate.
+    :param index: where the blank goes.
+    :returns: nothing.
+    """
     state.mutate(lambda project: insert_blank(project, index))
 
 
@@ -86,6 +133,13 @@ class ThumbnailWorker:
 
     Plain class, not a ``QObject`` -- Qt wiring lives entirely in
     ``ArrangeView``, mirroring ``ImportWorker`` in ``import_view.py``.
+
+    :param pages: the full page list.
+    :param scroll_index: the first page currently in view.
+    :param viewport_count: how many pages the viewport shows.
+    :ivar start: the index :attr:`rendered` begins at.
+    :ivar rendered: the thumbnails, once :meth:`run` has finished.
+    :ivar cancel: set when a newer scroll position supersedes this fetch.
     """
 
     def __init__(self, pages: Sequence[SourcePage], scroll_index: int, viewport_count: int) -> None:
@@ -98,6 +152,12 @@ class ThumbnailWorker:
         self.cancel = threading.Event()
 
     def run(self) -> None:
+        """Fetch the thumbnails, unless already superseded.
+
+        :returns: nothing -- results land on :attr:`start` and
+            :attr:`rendered`. A cancelled fetch leaves both untouched, so a
+            superseded window's partial work never reaches the grid.
+        """
         if self.cancel.is_set():
             return
         start, rendered = request_visible_thumbnails(
@@ -146,6 +206,11 @@ class ArrangeView:
     reorder, plus toolbar buttons for rotate / skip / insert-blank on the
     current selection -- every one of those actions is routed through
     ``AppState.mutate`` via the plain functions above.
+
+    :param state: the app state whose pages are shown and mutated.
+    :param parent: the parent ``QWidget``, or ``None``.
+    :ivar widget: the ``QWidget`` to place in a layout. This class is not
+        itself a widget.
     """
 
     VIEWPORT_COUNT = 40
@@ -196,7 +261,12 @@ class ArrangeView:
     # -- population ------------------------------------------------------
 
     def refresh(self) -> None:
-        """Repopulate placeholder items for the current project's pages."""
+        """Repopulate placeholder items for the current project's pages.
+
+        :returns: nothing. Signals are blocked while items are rebuilt,
+            otherwise clearing the list would fire ``rowsMoved`` and
+            reorder the project underneath itself.
+        """
         QListWidgetItem = _qt_widgets()[3]
         self.list_widget.blockSignals(True)
         try:
@@ -214,6 +284,11 @@ class ArrangeView:
         Supersedes any fetch still in flight -- scrolling a 266-page grid
         otherwise queues a thread per scroll step, each parented to the
         widget and so never freed, with the slowest painting last.
+
+        :param scroll_index: the first page now in view.
+        :returns: nothing, immediately; results are applied when the
+            background thread finishes, and only if it is still the
+            current one.
         """
         if self._worker is not None:
             self._worker.cancel.set()

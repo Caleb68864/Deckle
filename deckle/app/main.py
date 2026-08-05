@@ -103,6 +103,14 @@ class _PrinterQuery:
     who has since moved on -- and the abandoned thread is left to finish
     on its own, because killing a thread parked in a driver call is worse
     than leaking one.
+
+    :param worker: the enumeration worker to read an answer from.
+    :param apply_result: called with ``(names)`` or
+        ``(names, message)`` once the query settles, on the UI thread.
+    :param timeout_ms: the deadline.
+    :ivar settled: whether either outcome has already been applied.
+    :ivar timed_out: whether the deadline, rather than the worker, settled
+        it.
     """
 
     def __init__(self, worker: _PrinterQueryWorker, apply_result, timeout_ms: int) -> None:
@@ -113,7 +121,12 @@ class _PrinterQuery:
         self.timed_out = False
 
     def complete(self) -> None:
-        """Settle with the worker's names. Ignored if already settled."""
+        """Settle with the worker's names. Ignored if already settled.
+
+        :returns: nothing. A late answer from a thread that eventually
+            unblocks is logged and discarded rather than re-enabling Print
+            underneath a user who has since moved on.
+        """
         if self.settled:
             log_event(
                 "printer_enumeration_late_result",
@@ -133,7 +146,13 @@ class _PrinterQuery:
         self._apply(names)
 
     def time_out(self) -> None:
-        """Settle as "no printers found". Ignored if already settled."""
+        """Settle as "no printers found". Ignored if already settled.
+
+        :returns: nothing. The app then behaves exactly as it does with no
+            printers installed, but says :data:`PRINTER_TIMEOUT_MESSAGE`
+            instead -- "no printers installed" is actively misleading to
+            someone looking straight at their printer.
+        """
         if self.settled:
             return
         self.settled = True
@@ -172,6 +191,12 @@ def available_printer_names() -> list[str]:
     A thin, patchable seam over ``QPrinterInfo`` so callers (and tests)
     don't need a real printer attached -- an empty list is a normal,
     expected result, not an error.
+
+    :returns: the printer names Qt reports.
+    :raises Exception: whatever the Qt/spooler call raises. Callers wrap
+        this in :class:`_PrinterQueryWorker`, which is where the
+        degrade-to-empty decision lives -- it is deliberately not made
+        here, so a caller that wants the real failure can have it.
     """
     from PySide6.QtPrintSupport import QPrinterInfo
 
@@ -179,6 +204,10 @@ def available_printer_names() -> list[str]:
 
 
 def default_project() -> Project:
+    """An empty project on US Letter, for a freshly launched window.
+
+    :returns: a project with no pages, no gutter and no printer.
+    """
     layout = LayoutSettings(paper=LETTER_PT, gutter_pt=0.0, binding_edge="left")
     return Project(pages=[], layout=layout, printer=None)
 
@@ -190,7 +219,11 @@ def _qt_widgets():
 
 
 class MainWindow:
-    """The application shell: import controls, arrange grid, print action."""
+    """The application shell: import controls, arrange grid, print action.
+
+    :param project_path: the project to open, or ``None`` for a new one.
+        Also decides where autosave writes.
+    """
 
     def __init__(self, project_path: str | None = None) -> None:
         QHBoxLayout, QMainWindow, QPushButton, QStatusBar, QVBoxLayout, QWidget = _qt_widgets()
@@ -275,6 +308,14 @@ class MainWindow:
         there is nothing to time out *against* -- but it goes through
         ``_PrinterQueryWorker`` so a spooler failure degrades to "no
         printers" there too rather than propagating out of a refresh.
+
+        :param blocking: run synchronously, for tests and the CLI where
+            there is no event loop to return to. Cannot be bounded -- there
+            is nothing to time out against.
+        :param timeout_ms: the deadline for the asynchronous path, or
+            ``None`` for :data:`PRINTER_QUERY_TIMEOUT_MS`.
+        :returns: nothing. The result arrives via ``_apply_printers``,
+            which enables or disables **only** the Print action.
         """
         if timeout_ms is None:
             timeout_ms = PRINTER_QUERY_TIMEOUT_MS
@@ -337,6 +378,9 @@ class MainWindow:
 
         ``book.pdf`` imposed becomes ``book-deckle.pdf`` -- never the source
         name itself, so a careless Save can't overwrite the input.
+
+        :returns: the suggested filename, or ``"deckle-output.pdf"`` when
+            nothing has been imported yet.
         """
         pages = self.state.project.pages
         if not pages:
@@ -374,14 +418,29 @@ class MainWindow:
         self.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
 
     def show(self) -> None:
+        """Show the window.
+
+        :returns: nothing.
+        """
         self.window.show()
 
     def close(self) -> None:
+        """Flush the pending autosave and close the window.
+
+        :returns: nothing. The flush is not optional: the debounce window
+            is exactly the interval a closing app would otherwise lose.
+        """
         self.state.flush_autosave()
         self.window.close()
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Launch the desktop app and run the Qt event loop.
+
+    :param argv: arguments for ``QApplication``, or ``None`` to use
+        ``sys.argv``.
+    :returns: the event loop's exit code, for ``sys.exit``.
+    """
     import sys
 
     from PySide6.QtWidgets import QApplication

@@ -33,6 +33,13 @@ def select_preselected_printer(
     Falls back to the first available printer (if any) when none of them
     has a saved ``PrinterProfile`` yet. Pure and Qt-free so it is directly
     unit-testable.
+
+    :param printer_names: the printers to choose among, in the order Qt
+        reported them.
+    :param profile_loader: called with a printer name; raising means "no
+        saved profile".
+    :returns: the printer to preselect, or ``None`` when there are no
+        printers at all.
     """
     for name in printer_names:
         try:
@@ -58,6 +65,14 @@ def resolve_profile(
 
     Until calibration (SS-13) exists, this is the only way a print run
     ever gets a ``PrinterProfile`` without a prior calibration pass.
+
+    :param printer_name: the printer to load a profile for.
+    :param profile_loader: how to load a saved profile.
+    :param builtin_presets: the fallback presets, or ``None`` for
+        ``BUILTIN_PRESETS``.
+    :returns: the saved profile, else the first builtin preset. Never
+        raises for a missing profile -- a printer with no calibration is
+        the normal case, not an error.
     """
     try:
         return profile_loader(printer_name)
@@ -109,6 +124,31 @@ class PrintDialog:
     classes, and every user-facing confirmation) are injectable so tests
     can drive the full pass/resume/offline flow headlessly, without a
     real blocking modal.
+
+    :param plan: the imposed sheets to print.
+    :param parent: the parent ``QWidget``, or ``None``.
+    :param printer_names: the printers to offer, or ``None`` to enumerate
+        them. ``MainWindow`` passes its cached list, because re-enumerating
+        would reintroduce exactly the spooler block it moved off the UI
+        thread.
+    :param profile_loader: how to load a saved ``PrinterProfile``.
+    :param builtin_presets: fallback presets, or ``None`` for the builtins.
+    :param session_cls: the session class to construct. Injected for tests.
+    :param backend_cls: the print backend class, or ``None`` to import
+        ``QtPrintBackend`` lazily.
+    :param resumable_lister: how to find interrupted sessions.
+    :param confirm_resume: asked which interrupted session to resume, if
+        any; returning ``None`` declines.
+    :param ask_resume_count: asked how many sheets physically emerged
+        during the interrupted pass. Software cannot observe that, so it
+        is taken as ground truth from the person holding the stack.
+    :param confirm_reload: shown the reload instruction between passes.
+    :param confirm_test_sheet: asked whether the test sheet printed
+        correctly.
+    :param show_offline_error: shown ``(printer_name, error)`` when a run
+        stalls, and reused verbatim for a refused resume.
+    :ivar widget: the ``QDialog`` to show. This class is not itself a
+        widget.
     """
 
     def __init__(
@@ -211,7 +251,17 @@ class PrintDialog:
     # -- starting a fresh print run ------------------------------------------
 
     def start_print(self) -> None:
-        """Construct a fresh ``PrintSession`` for the selected printer and run it."""
+        """Construct a fresh ``PrintSession`` for the selected printer and run it.
+
+        The signature combo supplies a ``sheets=`` subset and nothing more
+        -- reprinting one gathering is the normal path with a smaller
+        input, and the pass/sheet-order arithmetic stays in
+        ``plan_passes``/``PrintSession``.
+
+        :returns: nothing. A printer that is offline or unreachable is
+            surfaced through ``show_offline_error`` and leaves a resumable
+            session on disk, rather than raising.
+        """
         printer_name = self.printer_combo.currentText()
         profile = self._resolve_profile(printer_name)
         backend = self._backend_cls(profile)
@@ -266,6 +316,10 @@ class PrintDialog:
         (``finished``, ``last_error``, ``reload_instruction``, and the
         ``pass_index``/``test_sheet_pending`` fields of ``session.state``)
         -- never recomputes sheet order or a reload instruction itself.
+
+        :param session: the session to drive.
+        :returns: nothing. Returns early on any failure, leaving the
+            session resumable rather than unwinding it.
         """
         if session.last_error is not None:
             self._show_offline_error(session.printer_name, session.last_error)

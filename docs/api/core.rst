@@ -1,0 +1,35 @@
+deckle.core -- the Qt-free core
+===============================
+
+.. automodule:: deckle.core
+
+Reading order
+-------------
+
+The modules below are listed roughly in the order a page travels through
+them: it is described (:mod:`~deckle.core.models`), loaded off disk
+(:mod:`~deckle.core.loader`), imposed onto sheets
+(:mod:`~deckle.core.layout`, :mod:`~deckle.core.signatures`,
+:mod:`~deckle.core.marks`), written out or rasterized
+(:mod:`~deckle.core.export`, :mod:`~deckle.core.render`), persisted
+(:mod:`~deckle.core.project_io`), and finally printed
+(:mod:`~deckle.core.printing`, :mod:`~deckle.core.profiles`,
+:mod:`~deckle.core.print_session`). The two log modules sit underneath all
+of it.
+
+.. toctree::
+   :maxdepth: 1
+
+   core.models
+   core.loader
+   core.layout
+   core.signatures
+   core.marks
+   core.export
+   core.render
+   core.project_io
+   core.printing
+   core.profiles
+   core.print_session
+   core.session_log
+   core.diagnostics
