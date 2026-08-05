@@ -380,6 +380,11 @@ class MainWindow:
         self._printers: list[str] = []
         self._printer_thread = None
         self._printer_query: _PrinterQuery | None = None
+        #: A printer fault worth showing, or "" when there is none.
+        #: Held rather than written straight to the status bar so the
+        #: bar has ONE writer and a later import cannot leave a stale
+        #: instruction up.
+        self._printer_message = ""
         self._sync_document_actions()
         self.refresh_printers()
 
@@ -405,7 +410,28 @@ class MainWindow:
     def _on_imported(self, pages, warnings) -> None:
         self.arrange_view.refresh()
         self._sync_document_actions()
+        # The status bar may still be telling the user to import something.
+        # That message is correct only while nothing is loaded; leaving it up
+        # after an import means the app is giving an instruction the user has
+        # already carried out.
+        self._refresh_status_message()
         self.preview_view.on_layout_changed(recompute_plan(self.state.project))
+
+    def _refresh_status_message(self) -> None:
+        """Say the most useful true thing about the current state.
+
+        There are three, in order of precedence: a printer fault the user
+        cannot otherwise see, then the next step when nothing is loaded,
+        then nothing at all. Silence is the right answer for a document
+        that is ready to print -- the status bar is not a place to announce
+        that everything is fine.
+        """
+        if self._printer_message:
+            self.status_bar.showMessage(self._printer_message)
+        elif not self.state.project.pages:
+            self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
+        else:
+            self.status_bar.clearMessage()
 
     def refresh_printers(self, *, blocking: bool = False, timeout_ms: int | None = None) -> None:
         """Re-check available printers, off the UI thread and under a deadline.
@@ -472,10 +498,7 @@ class MainWindow:
         self.print_button.setEnabled(has_printers)
         if has_printers:
             self.print_button.setToolTip("")
-            if self.state.project.pages:
-                self.status_bar.clearMessage()
-            else:
-                self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
+            self._printer_message = ""
         else:
             message = no_printers_message or NO_PRINTERS_MESSAGE
             self.print_button.setToolTip(message)
@@ -485,12 +508,11 @@ class MainWindow:
             # PRINTER_TIMEOUT_MESSAGE), and a user who cannot print needs to
             # know the spooler was unreachable even if they have not
             # imported anything yet. Routine "no printers installed",
-            # though, is not news on an empty Deckle -- say what to do
-            # first instead.
-            if no_printers_message or self.state.project.pages:
-                self.status_bar.showMessage(message)
-            else:
-                self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
+            # though, is not news on an empty Deckle.
+            self._printer_message = (
+                message if (no_printers_message or self.state.project.pages) else ""
+            )
+        self._refresh_status_message()
 
     def _on_print_clicked(self) -> None:
         # Use the cached list rather than re-enumerating: a second query

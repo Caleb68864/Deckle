@@ -288,8 +288,13 @@ class _FakeWindow:
         # bar should say: with nothing loaded, "no printers" is not the
         # user's next step, importing is. The double has to model that.
         self.state = SimpleNamespace(project=SimpleNamespace(pages=list(pages)))
+        #: Set by _apply_printers, read by _refresh_status_message. The
+        #: status bar has one writer so that a later import cannot leave a
+        #: stale "import something" instruction on screen.
+        self._printer_message = ""
 
     _apply_printers = app_main.MainWindow._apply_printers
+    _refresh_status_message = app_main.MainWindow._refresh_status_message
 
 
 def test_zero_printers_disables_print_but_leaves_save_pdf_alone():
