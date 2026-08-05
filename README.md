@@ -8,8 +8,10 @@ sheets before you commit paper, and drives the printer directly — splitting a
 double-sided job into two passes with a reload instruction derived from your
 printer's own calibrated behaviour.
 
-**Status: not yet released.** The MVP works. The calibration wizard and
-signature imposition do not exist yet. Expect breaking changes.
+**Status: not yet released.** The gutter-shift path is the proven one and
+is what everything below describes unless marked otherwise. Saddle-stitch
+signature imposition exists but is **experimental** — see below. The
+calibration wizard does not exist yet. Expect breaking changes.
 
 ## Why it exists
 
@@ -52,13 +54,37 @@ why they cannot express "reprint sheet 7".
 - Save the imposed PDF, or print it with manual-duplex pass splitting,
   test-one-sheet, and sheet-granular resume
 - A headless CLI: `impose`, `export`, `info`
+- **Experimental:** saddle-stitch signature imposition (`--fold-scheme folio`),
+  with fold lines, sewing-station marks and per-signature printing
+
+## Experimental: folio (saddle stitch)
+
+`--fold-scheme folio` imposes pages two-up per side and groups sheets into
+folded, nested signatures. It is implemented, unit-tested, and proven to
+produce two independent placements per side with no scale drift between them.
+
+It is nevertheless marked **experimental**, for one specific reason: the page
+*ordering* — which source page lands in which cell of which sheet so that the
+stack reads correctly once folded — is hand-written arithmetic, and the only
+check that actually proves it is folding a physical dummy and reading it. That
+has not been done. Every automated test verifies the ordering is *consistent
+and self-inverse*; none of them verifies it is *the right ordering*, because
+software cannot tell you which way the paper folds.
+
+So: print folio onto scrap, fold it, and read it before committing a real book.
+If it reads correctly, the arithmetic is right and it will stay right.
+
+By contrast the default (`--fold-scheme none`, gutter shift) is verified
+placement-identical against the pre-refactor implementation across six setting
+combinations and two documents, including a 300-page book with mixed page
+sizes.
 
 ## Not built yet
 
 - **Calibration wizard** — printing uses built-in printer presets rather than
   a profile measured from your own printer
-- **Signature imposition** — folding, nesting, saddle stitch. Design at
-  `docs/plans/2026-08-04-deckle-signatures-v2-design.md`
+- **Verified signature imposition** — `--fold-scheme folio` is implemented and
+  tested, but see *Experimental: folio* below before trusting it with paper
 - Packaging and installers; macOS support
 
 ## Running it
