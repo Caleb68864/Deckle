@@ -185,3 +185,10 @@
 - Surfaces: Manual duplex specifically. By the time a user resumes they have already physically reloaded the paper stack, so a mismatch prints backs onto the wrong fronts and the first symptom is a ruined pile of expensive paper.
 - Watch: Check version BEFORE content. A v1 state file's hash cannot be compared with a v2 one, so testing the hash first would report "the document changed" -- sending the user hunting for an edit they never made -- when what actually changed was Deckle. The two failures need distinct `reason` codes for the same purpose. Chose refusal over warn-and-continue because the costs are asymmetric: refusing costs a reprint the user was about to do anyway, continuing can cost the whole book.
 - Commit: (this commit)
+
+## 2026-08-04 - Every failure now names the file and says what to do
+- Symptom: File and input failures surfaced as raw library exceptions -- an Errno, or a pypdfium2 traceback. Nothing told the user which path failed or what to do about it.
+- Fix: Hardening passes 4 and 5. Every I/O and malformed-input path in the CLI and loader now fails with a message naming what failed, which file, and the remedy. Examples: an unavailable drive letter, an output path that is an existing folder, a missing parent folder, a file that is not a PDF despite its name.
+- Surfaces: Windows especially -- the drive-letter case (`Q:\out.pdf`) and the locked-file case (the PDF is open in a viewer) have no Unix equivalent and produce particularly opaque errors.
+- Watch: Verify exit codes OUTSIDE a pipeline. `cmd | tail -2; echo $?` reports tail's status, not the command's, so a broken exit code reads as 0. That mistake was made twice in this project -- once measuring `pytest -k` and once here. Errors go to stderr with exit 1; stdout stays empty on failure so it remains scriptable. Correct-path output was re-verified placement-identical to main across five configurations after these changes -- hardening must not move a single matrix.
+- Commit: (this commit)

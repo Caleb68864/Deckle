@@ -26,6 +26,7 @@ PDF ``/Rotate`` key.
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ import pikepdf
 import pypdfium2 as pdfium
 
 from deckle.core import export
+from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.printing import PrintPass, PrintResult
 from deckle.core.profiles import PrinterProfile
@@ -96,6 +98,36 @@ def _printer_info(printer_name: str):
     from PySide6.QtPrintSupport import QPrinterInfo
 
     return QPrinterInfo.printerInfo(printer_name)
+
+
+def printer_is_available(printer_name: str) -> bool:
+    """Whether the OS still knows about ``printer_name``.
+
+    A printer can vanish between the moment it was enumerated and the
+    moment a job is submitted to it -- unplugged, removed from the system,
+    or a network queue that went away while the user was busy reloading
+    paper for the back pass. Deckle's manual-duplex flow makes that window
+    unusually wide: minutes of physical work sit between pass 1 and pass 2.
+
+    Qt surfaces the disappearance only as a failure inside
+    ``QPainter.begin()``, by which point a chunk is already half set up and
+    the error text says nothing about the printer being gone. Checking
+    first turns that into a specific, actionable message.
+
+    :param printer_name: the printer to check. An empty name means "the
+        system default", which is not ours to second-guess.
+    :returns: True if the printer exists, or if the check itself could not
+        be made -- an unavailable *check* must never block a print the user
+        asked for.
+    """
+    if not printer_name:
+        return True
+    try:
+        info = _printer_info(printer_name)
+        return not info.isNull()
+    except Exception as exc:  # noqa: BLE001 -- inconclusive, not fatal
+        log_exception("printer_availability_check_failed", exc, printer=printer_name)
+        return True
 
 
 def _duplex_none_mode():
@@ -207,6 +239,15 @@ class QtPrintBackend:
         self.chunk_size = chunk_size
         self._drivers_ignoring_rotate = drivers_ignoring_rotate
 
+        # What the last submit_pass()/submit_duplex() call actually got as
+        # far as. Paper cannot be read backwards: when a run dies partway
+        # the user is holding a stack and cannot tell which sheets made it,
+        # and PrintResult carries only a count (deckle.core.printing is a
+        # frozen seam). These carry the indices.
+        self.submitted_sheets: list[int] = []
+        self.uncertain_sheets: list[int] = []
+        self.unsubmitted_sheets: list[int] = []
+
     # -- PrintBackend Protocol -------------------------------------------------
 
     def submit(
@@ -228,10 +269,41 @@ class QtPrintBackend:
         ``(plan, sheets, printer_name, copies, dpi)`` shape -- callers that
         only know the Protocol (SS-11/SS-12 submitting a single front pass)
         can omit them and get front-side, unrotated behavior.
+
+        A printer that has disappeared since it was chosen is reported as
+        such before anything is painted, rather than as whatever Qt says
+        when ``QPainter.begin()`` fails on a queue that no longer exists.
         """
+        if not printer_is_available(printer_name):
+            error = f"printer {printer_name!r} is no longer available"
+            log_event(
+                "print_printer_unavailable",
+                level=logging.WARNING,
+                printer=printer_name,
+                sheets=list(sheets),
+                side=side,
+                pass_index=pass_index,
+            )
+            return PrintResult(submitted=0, job_id=None, error=error)
+
         try:
             self._submit_chunk(plan, sheets, printer_name, copies, dpi, side, rotate_backs)
         except Exception as exc:  # noqa: BLE001 - reported back as PrintResult.error
+            # Offline, out of paper, driver rejection, printer removed
+            # mid-run: Qt reports all of them the same way, as an exception
+            # from begin()/newPage(). The distinction lives in the message,
+            # so record it -- along with which sheets were in flight, which
+            # is the part the paper cannot tell you afterwards.
+            log_exception(
+                "print_chunk_failed",
+                exc,
+                printer=printer_name,
+                sheets=list(sheets),
+                side=side,
+                pass_index=pass_index,
+                copies=copies,
+                dpi=dpi,
+            )
             return PrintResult(submitted=0, job_id=None, error=str(exc))
 
         log_print_job(printer_name, self.profile, sheets, dpi, pass_index)
@@ -251,10 +323,21 @@ class QtPrintBackend:
         than continuing to submit into a jammed or offline printer. The
         returned ``PrintResult.submitted`` is the count actually
         submitted before the failure (or the full pass on success).
+
+        A partial run also records **which** sheets got where, on
+        :attr:`submitted_sheets`, :attr:`uncertain_sheets` and
+        :attr:`unsubmitted_sheets`, and in the diagnostic log. The
+        three-way split is not pedantry: a chunk that fails may have failed
+        on its first sheet or its last, so its sheets are genuinely
+        unknown, and telling a user they printed is how a reprint comes out
+        with holes in it.
         """
         chunks = _chunked(print_pass.sheet_order, self.chunk_size)
+        self.submitted_sheets = []
+        self.uncertain_sheets = []
+        self.unsubmitted_sheets = list(print_pass.sheet_order)
         submitted_total = 0
-        for chunk in chunks:
+        for position, chunk in enumerate(chunks):
             result = self.submit(
                 plan,
                 chunk,
@@ -266,8 +349,24 @@ class QtPrintBackend:
                 pass_index=print_pass.index,
             )
             if result.error is not None:
+                self.uncertain_sheets = list(chunk)
+                remaining = [s for c in chunks[position + 1 :] for s in c]
+                self.unsubmitted_sheets = remaining
+                log_event(
+                    "print_pass_incomplete",
+                    level=logging.WARNING,
+                    printer=printer_name,
+                    pass_index=print_pass.index,
+                    side=print_pass.side,
+                    error=result.error,
+                    submitted_sheets=list(self.submitted_sheets),
+                    uncertain_sheets=list(chunk),
+                    unsubmitted_sheets=remaining,
+                )
                 return PrintResult(submitted=submitted_total, job_id=None, error=result.error)
+            self.submitted_sheets.extend(chunk)
             submitted_total += result.submitted
+        self.unsubmitted_sheets = []
         return PrintResult(submitted=submitted_total, job_id=None, error=None)
 
     # -- internals ---------------------------------------------------------
@@ -357,7 +456,27 @@ class QtPrintBackend:
         is True. Chunking still applies -- one job per chunk of sheets,
         each job interleaving front/back pages for QPrinter's own duplex
         unit to reassemble.
+
+        Tracks the same submitted/uncertain/unsubmitted split as
+        :meth:`submit_pass`.
         """
+        chunks_all = _chunked(list(sheets), self.chunk_size)
+        self.submitted_sheets = []
+        self.uncertain_sheets = []
+        self.unsubmitted_sheets = list(sheets)
+
+        if not printer_is_available(printer_name):
+            error = f"printer {printer_name!r} is no longer available"
+            log_event(
+                "print_printer_unavailable",
+                level=logging.WARNING,
+                printer=printer_name,
+                sheets=list(sheets),
+                side="duplex",
+                pass_index=0,
+            )
+            return PrintResult(submitted=0, job_id=None, error=error)
+
         printer = _new_qprinter()
         if printer_name:
             printer.setPrinterName(printer_name)
@@ -365,9 +484,9 @@ class QtPrintBackend:
         printer.setFullPage(True)
         printer.setDuplex(_duplex_auto_mode())
 
-        chunks = _chunked(list(sheets), self.chunk_size)
+        chunks = chunks_all
         submitted_total = 0
-        for chunk in chunks:
+        for position, chunk in enumerate(chunks):
             try:
                 painter = _new_qpainter()
                 if not painter.begin(printer):
@@ -384,7 +503,20 @@ class QtPrintBackend:
                 finally:
                     painter.end()
             except Exception as exc:  # noqa: BLE001
+                self.uncertain_sheets = list(chunk)
+                remaining = [s for c in chunks[position + 1 :] for s in c]
+                self.unsubmitted_sheets = remaining
+                log_exception(
+                    "print_duplex_chunk_failed",
+                    exc,
+                    printer=printer_name,
+                    submitted_sheets=list(self.submitted_sheets),
+                    uncertain_sheets=list(chunk),
+                    unsubmitted_sheets=remaining,
+                )
                 return PrintResult(submitted=submitted_total, job_id=None, error=str(exc))
             log_print_job(printer_name, self.profile, chunk, dpi, 0)
+            self.submitted_sheets.extend(chunk)
             submitted_total += len(chunk)
+        self.unsubmitted_sheets = []
         return PrintResult(submitted=submitted_total, job_id=None, error=None)

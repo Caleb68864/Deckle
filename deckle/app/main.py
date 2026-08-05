@@ -9,10 +9,11 @@ opening an empty/broken print dialog or raising.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from deckle.app.state import AppState
-from deckle.core.diagnostics import log_exception
+from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
@@ -26,10 +27,30 @@ LETTER_PT = (612.0, 792.0)
 
 NO_PRINTERS_MESSAGE = "No printers installed -- connect a printer to enable printing."
 
+PRINTER_TIMEOUT_MESSAGE = (
+    "Could not reach the print spooler -- printing is unavailable. "
+    "Saving a PDF still works."
+)
+"""Shown instead of :data:`NO_PRINTERS_MESSAGE` when enumeration timed out.
+
+The UI *state* is identical (Print disabled, Save PDF untouched), but the
+cause is not, and "no printers installed" is actively misleading to someone
+who is looking straight at their printer."""
+
 # Used to seed PreviewView before any printer/profile has been chosen -- the
 # same fallback resolve_profile() reaches for when a printer has no saved
 # PrinterProfile yet (see deckle/app/views/print_dialog.py).
 DEFAULT_PROFILE = next(iter(BUILTIN_PRESETS.values()))
+
+PRINTER_QUERY_TIMEOUT_MS = 5000
+"""How long to wait for printer enumeration before giving up on it.
+
+Enumeration measures ~21ms with the network up. Five seconds is two orders
+of magnitude of headroom for a slow-but-working spooler, and still short
+enough that a user staring at "Checking for printers..." does not conclude
+the app has hung -- which, for 81 minutes on this machine during a network
+outage, it had.
+"""
 
 
 class _PrinterQueryWorker:
@@ -53,6 +74,86 @@ class _PrinterQueryWorker:
             # report with nothing behind it.
             log_exception("printer_enumeration_failed", exc)
             self.names = []
+
+
+class _PrinterQuery:
+    """Arbitrates one enumeration between its worker and a deadline.
+
+    Moving enumeration onto a background thread stopped it freezing the UI,
+    but it did not bound it: ``QPrinterInfo.availablePrinters()`` blocks
+    inside the OS spooler and there is no way to interrupt it. A worker
+    thread that never returns is still a hang -- it has only moved where.
+    So the query is settled by whichever comes first, the worker's answer
+    or the deadline, and only once.
+
+    On timeout the app proceeds exactly as it does with no printers
+    installed: Print disabled, Save PDF untouched, and a log line saying
+    which way it went. A late answer from a thread that eventually
+    unblocks is discarded rather than re-enabling Print underneath a user
+    who has since moved on -- and the abandoned thread is left to finish
+    on its own, because killing a thread parked in a driver call is worse
+    than leaking one.
+    """
+
+    def __init__(self, worker: _PrinterQueryWorker, apply_result, timeout_ms: int) -> None:
+        self._worker = worker
+        self._apply = apply_result
+        self.timeout_ms = timeout_ms
+        self.settled = False
+        self.timed_out = False
+
+    def complete(self) -> None:
+        """Settle with the worker's names. Ignored if already settled."""
+        if self.settled:
+            log_event(
+                "printer_enumeration_late_result",
+                count=len(self._worker.names),
+                timeout_ms=self.timeout_ms,
+            )
+            return
+        self.settled = True
+        names = list(self._worker.names)
+        if not names:
+            # Zero printers is a legitimate, fully supported state -- but it
+            # is indistinguishable at the UI from a spooler that failed, so
+            # say which happened.
+            log_event("printer_enumeration_empty", reason="spooler returned no printers")
+        else:
+            log_event("printer_enumeration_completed", count=len(names))
+        self._apply(names)
+
+    def time_out(self) -> None:
+        """Settle as "no printers found". Ignored if already settled."""
+        if self.settled:
+            return
+        self.settled = True
+        self.timed_out = True
+        log_event(
+            "printer_enumeration_timeout",
+            level=logging.WARNING,
+            timeout_ms=self.timeout_ms,
+            reason="spooler did not answer before the deadline",
+        )
+        self._apply([], PRINTER_TIMEOUT_MESSAGE)
+
+
+def _single_shot(interval_ms: int, callback) -> None:
+    """Fire ``callback`` on the UI thread after ``interval_ms``.
+
+    A thin, patchable seam over ``QTimer`` for the same reason
+    :func:`available_printer_names` is one: the timeout logic has to be
+    testable without an event loop.
+    """
+    from PySide6.QtCore import QTimer
+
+    QTimer.singleShot(interval_ms, callback)
+
+
+def _new_thread(parent):
+    """A ``QThread`` parented to ``parent``. Patchable seam, as above."""
+    from PySide6.QtCore import QThread
+
+    return QThread(parent)
 
 
 def available_printer_names() -> list[str]:
@@ -131,6 +232,7 @@ class MainWindow:
         # an undefined attribute if the user clicks Print immediately.
         self._printers: list[str] = []
         self._printer_thread = None
+        self._printer_query: _PrinterQuery | None = None
         self.refresh_printers()
 
     def _on_layout_changed(self, plan) -> None:
@@ -142,8 +244,8 @@ class MainWindow:
         self.arrange_view.refresh()
         self.preview_view.on_layout_changed(recompute_plan(self.state.project))
 
-    def refresh_printers(self, *, blocking: bool = False) -> None:
-        """Re-check available printers, off the UI thread.
+    def refresh_printers(self, *, blocking: bool = False, timeout_ms: int | None = None) -> None:
+        """Re-check available printers, off the UI thread and under a deadline.
 
         ``QPrinterInfo.availablePrinters()`` enumerates **network** printers
         too, and the Windows spooler blocks per printer until it times out
@@ -152,27 +254,48 @@ class MainWindow:
         printer is offline. Enumeration measures ~21ms with the network up
         and unbounded without it, so it does not belong on the UI thread.
 
-        ``blocking=True`` keeps a synchronous path for tests and the CLI,
-        where there is no event loop to return to.
-        """
-        if blocking:
-            self._apply_printers(available_printer_names())
-            return
+        The thread alone is not enough: the spooler's own timeout is what
+        was unbounded, and a background thread parked in it forever still
+        leaves the user watching "Checking for printers..." with no end.
+        :class:`_PrinterQuery` puts a deadline on it, after which the app
+        behaves as it does with no printers at all.
 
-        from PySide6.QtCore import QThread
+        ``blocking=True`` keeps a synchronous path for tests and the CLI,
+        where there is no event loop to return to. It cannot be bounded --
+        there is nothing to time out *against* -- but it goes through
+        ``_PrinterQueryWorker`` so a spooler failure degrades to "no
+        printers" there too rather than propagating out of a refresh.
+        """
+        if timeout_ms is None:
+            timeout_ms = PRINTER_QUERY_TIMEOUT_MS
+
+        if blocking:
+            worker = _PrinterQueryWorker()
+            worker.run()
+            _PrinterQuery(worker, self._apply_printers, timeout_ms).complete()
+            return
 
         self.print_button.setEnabled(False)
         self.status_bar.showMessage("Checking for printers...")
 
         worker = _PrinterQueryWorker()
-        thread = QThread(self.window)
+        query = _PrinterQuery(worker, self._apply_printers, timeout_ms)
+        thread = _new_thread(self.window)
         thread.run = worker.run
-        thread.finished.connect(lambda: self._apply_printers(worker.names))
+        thread.finished.connect(query.complete)
         thread.finished.connect(thread.deleteLater)
+        self._printer_query = query
         self._printer_thread = thread
         thread.start()
+        _single_shot(timeout_ms, query.time_out)
 
-    def _apply_printers(self, printers: list[str]) -> None:
+    def _apply_printers(self, printers: list[str], no_printers_message: str | None = None) -> None:
+        """Enable or disable **only** the Print action.
+
+        Save PDF is deliberately never touched here: zero printers, a dead
+        spooler and an enumeration timeout all leave Deckle fully usable as
+        an imposition tool that writes a file.
+        """
         self._printers = list(printers)
         has_printers = bool(printers)
         self.print_button.setEnabled(has_printers)
@@ -180,8 +303,9 @@ class MainWindow:
             self.print_button.setToolTip("")
             self.status_bar.clearMessage()
         else:
-            self.print_button.setToolTip(NO_PRINTERS_MESSAGE)
-            self.status_bar.showMessage(NO_PRINTERS_MESSAGE)
+            message = no_printers_message or NO_PRINTERS_MESSAGE
+            self.print_button.setToolTip(message)
+            self.status_bar.showMessage(message)
 
     def _on_print_clicked(self) -> None:
         # Use the cached list rather than re-enumerating: a second query

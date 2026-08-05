@@ -21,8 +21,8 @@ from typing import Sequence
 from deckle import __version__ as _DECKLE_VERSION
 from deckle.core.export import export as export_plan
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
-from deckle.core.diagnostics import log_event
-from deckle.core.loader import EncryptedPdfError, load_image_dir, load_pdf
+from deckle.core.diagnostics import log_event, log_exception
+from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.project_io import SourceChangedWarning, save_project
 
@@ -107,9 +107,108 @@ def _parse_paper(value: str) -> tuple[float, float]:
 
 
 def _load_source(path: str) -> list[SourcePage]:
+    """Load a PDF file or a directory of images.
+
+    The image-directory result is returned as-is rather than copied into a
+    plain ``list``: ``load_image_dir`` returns an ``ImportedPages``, whose
+    ``.warnings`` are what tell the user about mixed DPI or files that were
+    skipped. Wrapping it in ``list()`` dropped every one of them on the
+    floor before they reached ``_emit_warnings``.
+    """
     if os.path.isdir(path):
-        return list(load_image_dir(path))
+        return load_image_dir(path)
     return load_pdf(path)
+
+
+def _load_source_or_report(path: str) -> list[SourcePage] | None:
+    """Load the source, or print an actionable error and return ``None``.
+
+    Every refusal from the loader is a :class:`SourceLoadError` whose
+    message already names the file and the remedy, so the CLI's job is only
+    to route it to stderr and record it. Nothing else is caught here: an
+    unexpected exception should still produce a traceback, because a
+    traceback is a bug report and a swallowed one is not.
+    """
+    try:
+        return _load_source(path)
+    except SourceLoadError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        log_exception("source_load_failed", exc, path=path)
+        return None
+
+
+def _output_path_problem(out_path: str) -> str | None:
+    """Why ``out_path`` cannot be written to, or ``None`` if it looks fine.
+
+    Checked in the CLI *before* any imposition work, so a mistyped
+    destination costs no time, and so the message names the path the user
+    typed rather than the temp file the exporter was about to rename.
+
+    This cannot be exhaustive -- a file locked by another process passes
+    every check here and still fails at the final rename -- so the callers
+    also handle ``OSError`` from the write itself.
+    """
+    if os.path.isdir(out_path):
+        return (
+            f"cannot write to {out_path}: that is an existing folder, not a "
+            "file. Give a file name instead, e.g. "
+            f"{os.path.join(out_path, 'booklet.pdf')}."
+        )
+
+    directory = os.path.dirname(os.path.abspath(out_path)) or "."
+    if not os.path.isdir(directory):
+        anchor = os.path.splitdrive(os.path.abspath(out_path))[0]
+        if anchor and not os.path.exists(anchor + os.sep):
+            return (
+                f"cannot write to {out_path}: the drive {anchor} does not "
+                "exist or is not connected. Check the drive letter, or "
+                "choose a folder on a drive that is available."
+            )
+        return (
+            f"cannot write to {out_path}: the folder {directory} does not "
+            "exist. Create it first, or choose a folder that does."
+        )
+    if not os.access(directory, os.W_OK):
+        return (
+            f"cannot write to {out_path}: the folder {directory} is not "
+            "writable. Choose another location, or grant yourself write "
+            "permission on that folder."
+        )
+    if os.path.exists(out_path) and not os.access(out_path, os.W_OK):
+        return (
+            f"cannot write to {out_path}: the file is read-only. Clear its "
+            "read-only flag, or choose a different output file."
+        )
+    return None
+
+
+def _report_output_problem(out_path: str) -> bool:
+    """Print the problem with ``out_path``, if any. ``True`` means stop."""
+    problem = _output_path_problem(out_path)
+    if problem is None:
+        return False
+    print(f"error: {problem}", file=sys.stderr)
+    log_event("output_path_rejected", path=out_path, detail=problem)
+    return True
+
+
+def _report_write_failure(out_path: str, exc: OSError) -> None:
+    """Explain an ``OSError`` raised while writing ``out_path``.
+
+    The overwhelmingly common case on Windows is that the previous export
+    is still open in a PDF viewer, which holds the file and makes the
+    exporter's final rename fail with a bare ``[WinError 5] Access is
+    denied`` naming a temp file the user has never heard of.
+    """
+    if isinstance(exc, PermissionError):
+        detail = (
+            "permission denied -- is the file already open in a PDF viewer? "
+            "Close it and try again, or export to a different name."
+        )
+    else:
+        detail = f"{exc.strerror or exc}. Check the path, the drive, and free disk space."
+    print(f"error: cannot write to {out_path}: {detail}", file=sys.stderr)
+    log_exception("output_write_failed", exc, path=out_path)
 
 
 def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
@@ -169,10 +268,8 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_info(args: argparse.Namespace) -> int:
-    try:
-        pages = _load_source(args.source)
-    except EncryptedPdfError as exc:
-        print(f"error: password-protected PDF: {exc.path}", file=sys.stderr)
+    pages = _load_source_or_report(args.source)
+    if pages is None:
         return 1
 
     print(f"page count: {len(pages)}")
@@ -225,25 +322,29 @@ def _emit_warnings(pages, plan) -> None:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    try:
-        pages = _load_source(args.source)
-    except EncryptedPdfError as exc:
-        print(f"error: password-protected PDF: {exc.path}", file=sys.stderr)
+    if _report_output_problem(args.output):
+        return 1
+    pages = _load_source_or_report(args.source)
+    if pages is None:
         return 1
 
     settings = _build_layout_settings(args)
     plan = _strategy_for(settings).impose(pages, settings)
     _emit_warnings(pages, plan)
-    export_plan(plan, args.output)
+    try:
+        export_plan(plan, args.output)
+    except OSError as exc:
+        _report_write_failure(args.output, exc)
+        return 1
     print(f"wrote {args.output}")
     return 0
 
 
 def _cmd_impose(args: argparse.Namespace) -> int:
-    try:
-        pages = _load_source(args.source)
-    except EncryptedPdfError as exc:
-        print(f"error: password-protected PDF: {exc.path}", file=sys.stderr)
+    if _report_output_problem(args.output):
+        return 1
+    pages = _load_source_or_report(args.source)
+    if pages is None:
         return 1
 
     settings = _build_layout_settings(args)
@@ -253,6 +354,9 @@ def _cmd_impose(args: argparse.Namespace) -> int:
         save_project(project, args.output)
     except SourceChangedWarning as exc:
         print(f"error: source changed: {exc.path}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        _report_write_failure(args.output, exc)
         return 1
     print(f"wrote {args.output}")
     return 0

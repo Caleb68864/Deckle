@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-
+import pytest
 
 from deckle.app import backend as backend_mod
 from deckle.app.backend import DEFAULT_CHUNK_SIZE, QtPrintBackend, _chunked, _render_sheet_side
@@ -10,6 +10,19 @@ from deckle.core import export as export_module
 from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side, SourceRef
 from deckle.core.printing import PrintPass
 from deckle.core.profiles import PrinterProfile
+
+
+@pytest.fixture(autouse=True)
+def _printer_always_present(monkeypatch):
+    """Stub the pre-submission printer-existence check.
+
+    ``submit()`` verifies the printer still exists before painting (a
+    printer can vanish between enumeration and submission). That check
+    reaches QPrinterInfo, which these tests deliberately never touch --
+    they are about chunking and rotation, and none of them may pull Qt in.
+    ``tests/test_hardening_printing.py`` exercises the check itself.
+    """
+    monkeypatch.setattr(backend_mod, "printer_is_available", lambda name: True)
 
 
 def _profile(**overrides) -> PrinterProfile:
