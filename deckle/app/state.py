@@ -92,6 +92,30 @@ def reorder_pages(project: Project, old_index: int, new_index: int) -> Project:
     return replace(project, pages=pages)
 
 
+def reorder_pages_to(project: Project, order: list[int]) -> Project:
+    """Rearrange the pages into ``order``, given as old indices.
+
+    Takes the whole resulting order rather than a single move, because
+    that is what a drag-and-drop actually produces. Qt reorders its own
+    model during the drop -- by inserting a copy and removing the original,
+    not by emitting a move -- so the only reliable account of what happened
+    is the order the view is left holding. Reconstructing a
+    ``(from, to)`` pair from that is guesswork; applying it directly is not.
+
+    :param project: the project to derive a new one from. Never mutated.
+    :param order: every existing page index, exactly once, in their new
+        order.
+    :returns: a new project with the pages rearranged.
+    :raises ValueError: ``order`` is not a permutation of the page indices.
+        A partial or duplicated order would silently drop or clone pages.
+    """
+    if sorted(order) != list(range(len(project.pages))):
+        raise ValueError(
+            f"order must be a permutation of 0..{len(project.pages) - 1}, got {order!r}"
+        )
+    return replace(project, pages=[project.pages[i] for i in order])
+
+
 def set_rotation(project: Project, index: int, rotate_deg: int) -> Project:
     """Set one page's user rotation.
 

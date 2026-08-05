@@ -673,6 +673,17 @@ class PreviewView:
         """
         self.sheet_spinbox.setValue(max(0, len(self.plan.sheets) - 1))
 
+    def go_to_sheet(self, sheet_index: int) -> None:
+        """Show a specific sheet.
+
+        :param sheet_index: which sheet. Clamped to the plan, so a caller
+            working from a stale page count cannot land the view outside
+            the document.
+        :returns: nothing.
+        """
+        last = max(0, len(self.plan.sheets) - 1)
+        self.sheet_spinbox.setValue(max(0, min(sheet_index, last)))
+
     def _refresh_sheet_counter(self) -> None:
         """Keep the "sheet N of M" readout and the end buttons honest.
 

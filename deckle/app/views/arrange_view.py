@@ -32,6 +32,7 @@ from deckle.app.state import (
     AppState,
     insert_blank,
     reorder_pages,
+    reorder_pages_to,
     set_rotation,
     toggle_skip,
 )
@@ -100,6 +101,20 @@ def reorder(state: AppState, old_index: int, new_index: int) -> None:
     :raises IndexError: ``old_index`` is out of range.
     """
     state.mutate(lambda project: reorder_pages(project, old_index, new_index))
+
+
+def reorder_to(state: AppState, order: list[int]) -> None:
+    """Rearrange the pages into ``order``, through ``AppState.mutate``.
+
+    One mutation, so a drag is one step of undo rather than none or many.
+
+    :param state: the app state to mutate.
+    :param order: every existing page index, exactly once, in their new
+        order.
+    :returns: nothing; read the result back from ``state.project``.
+    :raises ValueError: ``order`` is not a permutation of the page indices.
+    """
+    state.mutate(lambda project: reorder_pages_to(project, order))
 
 
 def rotate(state: AppState, index: int, rotate_deg: int) -> None:
@@ -287,6 +302,51 @@ def _qt_widgets():
     )
 
 
+def _qt_move_action():
+    from PySide6.QtCore import Qt
+
+    return Qt.DropAction.MoveAction
+
+
+def _page_index_role():
+    """The item role carrying a page's index in the document.
+
+    Items are rebuilt on every refresh and Qt renumbers rows during a
+    drop, so the row an item sits on is not a stable identity. Stamping
+    the document index onto the item means the order left behind by a drop
+    can be read straight back.
+    """
+    from PySide6.QtCore import Qt
+
+    return Qt.ItemDataRole.UserRole + 1
+
+
+def _reorderable_list_widget_class():
+    """A ``QListWidget`` that reports a completed internal-move drop.
+
+    Built lazily, like every other Qt type in this module, so importing it
+    does not require Qt.
+
+    ``QListWidget`` does not emit ``rowsMoved`` for an internal move. The
+    drop inserts a copy through ``dropMimeData`` and the view then removes
+    the original, so a handler connected to ``rowsMoved`` never runs and
+    dragging appears to do nothing. Overriding ``dropEvent`` is the one
+    place that is guaranteed to see the drop, whatever signals Qt chose to
+    emit getting there.
+    """
+    from PySide6.QtCore import Signal
+    from PySide6.QtWidgets import QListWidget
+
+    class ReorderableListWidget(QListWidget):
+        dropped = Signal()
+
+        def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
+            super().dropEvent(event)
+            self.dropped.emit()
+
+    return ReorderableListWidget
+
+
 class ArrangeView:
     """The thumbnail grid widget.
 
@@ -322,8 +382,16 @@ class ArrangeView:
             # reached neither the screen nor the paper.
             pages_changed = Signal()
 
+            # Which page the user is looking at. The preview follows it, so
+            # clicking a page in the grid shows the sheet it lands on --
+            # which is the question the grid exists to answer and could not
+            # answer before: a 60-page book is 30 sheets, and finding the
+            # one carrying page 41 meant stepping a spinbox.
+            page_selected = Signal(int)
+
         self._signals = _Signals()
         self.pages_changed = self._signals.pages_changed
+        self.page_selected = self._signals.page_selected
         (
             QAbstractItemView,
             QHBoxLayout,
@@ -341,7 +409,7 @@ class ArrangeView:
         self.widget = QWidget(parent)
         outer = QVBoxLayout(self.widget)
 
-        self.list_widget = QListWidget(self.widget)
+        self.list_widget = _reorderable_list_widget_class()(self.widget)
         self.list_widget.setViewMode(QListWidget.ViewMode.IconMode)
         # Without an explicit icon size Qt paints thumbnails at a default
         # ~16px, which reads as a decorative bullet rather than a page.
@@ -349,8 +417,26 @@ class ArrangeView:
         self.list_widget.setGridSize(
             _qt_size(THUMBNAIL_ICON_PX + 24, THUMBNAIL_ICON_PX + 40)
         )
+        # Static, not Snap, and set BEFORE the drag-drop mode -- both halves
+        # matter, and each was wrong.
+        #
+        # In icon mode with any non-Static movement, QListView::dropEvent
+        # takes its own branch: it repositions the icon in the viewport and
+        # returns without touching the model, so the page order never
+        # changes and the drag looks like it did nothing.
+        #
+        # And setMovement() calls setDragEnabled(movement != Static), so
+        # setting it after setDragDropMode() turns dragging back off --
+        # downgrading InternalMove to DropOnly, which is worse than the bug
+        # it was meant to fix.
+        self.list_widget.setMovement(QListWidget.Movement.Static)
         self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.list_widget.setMovement(QListWidget.Movement.Snap)
+        self.list_widget.setDragEnabled(True)
+        self.list_widget.viewport().setAcceptDrops(True)
+        # InternalMove does not imply a move action: the default stays
+        # CopyAction, and a copy-dropped page duplicates rather than moves.
+        self.list_widget.setDefaultDropAction(_qt_move_action())
+        self.list_widget.setDropIndicatorShown(True)
         outer.addWidget(self.list_widget)
 
         toolbar = QHBoxLayout()
@@ -365,7 +451,8 @@ class ArrangeView:
         self.rotate_button.clicked.connect(self._on_rotate_clicked)
         self.skip_button.clicked.connect(self._on_skip_clicked)
         self.insert_blank_button.clicked.connect(self._on_insert_blank_clicked)
-        self.list_widget.model().rowsMoved.connect(self._on_rows_moved)
+        self.list_widget.dropped.connect(self._on_dropped)
+        self.list_widget.currentRowChanged.connect(self._on_current_row_changed)
         self.list_widget.verticalScrollBar().valueChanged.connect(self._on_scrolled)
 
         self._QThread = QThread
@@ -396,7 +483,10 @@ class ArrangeView:
                     label += " _blank"
                 if page.skipped:
                     label += " (skipped)"
-                self.list_widget.addItem(QListWidgetItem(label))
+                item = QListWidgetItem(label)
+                # Its identity, so the order after a drop can be read back.
+                item.setData(_page_index_role(), i)
+                self.list_widget.addItem(item)
         finally:
             self.list_widget.blockSignals(False)
         self.request_visible_thumbnails(0)
@@ -508,20 +598,42 @@ class ArrangeView:
         self.refresh()
         self.pages_changed.emit()
 
-    def _on_rows_moved(self, parent, start, end, destination, row) -> None:
-        """Apply a drag-reorder to the project, then say the pages changed.
+    def _on_dropped(self) -> None:
+        """Apply a completed drag-reorder, then say the pages changed.
 
-        :returns: nothing.
+        Reads the order Qt was left holding rather than reconstructing a
+        ``(from, to)`` move from signals. The drop has already rearranged
+        the view's own items; this makes the document agree with what the
+        user is looking at.
 
-        Qt has already moved the row in its own model by the time this
-        runs, so the list does not need rebuilding -- but the labels carry
-        page numbers that are now wrong, and the sheets have changed
-        underneath the preview.
+        :returns: nothing. A drop that leaves anything other than a clean
+            permutation -- a copy rather than a move, an item from another
+            widget -- is ignored and the view is rebuilt from the project,
+            because acting on it would duplicate or drop pages.
         """
-        new_index = row if row < start else row - 1
-        reorder(self.state, start, new_index)
+        role = _page_index_role()
+        order = [
+            self.list_widget.item(row).data(role)
+            for row in range(self.list_widget.count())
+        ]
+        if sorted(o for o in order if o is not None) != list(
+            range(len(self.state.project.pages))
+        ):
+            self.refresh()
+            return
+        reorder_to(self.state, order)
         self.refresh()
         self.pages_changed.emit()
+
+    def _on_current_row_changed(self, row: int) -> None:
+        """Announce which page the user is looking at.
+
+        :param row: the newly current row, or -1 when the selection was
+            cleared.
+        :returns: nothing; ``page_selected`` carries the index.
+        """
+        if 0 <= row < len(self.state.project.pages):
+            self.page_selected.emit(row)
 
     def _on_scrolled(self, value: int) -> None:
         self.request_visible_thumbnails(max(0, value))

@@ -21,6 +21,7 @@ from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.print_dialog import PrintDialog
 from deckle.core.export import export
+from deckle.core.locate import sheet_index_for_page
 from deckle.core.models import LayoutSettings, Project
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.project_io import (
@@ -418,6 +419,7 @@ class MainWindow:
 
         self.import_view.imported.connect(self._on_imported)
         self.arrange_view.pages_changed.connect(self._on_pages_changed)
+        self.arrange_view.page_selected.connect(self._on_page_selected)
         self.layout_panel.layout_changed.connect(self._on_layout_changed)
         self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
         self.print_button.clicked.connect(self._on_print_clicked)
@@ -496,6 +498,24 @@ class MainWindow:
         self._sync_document_actions()
         self._refresh_status_message()
         self._sync_history_actions()
+
+    def _on_page_selected(self, page_index: int) -> None:
+        """Follow the arrange grid's selection in the preview.
+
+        The grid shows the document and the preview shows the paper, and
+        the map between them is the whole point of imposition -- so
+        clicking page 41 should show the sheet carrying it rather than
+        leaving the user to find it with a spinbox.
+
+        :param page_index: the document page, 0-based.
+        :returns: nothing. A page with no sheet of its own leaves the
+            preview where it is.
+        """
+        sheet_index = sheet_index_for_page(
+            self.preview_view.plan, list(self.state.project.pages), page_index
+        )
+        if sheet_index is not None:
+            self.preview_view.go_to_sheet(sheet_index)
 
     def _refresh_status_message(self) -> None:
         """Say the most useful true thing about the current state.

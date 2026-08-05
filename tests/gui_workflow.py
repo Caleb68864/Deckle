@@ -103,12 +103,25 @@ def main(source_pdf: str, out_pdf: str) -> int:
     # Every arrange action changes which pages land on which sheets, and
     # Save PDF exports the preview's plan. When nothing announced the
     # change, an inserted blank reached neither the screen nor the paper.
-    window.arrange_view._on_rows_moved(None, 0, 0, None, 3)
+    # Rearrange the grid the way a completed drop leaves it, then let the
+    # view reconcile -- the handler reads the widget's own order, so this
+    # exercises the same code a real drag does.
+    _grid = window.arrange_view.list_widget
+    _grid.insertItem(2, _grid.takeItem(0))
+    window.arrange_view._on_dropped()
     report["order_after_reorder"] = [
         "blank" if page.ref.path == "" else f"p{page.ref.page_index}"
         for page in window.state.project.pages
     ]
     report["preview_sheets_after_reorder"] = len(window.preview_view.plan.sheets)
+
+    # Clicking a page in the grid takes the preview to the sheet carrying
+    # it. Driven through setCurrentRow, which is what a click does.
+    _grid.setCurrentRow(0)
+    report["preview_sheet_for_first_page"] = window.preview_view.sheet_index
+    _grid.setCurrentRow(_grid.count() - 1)
+    report["preview_sheet_for_last_page"] = window.preview_view.sheet_index
+    report["last_sheet_index"] = len(window.preview_view.plan.sheets) - 1
 
     # What Save PDF would actually write: it exports the preview's plan.
     from deckle.core.export import export as _export

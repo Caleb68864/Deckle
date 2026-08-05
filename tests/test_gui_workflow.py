@@ -115,6 +115,16 @@ def test_folio_produces_signatures(report):
     assert report["sheets"] >= 1
 
 
+def test_clicking_a_page_takes_the_preview_to_its_sheet(report):
+    """The grid shows the document and the preview shows the paper.
+    Finding the sheet carrying page 41 of a 60-page book meant stepping a
+    spinbox 20 times."""
+    assert report["preview_sheet_for_first_page"] == 0
+    assert report["preview_sheet_for_last_page"] == report["last_sheet_index"], (
+        "selecting the last page did not follow it to the last sheet"
+    )
+
+
 def test_starting_on_a_verso_moves_paper(report):
     """The setting was persisted into the project file and then read into
     a discarded variable. A tick that changes nothing is a lie the user

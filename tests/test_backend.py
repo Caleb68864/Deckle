@@ -258,8 +258,28 @@ def test_duplex_modes_offers_single_pass_when_hardware_supports_it(monkeypatch):
 
 
 def test_backend_module_import_does_not_load_qt():
+    """Importing the backend must not drag Qt in with it.
+
+    In a subprocess that imports nothing else. Read from the live
+    ``sys.modules`` this asserted that *no test in the whole session* had
+    imported Qt yet -- so it passed on alphabetical luck and broke the
+    moment a test file sorting before this one used a widget, which says
+    nothing at all about the backend. Same fix, and same reason, as
+    ``test_core_purity``.
+    """
+    import subprocess
     import sys
 
-    qt_prefixes = ("PySide6", "PyQt5", "PyQt6")
-    loaded = {name for name in sys.modules if name.startswith(qt_prefixes)}
-    assert not loaded, f"importing deckle.app.backend pulled in Qt eagerly: {sorted(loaded)}"
+    source = (
+        "import sys; import deckle.app.backend; "
+        "print(sorted(n for n in sys.modules "
+        "if n.startswith(('PySide6', 'PyQt5', 'PyQt6'))))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", source], capture_output=True, text=True
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]", (
+        f"importing deckle.app.backend pulled in Qt eagerly: {result.stdout.strip()}"
+    )
