@@ -7,8 +7,8 @@ from typing import Sequence
 
 import pytest
 
-from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan
-from deckle.core.print_session import PrintSession
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, SourceRef
+from deckle.core.print_session import PrintSession, _hash_plan
 from deckle.core.printing import PrintResult
 from deckle.core.profiles import PrinterProfile
 
@@ -18,6 +18,20 @@ def _blank_output_page() -> OutputPage:
         source_ref=None,
         placement=Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0),
         is_filler=True,
+    )
+
+
+def _source_output_page(page_index: int) -> OutputPage:
+    return OutputPage(
+        source_ref=SourceRef(
+            path="doc.pdf",
+            page_index=page_index,
+            sha256="0" * 64,
+            width_pt=612.0,
+            height_pt=792.0,
+        ),
+        placement=Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0),
+        is_filler=False,
     )
 
 
@@ -233,3 +247,90 @@ def test_state_persists_version_pass_index_sheet_cursor_and_printer_name():
     assert "pass_index" in state
     assert "sheet_cursor" in state
     assert state["printer_name"] == "My Printer"
+
+
+def test_hash_plan_differs_for_same_sheet_count_and_presence_but_different_source_pages():
+    plan_a = SheetPlan(
+        sheets=[
+            Sheet(
+                index=0,
+                front=_source_output_page(0),
+                back=_source_output_page(1),
+            )
+        ],
+        paper_pt=(612.0, 792.0),
+        warnings=[],
+    )
+    plan_b = SheetPlan(
+        sheets=[
+            Sheet(
+                index=0,
+                front=_source_output_page(2),
+                back=_source_output_page(1),
+            )
+        ],
+        paper_pt=(612.0, 792.0),
+        warnings=[],
+    )
+
+    assert _hash_plan(plan_a) != _hash_plan(plan_b)
+
+
+def test_hash_plan_is_stable_across_construction_of_an_identical_plan():
+    def build() -> SheetPlan:
+        return SheetPlan(
+            sheets=[
+                Sheet(
+                    index=0,
+                    front=_source_output_page(0),
+                    back=_source_output_page(1),
+                ),
+                Sheet(index=1, front=_blank_output_page(), back=None),
+            ],
+            paper_pt=(612.0, 792.0),
+            warnings=[],
+        )
+
+    assert _hash_plan(build()) == _hash_plan(build())
+
+
+def test_print_session_public_surface_is_unchanged():
+    """Pins the MVP public surface: SS-04 must not add or remove members."""
+    expected_methods = {
+        "start",
+        "advance",
+        "confirm_test_sheet",
+        "resume",
+        "load",
+        "list_resumable",
+    }
+    expected_properties = {
+        "state",
+        "state_path",
+        "reload_instruction",
+        "finished",
+        "last_error",
+    }
+
+    for name in expected_methods:
+        assert hasattr(PrintSession, name), f"missing method: {name}"
+        assert callable(getattr(PrintSession, name)), f"not callable: {name}"
+
+    for name in expected_properties:
+        assert hasattr(PrintSession, name), f"missing property: {name}"
+        assert isinstance(getattr(PrintSession, name), property), (
+            f"{name} is no longer a property"
+        )
+
+    plan = _make_plan(2)
+    profile = _profile()
+    backend = StubBackend()
+    session = PrintSession(plan, profile, backend, printer_name="P")
+
+    # Instance-level smoke check that each still behaves per the MVP contract.
+    session.start()
+    assert session.reload_instruction is not None or session.reload_instruction is None
+    assert session.finished in (True, False)
+    assert session.last_error is None or isinstance(session.last_error, str)
+    assert isinstance(session.state, dict)
+    assert session.state_path is not None

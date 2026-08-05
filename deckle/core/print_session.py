@@ -70,14 +70,36 @@ def _state_dir() -> Path:
     return Path(tempfile.gettempdir()) / "deckle" / "print_sessions"
 
 
+def _side_page_index(side) -> int | None:
+    """The source page index behind a side, or ``None`` for a filler/absent side.
+
+    ``Sheet.front``/``Sheet.back`` are populated with a single ``OutputPage``
+    per side in the current MVP layout (one source page per physical side).
+    A filler page carries ``source_ref=None``; that maps to the same sentinel
+    used for an entirely absent side, keeping the payload JSON-stable.
+    """
+    if side is None:
+        return None
+    ref = side.source_ref
+    return ref.page_index if ref is not None else None
+
+
 def _hash_plan(plan: SheetPlan) -> str:
-    """A stable hash identifying a plan's sheet content."""
+    """A stable hash identifying a plan's sheet content.
+
+    Covers sheet index, side presence, and -- per side -- the source page
+    index behind that side's content (``None`` for a filler or absent side).
+    Two plans with identical sheet counts and side presence but different
+    page orderings must hash differently; see REQ-014.
+    """
     payload = json.dumps(
         [
             {
                 "index": s.index,
                 "front": s.front is not None,
+                "front_page": _side_page_index(s.front),
                 "back": s.back is not None,
+                "back_page": _side_page_index(s.back),
             }
             for s in plan.sheets
         ],
