@@ -297,6 +297,10 @@ class MainWindow:
 
         self.window = QMainWindow()
         self.window.setWindowTitle("Deckle")
+        # Closing the window is the usual way out, and it does not go
+        # through `close()` below -- Qt calls closeEvent directly. Without
+        # this, quitting mid-render crashed on exit.
+        self.window.closeEvent = self._on_close_event
         # Controls on the left, the sheets on the right.
         #
         # Everything used to sit in one vertical column, which meant the
@@ -884,7 +888,56 @@ class MainWindow:
             is exactly the interval a closing app would otherwise lose.
         """
         self.state.flush_autosave()
+        self.stop_background_work()
         self.window.close()
+
+    def _on_close_event(self, event) -> None:
+        """Shut down cleanly however the window was closed.
+
+        :param event: the ``QCloseEvent``; always accepted. Refusing to
+            close because a render is running would trap the user.
+        :returns: nothing.
+        """
+        self.state.flush_autosave()
+        self.stop_background_work()
+        event.accept()
+
+    def stop_background_work(self, timeout_ms: int = 5000) -> None:
+        """Cancel in-flight renders and wait for their threads to finish.
+
+        Nothing did this, so quitting mid-render left preview and thumbnail
+        threads running into interpreter teardown -- where they called
+        pdfium after it had been finalised and took the process down with
+        an access violation. The user sees a crash on exit, on the one
+        action that is supposed to be safe.
+
+        Both workers already support cancellation; they simply were never
+        asked, and nobody waited.
+
+        :param timeout_ms: how long to wait per thread. A render that
+            ignores cancellation must not hang the quit -- a stuck thread
+            is a worse outcome than an abandoned one, and the wait is
+            bounded for that reason.
+        :returns: nothing. Never raises: this runs while the app is
+            closing, and an exception here would replace a clean exit with
+            the crash it exists to prevent.
+        """
+        for view in (self.preview_view, self.arrange_view):
+            try:
+                worker = getattr(view, "_worker", None)
+                if worker is not None:
+                    worker.cancel.set()
+            except Exception as exc:  # pragma: no cover - defensive
+                log_exception("shutdown_cancel_failed", exc)
+
+        for view in (self.preview_view, self.arrange_view):
+            try:
+                thread = getattr(view, "_thread", None)
+                if thread is not None and thread.isRunning():
+                    if not thread.wait(timeout_ms):
+                        log_event("shutdown_thread_timeout", view=type(view).__name__)
+            except Exception as exc:  # pragma: no cover - defensive
+                log_exception("shutdown_wait_failed", exc)
 
 
 def main(argv: list[str] | None = None) -> int:
