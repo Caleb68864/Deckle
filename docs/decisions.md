@@ -157,3 +157,10 @@
 - Surfaces: Any refactor claiming behavioural neutrality when its nominated golden is missing. Also the zero-diff seam claim, which `git diff --stat main -- deckle/core/printing.py deckle/core/profiles.py` settles directly and more convincingly than the spec's grep guard.
 - Watch: Do not byte-compare PDFs -- creation timestamps and document IDs differ on every run, so identical documents have different hashes. Compare MediaBox plus the ordered `cm` operators. And prefer a mixed-page-size source: uniform pages cannot reveal a per-page-vs-per-document scale regression, which is precisely the defect `document_scale` exists to prevent.
 - Commit: (this commit)
+
+## 2026-08-04 - 25 acceptance criteria described behaviour nothing tested
+- Symptom: 49 of the specs' 73 `pytest -k` criteria matched no collected test. `pytest -k` exits 5 on no match, so each failed on execution -- proving they had never been run, since the sub-specs were all marked complete.
+- Fix: Classified all 49 by whether the behaviour was actually covered under a different name. Result was NOT the expected cosmetic drift: 21 COVERED, 1 VACUOUS, 25 ABSENT. Wrote the 25 missing tests across four new files. Suite 318 -> 403.
+- Surfaces: Worst was SS-03 `back_index` -- the front-then-back page-index mapping had no test that would catch a front/back transposition. On a printer with no duplexer, where the user physically reloads the stack between passes, that is the failure that ruins a whole print run of an expensive book. `tests/test_render.py` rendered both sides and asserted only `width > 0`.
+- Watch: A selector that matches nothing is indistinguishable, in a green suite, from a criterion that passes. Measure the criteria against collected test names -- `pytest --collect-only -q` -- rather than trusting either the suite or the completion status. And do not assume unmatched selectors are cosmetic: half of these were real absences hiding behind the noise of the other half.
+- Commit: (this commit)
