@@ -81,10 +81,15 @@ def set_margins_linked(project: Project, linked: bool) -> Project:
 
 #: Where spare horizontal width goes. Index 0 is the panel default.
 SLACK_TARGETS: tuple[tuple[str, str], ...] = (
-    ("gutter", "Gutter (fore-edge exact, gutter varies)"),
-    ("outer", "Fore-edge (gutter exact, fore-edge varies)"),
-    ("split", "Split evenly between both"),
+    ("gutter", "Gutter"),
+    ("outer", "Fore-edge"),
+    ("split", "Split evenly"),
 )
+#: Kept short deliberately: the full sentence for each option lives in the
+#: control's tooltip. A dropdown wide enough to spell out
+#: "Gutter (fore-edge exact, gutter varies)" forces a horizontal scrollbar
+#: onto the whole settings column, which is the one kind of scrolling a
+#: form should never need.
 
 
 def set_slack_to(project: Project, slack_to: str) -> Project:
@@ -300,6 +305,16 @@ def apply_layout_change(state: AppState, mutator) -> SheetPlan:
 # importable without PySide6/a display, matching arrange_view.py/import_view.py.
 
 
+def _qt_fields_at_size_hint():
+    """``QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint``.
+
+    :returns: the enum member, imported lazily like every other Qt name.
+    """
+    from PySide6.QtWidgets import QFormLayout
+
+    return QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint
+
+
 def _qt_core():
     from PySide6.QtCore import QObject, Signal
 
@@ -399,10 +414,16 @@ class LayoutPanel:
 
         page_tab = QWidget(self.widget)
         form = QFormLayout(page_tab)
+        # Numeric fields hold values like "0.750". Letting them stretch to
+        # the pane width pushes the form wider than the column and grows a
+        # horizontal scrollbar across the whole settings panel -- the one
+        # kind of scrolling a settings form should never need.
+        form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
         self.tabs.addTab(page_tab, "Page && margins")
 
         signature_tab = QWidget(self.widget)
         signature_form = QFormLayout(signature_tab)
+        signature_form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
         self.tabs.addTab(signature_tab, "Signatures")
         self._signature_tab_index = self.tabs.indexOf(signature_tab)
 
@@ -444,13 +465,20 @@ class LayoutPanel:
         if current_slack in self._slack_keys:
             self.slack_combo.setCurrentIndex(self._slack_keys.index(current_slack))
         self.slack_combo.setToolTip(
-            "When source pages differ in width, spare space has to go somewhere. "
-            "This chooses which margin absorbs it, and therefore which one stays "
-            "identical on every page."
+            "When source pages differ in width, the spare space has to go "
+            "somewhere. This chooses which margin absorbs it -- and therefore "
+            "which one stays identical on every page.\n\n"
+            "Gutter: the fore-edge is exact on every page, the gutter varies. "
+            "The default, because the fore-edge is the edge you see when the "
+            "book is closed.\n"
+            "Fore-edge: the gutter is exact on every page, the fore-edge "
+            "varies. Prefer this for a fixed punch or sewing template.\n"
+            "Split evenly: both vary by half, so the content sits centred "
+            "between them."
         )
         form.addRow("Spare width to:", self.slack_combo)
 
-        self.link_margins_check = QCheckBox("Link margins (one value for all)", self.widget)
+        self.link_margins_check = QCheckBox("Link all three", self.widget)
         self.link_margins_check.setChecked(state.project.layout.margins_linked)
         form.addRow("", self.link_margins_check)
         self.link_margins_check.setToolTip(
@@ -465,7 +493,7 @@ class LayoutPanel:
         for field, label, tip in (
             (
                 "margin_top_pt",
-                "Margin top (head):",
+                "Head (top):",
                 "The blank strip along the top edge, called the head. Most "
                 "printers cannot print to the very edge of the paper, so a "
                 "head margin of zero usually means clipped content -- see "
@@ -473,7 +501,7 @@ class LayoutPanel:
             ),
             (
                 "margin_bottom_pt",
-                "Margin bottom (tail):",
+                "Tail (bottom):",
                 "The blank strip along the bottom edge, called the tail. "
                 "Traditionally set larger than the head: it looks balanced "
                 "to the eye, and it is where a thumb rests when the book is "
@@ -481,7 +509,7 @@ class LayoutPanel:
             ),
             (
                 "margin_outer_pt",
-                "Margin outer (fore-edge):",
+                "Fore-edge:",
                 "The blank strip on the edge opposite the spine -- the edge "
                 "you see when the book is closed and the one you turn pages "
                 "by.\n\nThis is the margin most worth keeping consistent, "

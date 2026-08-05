@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
@@ -565,3 +566,90 @@ def test_page_and_margins_tab_stays_enabled_under_folio():
     page_tab_index = 1 - panel._signature_tab_index
     assert panel.tabs.isTabEnabled(page_tab_index) is True
     assert panel.tabs.isTabEnabled(panel._signature_tab_index) is True
+
+
+# -- the main window's splitter layout ----------------------------------
+#
+# These are STRUCTURAL assertions, read from the source, because a real
+# MainWindow cannot be constructed here: QT_QPA_PLATFORM=offscreen plus a
+# QMainWindow hard-kills the process (exit 127), the same limitation
+# tests/test_hardening_printing.py works around with a fake window. The
+# layout was verified live by hand; what these guard is that it does not
+# quietly revert to a single stacked column.
+
+
+def _main_source() -> str:
+    import deckle.app.main as app_main
+
+    return Path(app_main.__file__).read_text(encoding="utf-8")
+
+
+def test_the_window_splits_controls_from_the_sheets():
+    """Everything used to sit in one vertical column, so the preview -- the
+    entire point of the app -- got whatever height was left after four
+    control panels."""
+    source = _main_source()
+
+    assert "QSplitter" in source, "the main window no longer splits its panes"
+    assert "self.splitter" in source
+    assert "self.output_splitter" in source
+    # The controls scroll rather than truncate their own labels.
+    assert "QScrollArea" in source
+    assert "setWidgetResizable(True)" in source
+
+
+def test_the_preview_gets_more_room_than_the_page_grid():
+    """The preview is the product; the page grid is a means of reordering."""
+    source = _main_source()
+
+    assert "output.setStretchFactor(0, 3)" in source
+    assert "output.setStretchFactor(1, 1)" in source
+    # And the opening proportions are deliberate, not negotiated from hints.
+    assert "output.setSizes([620, 240])" in source
+
+
+def test_neither_pane_can_be_dragged_shut():
+    """A pane collapsed to nothing reads as a bug, not a choice."""
+    source = _main_source()
+
+    assert source.count("setChildrenCollapsible(False)") >= 2
+
+
+def test_the_sheets_get_the_majority_of_the_width():
+    source = _main_source()
+
+    assert "self.splitter.setSizes([440, 840])" in source
+    # The controls column takes its natural width; the rest is paper.
+    assert "self.splitter.setStretchFactor(0, 0)" in source
+    assert "self.splitter.setStretchFactor(1, 1)" in source
+
+
+def test_the_preview_is_not_stacked_below_the_controls_in_one_column():
+    """The specific regression: a single QVBoxLayout holding every panel."""
+    import ast
+
+    tree = ast.parse(_main_source())
+    init = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "__init__"
+        and any(
+            isinstance(n, ast.Attribute) and n.attr == "preview_view"
+            for n in ast.walk(node)
+        )
+    )
+    dumped = ast.dump(init)
+    assert "output" in dumped and "addWidget" in dumped
+
+    # Precisely: the preview and the page grid go to the output splitter,
+    # and neither is appended to a column layout. Matching a bare
+    # "layout.addWidget" would be wrong -- `central_layout.addWidget` and
+    # `controls_layout.addWidget` are both legitimate and both contain it.
+    source = _main_source()
+    assert "output.addWidget(self.preview_view.widget)" in source
+    assert "output.addWidget(self.arrange_view.widget)" in source
+    for panel in ("preview_view", "arrange_view"):
+        for column in ("central_layout", "controls_layout"):
+            assert f"{column}.addWidget(self.{panel}" not in source, (
+                f"{panel} is back in the {column} column"
+            )

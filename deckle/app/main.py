@@ -229,10 +229,32 @@ def default_project() -> Project:
     return Project(pages=[], layout=layout, printer=None)
 
 
-def _qt_widgets():
-    from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QPushButton, QStatusBar, QVBoxLayout, QWidget
+def _qt_vertical():
+    """``Qt.Orientation.Vertical``, imported lazily like every other Qt name.
 
-    return QHBoxLayout, QMainWindow, QPushButton, QStatusBar, QVBoxLayout, QWidget
+    :returns: the enum member.
+    """
+    from PySide6.QtCore import Qt
+
+    return Qt.Orientation.Vertical
+
+
+def _qt_widgets():
+    from PySide6.QtWidgets import (
+        QHBoxLayout,
+        QMainWindow,
+        QPushButton,
+        QScrollArea,
+        QSplitter,
+        QStatusBar,
+        QVBoxLayout,
+        QWidget,
+    )
+
+    return (
+        QHBoxLayout, QMainWindow, QPushButton, QScrollArea, QSplitter,
+        QStatusBar, QVBoxLayout, QWidget,
+    )
 
 
 class MainWindow:
@@ -243,43 +265,107 @@ class MainWindow:
     """
 
     def __init__(self, project_path: str | None = None) -> None:
-        QHBoxLayout, QMainWindow, QPushButton, QStatusBar, QVBoxLayout, QWidget = _qt_widgets()
+        (
+            QHBoxLayout,
+            QMainWindow,
+            QPushButton,
+            QScrollArea,
+            QSplitter,
+            QStatusBar,
+            QVBoxLayout,
+            QWidget,
+        ) = _qt_widgets()
 
         self.state = AppState(default_project(), project_path=project_path)
 
         self.window = QMainWindow()
         self.window.setWindowTitle("Deckle")
+        # Controls on the left, the sheets on the right.
+        #
+        # Everything used to sit in one vertical column, which meant the
+        # preview -- the whole reason this app exists, "see the physical
+        # sheets before you commit paper" -- got whatever height was left
+        # after four control panels. A splitter puts the settings where you
+        # set them once and the paper where you look constantly, and lets
+        # the user rebalance if their screen disagrees with the default.
         central = QWidget(self.window)
-        layout = QVBoxLayout(central)
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.import_view = ImportView(self.state, central)
-        layout.addWidget(self.import_view.widget)
+        self.splitter = QSplitter(central)
+        central_layout.addWidget(self.splitter)
 
-        self.arrange_view = ArrangeView(self.state, central)
-        layout.addWidget(self.arrange_view.widget)
+        # -- left: what you set ------------------------------------------
+        controls = QWidget(self.splitter)
+        controls_layout = QVBoxLayout(controls)
 
-        self.layout_panel = LayoutPanel(self.state, central, profile=DEFAULT_PROFILE)
-        layout.addWidget(self.layout_panel.widget)
+        self.import_view = ImportView(self.state, controls)
+        controls_layout.addWidget(self.import_view.widget)
 
-        self.preview_view = PreviewView(
-            recompute_plan(self.state.project),
-            DEFAULT_PROFILE,
-            central,
-            layout_settings=self.state.project.layout,
-        )
-        layout.addWidget(self.preview_view.widget)
+        self.layout_panel = LayoutPanel(self.state, controls, profile=DEFAULT_PROFILE)
+        controls_layout.addWidget(self.layout_panel.widget)
+
+        controls_layout.addStretch(1)
 
         # Two ways out of the app: a file, or paper. Export shares the exact
         # same SheetPlan the preview is showing, so what you save is what you
         # previewed -- and it needs no printer, so it stays enabled when
-        # Print is disabled.
-        self.save_pdf_button = QPushButton("Save PDF...", central)
-        layout.addWidget(self.save_pdf_button)
+        # Print is disabled. They sit at the bottom of the controls column
+        # because they are the end of the workflow, not part of it.
+        self.save_pdf_button = QPushButton("Save PDF...", controls)
+        controls_layout.addWidget(self.save_pdf_button)
 
-        self.print_button = QPushButton("Print...", central)
-        layout.addWidget(self.print_button)
+        self.print_button = QPushButton("Print...", controls)
+        controls_layout.addWidget(self.print_button)
+
+        # The controls column has a natural width; below it the spinboxes
+        # start truncating their own labels, which is worse than scrolling.
+        controls_scroll = QScrollArea(self.splitter)
+        controls_scroll.setWidget(controls)
+        controls_scroll.setWidgetResizable(True)
+        # 420, not 320: at 320 the margin spinboxes are pushed out of the
+        # pane and the column grows a horizontal scrollbar, which is the
+        # one kind of scrolling a settings form should never need.
+        controls_scroll.setMinimumWidth(420)
+        self.splitter.addWidget(controls_scroll)
+
+        # -- right: what you get -----------------------------------------
+        # Preview above, page grid below. Both want width, and stacking
+        # them means you can drag a page into a new position and watch the
+        # sheet it lands on redraw.
+        output = QSplitter(self.splitter)
+        output.setOrientation(_qt_vertical())
+
+        self.preview_view = PreviewView(
+            recompute_plan(self.state.project),
+            DEFAULT_PROFILE,
+            output,
+            layout_settings=self.state.project.layout,
+        )
+        output.addWidget(self.preview_view.widget)
+
+        self.arrange_view = ArrangeView(self.state, output)
+        output.addWidget(self.arrange_view.widget)
+
+        # The preview is the point; the page grid is a means of reordering.
+        output.setStretchFactor(0, 3)
+        output.setStretchFactor(1, 1)
+        # A pane dragged shut looks like a bug, not a choice.
+        output.setChildrenCollapsible(False)
+        self.output_splitter = output
+
+        self.splitter.addWidget(output)
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 1)
+        self.splitter.setChildrenCollapsible(False)
 
         self.window.setCentralWidget(central)
+        self.window.resize(1280, 860)
+        # Explicit opening proportions rather than whatever Qt negotiates
+        # from size hints: the controls want a fixed, readable column and
+        # everything else belongs to the paper.
+        self.splitter.setSizes([440, 840])
+        output.setSizes([620, 240])
         self.status_bar = QStatusBar(self.window)
         self.window.setStatusBar(self.status_bar)
 
