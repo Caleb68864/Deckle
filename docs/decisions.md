@@ -192,3 +192,10 @@
 - Surfaces: Windows especially -- the drive-letter case (`Q:\out.pdf`) and the locked-file case (the PDF is open in a viewer) have no Unix equivalent and produce particularly opaque errors.
 - Watch: Verify exit codes OUTSIDE a pipeline. `cmd | tail -2; echo $?` reports tail's status, not the command's, so a broken exit code reads as 0. That mistake was made twice in this project -- once measuring `pytest -k` and once here. Errors go to stderr with exit 1; stdout stays empty on failure so it remains scriptable. Correct-path output was re-verified placement-identical to main across five configurations after these changes -- hardening must not move a single matrix.
 - Commit: (this commit)
+
+## 2026-08-04 - A non-ASCII output path crashed Deckle AFTER the export succeeded
+- Symptom: `deckle export -o "booklet-japanese.pdf"` (any non-ASCII characters) wrote the PDF correctly, then raised UnicodeEncodeError from `print(f"wrote {args.output}")` and exited 1. A traceback and a failure exit code for a job that had actually worked.
+- Fix: `_make_output_encoding_safe()` at CLI entry reconfigures stdout/stderr with `errors="replace"`. The unencodable characters degrade to `?` in the console; the file keeps its real name and the exit code becomes honest.
+- Surfaces: Windows only, but ordinary rather than exotic -- the console defaults to a legacy code page (cp1252 here) and an accented character in someone's name is enough. Every hardening error message added in passes 4-5 was equally exposed, since they all print paths.
+- Watch: Chose `errors="replace"` over forcing UTF-8. The console's encoding is the user's business and overriding it can mangle piped output; replacing unencodable characters degrades only the DISPLAY of a path. Also worth remembering that the worst failure shape is not a crash but a crash that follows success -- it looks like the work was lost when it was not.
+- Commit: (this commit)

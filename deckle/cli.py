@@ -395,7 +395,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _make_output_encoding_safe() -> None:
+    """Stop a non-ASCII path from crashing Deckle while reporting success.
+
+    The Windows console defaults to a legacy code page (cp1252 here), which
+    cannot encode most non-ASCII characters. Printing a path containing any
+    of them raises ``UnicodeEncodeError`` from deep inside ``print`` --
+    *after* the export has already succeeded. The user gets a traceback and
+    a non-zero exit for a PDF that was written correctly, which is the worst
+    possible combination: it looks like a failure and is not one.
+
+    Accented characters in a person's name are enough to trigger it, so this
+    is an ordinary case, not an exotic one.
+
+    ``errors="replace"`` rather than forcing UTF-8: the console's encoding is
+    the user's business, and overriding it could mangle output being piped
+    somewhere that expects the code page. Replacing the unencodable
+    characters degrades the *display* of a path while keeping the program
+    alive and the exit code honest.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue  # a redirected stream that is not a TextIOWrapper
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - defensive
+            # Never let hardening be the thing that breaks startup.
+            pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    _make_output_encoding_safe()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)
