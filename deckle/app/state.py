@@ -31,7 +31,7 @@ from collections import deque
 from dataclasses import replace
 from typing import Callable
 
-from deckle.core.models import Project, SourcePage, SourceRef
+from deckle.core.models import BLANK_SOURCE_PATH, Project, SourcePage, SourceRef
 from deckle.core.project_io import save_project
 
 DEFAULT_UNDO_DEPTH = 50
@@ -40,7 +40,7 @@ DEFAULT_AUTOSAVE_DELAY_S = 0.5
 # Sentinel SourceRef.path used for a page inserted via "insert blank" --
 # it references no real file on disk. Renderers/exporters that need to
 # treat blanks specially can check ``ref.path == BLANK_SOURCE_PATH``.
-BLANK_SOURCE_PATH = ""
+
 
 
 def _autosave_path_for(project_path: str | None) -> str | None:
@@ -121,20 +121,6 @@ def toggle_skip(project: Project, index: int) -> Project:
     pages = list(project.pages)
     pages[index] = replace(pages[index], skipped=not pages[index].skipped)
     return replace(project, pages=pages)
-
-
-def is_blank_page(page: SourcePage) -> bool:
-    """Whether ``page`` is an inserted blank rather than an imported page.
-
-    :param page: the page to test.
-    :returns: ``True`` for a blank.
-
-    Blanks carry no file: ``ref.path`` is :data:`BLANK_SOURCE_PATH` and
-    ``page_index`` is ``-1``. Checking the path alone is enough and is what
-    the rest of the app does; this exists so callers stop open-coding the
-    comparison and so the marker can move without a search-and-replace.
-    """
-    return page.ref.path == BLANK_SOURCE_PATH
 
 
 def insert_blank(project: Project, index: int) -> Project:

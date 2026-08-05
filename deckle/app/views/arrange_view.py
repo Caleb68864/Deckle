@@ -27,10 +27,10 @@ import threading
 from typing import Sequence
 
 from deckle.core.diagnostics import log_exception
+from deckle.core.models import is_blank_page
 from deckle.app.state import (
     AppState,
     insert_blank,
-    is_blank_page,
     reorder_pages,
     set_rotation,
     toggle_skip,
@@ -224,6 +224,41 @@ class ThumbnailWorker:
 # -- Qt wiring -----------------------------------------------------------
 
 
+#: Rendered thumbnails are painted at this size, in pixels. Qt's default
+#: icon size is around 16px, which reads as a bullet rather than a page.
+THUMBNAIL_ICON_PX = 96
+
+
+def _qt_size(width: int, height: int):
+    """A ``QSize``, imported lazily like every other Qt name here."""
+    from PySide6.QtCore import QSize
+
+    return QSize(width, height)
+
+
+def _icon_from_rendered(rendered: RenderedPage):
+    """A ``QIcon`` from a rendered page's raw RGBA bytes.
+
+    :param rendered: the rasterized page.
+    :returns: an icon owning its own copy of the pixels.
+
+    ``QImage`` does not copy the buffer it is handed, so the ``.copy()``
+    matters: ``rendered.rgba`` is a Python ``bytes`` owned by a worker
+    thread's result, and painting from freed memory is the kind of bug that
+    shows as intermittent garbage rather than a crash.
+    """
+    from PySide6.QtGui import QIcon, QImage, QPixmap
+
+    image = QImage(
+        rendered.rgba,
+        rendered.width,
+        rendered.height,
+        rendered.width * 4,
+        QImage.Format.Format_RGBA8888,
+    ).copy()
+    return QIcon(QPixmap.fromImage(image))
+
+
 def _qt_core():
     from PySide6.QtCore import QObject, QThread, Signal
 
@@ -297,6 +332,12 @@ class ArrangeView:
 
         self.list_widget = QListWidget(self.widget)
         self.list_widget.setViewMode(QListWidget.ViewMode.IconMode)
+        # Without an explicit icon size Qt paints thumbnails at a default
+        # ~16px, which reads as a decorative bullet rather than a page.
+        self.list_widget.setIconSize(_qt_size(THUMBNAIL_ICON_PX, THUMBNAIL_ICON_PX))
+        self.list_widget.setGridSize(
+            _qt_size(THUMBNAIL_ICON_PX + 24, THUMBNAIL_ICON_PX + 40)
+        )
         self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.list_widget.setMovement(QListWidget.Movement.Snap)
         outer.addWidget(self.list_widget)
@@ -384,7 +425,13 @@ class ArrangeView:
             if index < self.list_widget.count() and rendered.width and rendered.height:
                 item = self.list_widget.item(index)
                 if item is not None:
+                    # Keep the raw buffer for anything that wants the pixels,
+                    # and ALSO put it on screen. Storing it in UserRole and
+                    # stopping there is what the grid did for months: every
+                    # thumbnail rendered correctly and went nowhere, so the
+                    # page list showed nothing but text labels.
                     item.setData(0x0100, rendered)  # Qt.ItemDataRole.UserRole
+                    item.setIcon(_icon_from_rendered(rendered))
 
     # -- selection / actions ---------------------------------------------
 

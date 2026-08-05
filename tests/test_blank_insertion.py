@@ -15,11 +15,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from deckle.app.state import (  # noqa: E402
     AppState,
-    BLANK_SOURCE_PATH,
     insert_blank,
-    is_blank_page,
     make_blank_page,
 )
+from deckle.core.models import BLANK_SOURCE_PATH, is_blank_page  # noqa: E402
 from deckle.core.models import LayoutSettings, Project, SourcePage, SourceRef  # noqa: E402
 
 LETTER = (612.0, 792.0)
@@ -219,3 +218,116 @@ def test_a_successful_fetch_is_not_marked_failed(tmp_path):
 
     assert worker.failed is False
     assert worker.rendered, "a readable source should produce thumbnails"
+
+
+# -- an inserted blank must behave like a blank everywhere ---------------
+
+
+@pytest.fixture(scope="module")
+def narrow_book(tmp_path_factory):
+    """A REAL pdf whose pages are narrower than the paper.
+
+    Narrower matters: a blank is sized to the paper, so on a document that
+    is already letter-sized the blank is invisible in the arithmetic. Real
+    books are not letter-sized. And it has to exist on disk -- the first
+    version of these tests used a fake path, so every page failed to open
+    and the tests failed for a reason that had nothing to do with blanks.
+    """
+    import pikepdf
+
+    path = tmp_path_factory.mktemp("blank") / "book.pdf"
+    pdf = pikepdf.Pdf.new()
+    for _ in range(8):
+        pdf.add_blank_page(page_size=(506.88, 719.28))
+    pdf.save(str(path))
+    pdf.close()
+    return str(path)
+
+
+def _narrow_project(path: str, n: int) -> Project:
+    pages = [
+        SourcePage(
+            ref=SourceRef(
+                path=path, page_index=i, sha256="a" * 64,
+                width_pt=506.88, height_pt=719.28,
+            ),
+            rotate_deg=0,
+            skipped=False,
+        )
+        for i in range(n)
+    ]
+    return Project(
+        pages=pages,
+        layout=LayoutSettings(paper=LETTER, gutter_pt=18.0, binding_edge="left"),
+        printer=None,
+    )
+
+
+def test_a_blank_does_not_resize_the_rest_of_the_book(narrow_book):
+    """The blank is sized to the PAPER, so measuring it as an ordinary page
+    made it the widest thing in the document. One inserted blank shrank
+    every real page by 15%."""
+    from deckle.core.layout import GutterShiftStrategy
+
+    project = _narrow_project(narrow_book, 8)
+    settings = project.layout
+
+    before = GutterShiftStrategy().impose(project.pages, settings)
+    after = GutterShiftStrategy().impose(insert_blank(project, 1).pages, settings)
+
+    def first_scale(plan):
+        return plan.sheets[0].front.pages[0].placement.scale_x
+
+    assert first_scale(after) == pytest.approx(first_scale(before)), (
+        "inserting a blank changed the scale of the whole document"
+    )
+
+
+def test_exporting_a_document_with_a_blank_succeeds(narrow_book, tmp_path):
+    """It raised FileNotFoundError on the blank's empty path -- Save PDF
+    failed outright the moment a blank existed."""
+    import pikepdf
+
+    from deckle.core.export import export
+    from deckle.core.layout import GutterShiftStrategy
+
+    project = insert_blank(_narrow_project(narrow_book, 4), 1)
+    plan = GutterShiftStrategy().impose(project.pages, project.layout)
+    out = tmp_path / "with-blank.pdf"
+
+    export(plan, str(out))
+
+    with pikepdf.open(str(out)) as pdf:
+        contents = []
+        for page in pdf.pages:
+            raw = page.get("/Contents")
+            if raw is None:
+                contents.append(b"")
+            elif isinstance(raw, pikepdf.Array):
+                contents.append(b"".join(bytes(s.read_bytes()) for s in raw))
+            else:
+                contents.append(bytes(raw.read_bytes()))
+
+    # The blank side carries no placement at all; its neighbours do.
+    placements = [c.count(b" Do") for c in contents]
+    assert placements[0] == 1
+    assert placements[1] == 0, "the blank should place nothing"
+    assert placements[2] == 1
+
+
+def test_a_blank_gets_a_white_thumbnail_rather_than_failing_the_window(narrow_book):
+    """Opening the blank's empty path raised, which failed the WHOLE fetch:
+    one blank left every thumbnail beside it missing too."""
+    from deckle.core.render import thumbnails
+
+    project = insert_blank(_narrow_project(narrow_book, 3), 1)
+
+    rendered = thumbnails(project.pages, start=0, count=4, dpi=24)
+
+    assert len(rendered) == 4, "every page in the window should render"
+    blank = rendered[1]
+    assert blank.width > 0 and blank.height > 0, (
+        "a zero-size page means 'nothing to show', which draws as no "
+        "thumbnail -- indistinguishable from one still loading"
+    )
+    assert set(blank.rgba) == {255}, "a blank sheet should look blank, not black"

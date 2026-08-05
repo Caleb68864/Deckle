@@ -34,7 +34,7 @@ from typing import Literal, Sequence
 import pypdfium2 as pdfium
 
 from deckle.core import export
-from deckle.core.models import SheetPlan, SourcePage, SourceRef
+from deckle.core.models import is_blank_page, SheetPlan, SourcePage, SourceRef
 
 # Background pixels at or above this value (0-255 per channel) are treated
 # as "paper", not ink, when scanning for a page's content bounds.
@@ -243,6 +243,12 @@ def thumbnails(
             if cancel is not None and cancel.is_set():
                 break
             ref = source_page.ref
+            if is_blank_page(source_page):
+                # A blank references no file. Opening its empty path raised
+                # FileNotFoundError, which failed the WHOLE window -- one
+                # inserted blank left every thumbnail beside it missing too.
+                result.append(_blank_thumbnail(ref, dpi))
+                continue
             doc = open_docs.get(ref.path)
             if doc is None:
                 doc = pdfium.PdfDocument(ref.path)
@@ -261,6 +267,28 @@ def thumbnails(
         for doc in open_docs.values():
             doc.close()
     return result
+
+
+def _blank_thumbnail(ref: SourceRef, dpi: int) -> RenderedPage:
+    """A white thumbnail matching a blank page's shape.
+
+    :param ref: the blank's reference, for its dimensions.
+    :param dpi: the render resolution the rest of the window used.
+    :returns: an opaque white page.
+
+    White rather than a zero-size page: a degenerate ``RenderedPage`` means
+    "nothing to show", which the grid draws as no thumbnail at all -- the
+    same picture as a render that has not finished. A blank the user
+    deliberately inserted should look like a blank sheet.
+    """
+    scale = dpi / 72.0
+    width = max(1, int(round(ref.width_pt * scale)))
+    height = max(1, int(round(ref.height_pt * scale)))
+    return RenderedPage(
+        width=width,
+        height=height,
+        rgba=bytes([255, 255, 255, 255]) * (width * height),
+    )
 
 
 def _rotation_quarter_turns(rotate_deg: int) -> int:

@@ -23,6 +23,7 @@ from deckle.core.models import (
     Side,
     Signature,
     SourcePage,
+    is_blank_page,
 )
 from deckle.core.signatures import saddle_order, split_signatures
 
@@ -532,7 +533,12 @@ class GutterShiftStrategy:
         :returns: a plan whose sheets carry a single-page ``Side`` each,
             and no signatures -- there is nothing gathered to group.
         """
-        active = [p for p in pages if not p.skipped]
+        # An inserted blank becomes the same ``None`` slot the padding
+        # filler uses. It carries no file to open -- export raised
+        # FileNotFoundError on its empty path -- and it is sized to the
+        # PAPER, so measuring it as an ordinary page made it the widest
+        # thing in the document and shrank every real page to fit it.
+        active = [None if is_blank_page(p) else p for p in pages if not p.skipped]
 
         # start_on_recto: the first content page always lands at output
         # index 0, which is a recto by definition, so no leading filler is
@@ -716,7 +722,12 @@ class SaddleStitchStrategy:
         Portrait paper is a warning, never a refusal -- Deckle advises and
         proceeds rather than overriding the caller's paper choice.
         """
-        active = [p for p in pages if not p.skipped]
+        # An inserted blank becomes the same ``None`` slot the padding
+        # filler uses. It carries no file to open -- export raised
+        # FileNotFoundError on its empty path -- and it is sized to the
+        # PAPER, so measuring it as an ordinary page made it the widest
+        # thing in the document and shrank every real page to fit it.
+        active = [None if is_blank_page(p) else p for p in pages if not p.skipped]
         warnings: list[LayoutWarning] = []
         grain = grain_warning(settings)
         if grain is not None:

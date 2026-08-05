@@ -59,6 +59,35 @@ class SourceRef:
     height_pt: float
 
 
+BLANK_SOURCE_PATH = ""
+"""``SourceRef.path`` for a blank the user inserted, as opposed to imported.
+
+A blank references no file. It is not the same thing as the filler the
+imposer appends to round a signature out: that one is ``source_ref=None``
+and ``is_filler=True``, produced by the layout, and never appears in
+``Project.pages``. This marker identifies a page the *user* asked for and
+that therefore has a position in the document they can move and delete.
+
+The two converge at the imposer, which turns an inserted blank into exactly
+the same filler an appended one produces -- see
+:func:`deckle.core.layout.is_blank_page`. Everything downstream then handles
+one concept instead of two.
+"""
+
+
+def is_blank_page(page: "SourcePage") -> bool:
+    """Whether ``page`` is a blank the user inserted.
+
+    :param page: the page to test.
+    :returns: ``True`` for an inserted blank.
+
+    Lives in the core rather than the app because the imposer has to know:
+    a blank carries no file to open and no dimensions worth measuring, and
+    treating it as an ordinary page breaks both export and scaling.
+    """
+    return page.ref.path == BLANK_SOURCE_PATH
+
+
 @dataclass(frozen=True)
 class SourcePage:
     """A page as it exists in the input, before placement is decided.
