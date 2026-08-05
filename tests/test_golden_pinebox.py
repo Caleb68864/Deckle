@@ -51,7 +51,7 @@ def test_pinebox_no_double_padding():
         1
         for sheet in plan.sheets
         for side in (sheet.front, sheet.back)
-        if side is not None and side.is_filler
+        if side is not None and side.pages[0].is_filler
     )
     expected_fillers = 1 if len(pages) % 2 != 0 else 0
     assert filler_count == expected_fillers, (
@@ -72,8 +72,11 @@ def test_pinebox_per_page_aspect_handling():
 
     by_ref = {p.ref.page_index: p for p in pages}
     for sheet in plan.sheets:
-        for output_page in (sheet.front, sheet.back):
-            if output_page is None or output_page.is_filler or output_page.source_ref is None:
+        for side in (sheet.front, sheet.back):
+            if side is None:
+                continue
+            output_page = side.pages[0]
+            if output_page.is_filler or output_page.source_ref is None:
                 continue
             ref = output_page.source_ref
             source_page = by_ref.get(ref.page_index)
