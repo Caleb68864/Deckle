@@ -133,6 +133,65 @@ def content_box_size(
     return (box_w, box_h)
 
 
+def grain_warning(settings: LayoutSettings) -> LayoutWarning | None:
+    """Warn when the spine will run across the paper's grain, not along it.
+
+    :param settings: the layout to check.
+    :returns: a :class:`LayoutWarning`, or ``None`` when the grain is
+        unknown or already correct.
+
+    The rule the whole of bookbinding agrees on is that grain runs parallel
+    to the spine. Fold across the grain and the crease cracks and feathers
+    instead of creasing; the finished book refuses to open flat, cockles
+    when glue wets it, and warps with humidity.
+
+    The spine is vertical in both of Deckle's schemes -- it is the left or
+    right binding edge under gutter shift, and the vertical centre fold
+    under folio -- so the test is whether the grain also runs vertically on
+    the sheet as loaded.
+
+    This catches the most common home-binding mistake there is. Ordinary
+    letter and A4 stock is **long grain**: the fibres run along the longer
+    edge. Turn a letter sheet landscape to fold it into a 5.5x8.5 book and
+    the grain now runs horizontally while the fold runs vertically -- across
+    the grain, the wrong way, on the paper almost everyone has. Binders buy
+    short-grain stock specifically to fix this.
+
+    Silent when ``grain`` is ``"unknown"``, which is the default: most
+    people do not know their paper's grain, and a warning nobody can act on
+    is noise.
+    """
+    if settings.grain not in ("long", "short"):
+        return None
+
+    width, height = settings.paper
+    if width == height:
+        return None  # square stock: the fold direction cannot be wrong
+
+    long_edge_is_horizontal = width > height
+    grain_is_horizontal = (
+        long_edge_is_horizontal if settings.grain == "long" else not long_edge_is_horizontal
+    )
+    if not grain_is_horizontal:
+        return None  # grain already runs with the spine
+
+    folded = settings.fold_scheme == "folio"
+    action = "fold" if folded else "spine"
+    return LayoutWarning(
+        sheet_index=0,
+        kind="grain_direction",
+        detail=(
+            f"the {action} runs across the paper grain, not along it. "
+            f"{settings.grain}-grain stock at "
+            f"{width:.0f}x{height:.0f}pt has its fibres running horizontally, "
+            "while the spine runs vertically. Expect the fold to crack rather "
+            "than crease, and the finished book to resist opening flat. Turn "
+            "the sheet, or use "
+            f"{'short' if settings.grain == 'long' else 'long'}-grain stock."
+        ),
+    )
+
+
 def _rotates_to_portrait(src_w: float, src_h: float, settings: LayoutSettings) -> bool:
     paper_w, paper_h = settings.paper
     return settings.landscape_policy == "rotate" and paper_h >= paper_w and src_w > src_h
@@ -483,6 +542,9 @@ class GutterShiftStrategy:
         slots, _padded = _pad_to_even(active)
 
         warnings: list[LayoutWarning] = []
+        grain = grain_warning(settings)
+        if grain is not None:
+            warnings.append(grain)
         sheets: list[Sheet] = []
         # One scale for every page, so text does not change size mid-book.
         scale = document_scale(active, settings)
@@ -656,6 +718,9 @@ class SaddleStitchStrategy:
         """
         active = [p for p in pages if not p.skipped]
         warnings: list[LayoutWarning] = []
+        grain = grain_warning(settings)
+        if grain is not None:
+            warnings.append(grain)
 
         paper_w, paper_h = settings.paper
         if paper_h >= paper_w:

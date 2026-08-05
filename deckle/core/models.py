@@ -111,7 +111,7 @@ class Mark:
     :ivar y1: end of the segment, in sheet points.
     """
 
-    kind: Literal["sewing_station","signature_order","fold_line"]
+    kind: Literal["sewing_station","signature_order","fold_line","cut_line"]
     x0: float
     y0: float
     x1: float
@@ -185,6 +185,7 @@ class LayoutWarning:
         "signature_padding",
         "creep_advisory",
         "landscape_imageable_unverified",
+        "grain_direction",
     ]
     detail: str
 
@@ -324,6 +325,29 @@ class LayoutSettings:
 
     fold_scheme: Literal["none","folio"] = "none"
     sheets_per_signature: int = 4
+    grain: Literal["long", "short", "unknown"] = "unknown"
+    """Which way the paper's fibres run. Defaults to ``"unknown"``, silent.
+
+    Grain is the material property bookbinding literature treats as most
+    consequential, and no imposition tool models it. Fibres align during
+    manufacture, and paper folds cleanly *along* them and cracks *across*
+    them. A book folded against the grain will not open flat, cockles when
+    glue introduces moisture, and warps as humidity changes.
+
+    ``"long"`` means the fibres run along the sheet's longer edge, which is
+    what ordinary office letter and A4 stock is. ``"short"`` means the
+    shorter edge -- binders buy short-grain stock specifically so a
+    half-folded sheet folds with the grain rather than across it.
+
+    The rule this exists to check is simply: **grain should run parallel to
+    the spine.** Deckle knows the sheet size, its orientation and where the
+    spine falls, which is everything the check needs.
+
+    Default ``"unknown"`` because most people do not know their paper's
+    grain and a warning they cannot act on is noise. Set it and Deckle will
+    tell you when a fold is going to fight the paper.
+    """
+
     paper_thickness_pt: float = 0.0
     sewing_stations: int = 3
     blank_mode: Literal["end","balanced"] = "end"

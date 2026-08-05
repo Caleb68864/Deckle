@@ -35,6 +35,14 @@ FOLD_SCHEMES: tuple[str, ...] = ("none", "folio")
 
 BLANK_MODES: tuple[str, ...] = ("end", "balanced")
 
+#: Paper grain, in the order the combo offers it. "Unknown" leads because it
+#: is the honest default -- most people have not checked their stock.
+GRAINS: tuple[tuple[str, str], ...] = (
+    ("unknown", "Unknown"),
+    ("long", "Long grain"),
+    ("short", "Short grain"),
+)
+
 SCHEDULE_TOOLTIP = (
     "Write the binding schedule to a text file: which sheets gather into "
     "each signature, which way round they nest, where the blanks fall, and "
@@ -241,6 +249,19 @@ def set_paper(
         short, long = sorted(paper)
         paper = (long, short) if landscape else (short, long)
     return replace(project, layout=replace(project.layout, paper=paper))
+
+
+def set_grain(project: Project, grain: str) -> Project:
+    """Record which way the paper's fibres run.
+
+    :param project: the project to derive a new one from.
+    :param grain: ``"long"``, ``"short"`` or ``"unknown"``.
+    :returns: a new project.
+
+    Purely an input to the grain warning -- it changes no geometry. See
+    ``LayoutSettings.grain`` for why the rule matters.
+    """
+    return replace(project, layout=replace(project.layout, grain=grain))
 
 
 def set_landscape_policy(
@@ -577,6 +598,48 @@ class LayoutPanel:
             "silently rotating your paper for you."
         )
         form.addRow("Orientation:", self.orientation_combo)
+
+        # Grain and thickness are properties of the STOCK, so they sit with
+        # the paper rather than in a mode tab. Neither changes any geometry:
+        # grain drives a warning, thickness drives the creep and spine
+        # estimates on the schedule.
+        self.grain_combo = QComboBox(self.widget)
+        for _key, label in GRAINS:
+            self.grain_combo.addItem(label)
+        self._grain_keys = [key for key, _ in GRAINS]
+        current_grain = getattr(state.project.layout, "grain", "unknown")
+        if current_grain in self._grain_keys:
+            self.grain_combo.setCurrentIndex(self._grain_keys.index(current_grain))
+        self.grain_combo.setToolTip(
+            "Which way the paper's fibres run. Paper creases cleanly ALONG "
+            "the grain and cracks ACROSS it, so the grain should run "
+            "parallel to the spine.\n\n"
+            "Ordinary office letter and A4 are LONG grain -- fibres along "
+            "the longer edge. Turn a letter sheet landscape to fold a "
+            "booklet and the fold now runs across the grain, which is why "
+            "binders buy short-grain stock.\n\n"
+            "Leave Unknown and Deckle stays quiet. Set it and you get a "
+            "warning when a fold is going to fight the paper."
+        )
+        form.addRow("Paper grain:", self.grain_combo)
+
+        self.paper_thickness_spinbox = QDoubleSpinBox(self.widget)
+        self.paper_thickness_spinbox.setDecimals(4)
+        self.paper_thickness_spinbox.setSingleStep(0.001)
+        self.paper_thickness_spinbox.setRange(0.0, from_points(10.0, self._unit))
+        self.paper_thickness_spinbox.setValue(
+            from_points(state.project.layout.paper_thickness_pt, self._unit)
+        )
+        self.paper_thickness_spinbox.setToolTip(
+            "The caliper of a single sheet. Ordinary 20lb office paper is "
+            "about 0.004in; card is several times that.\n\n"
+            "Deckle uses it for two things on the binding schedule: how far "
+            "the innermost leaf of a signature protrudes at the fore-edge, "
+            "and how thick the sewn block will be at the spine -- which is "
+            "the number you cut boards against.\n\n"
+            "Leave at 0 and neither is estimated."
+        )
+        form.addRow("Paper thickness:", self.paper_thickness_spinbox)
         self.unit_combo.setToolTip(
             "The unit every length on this tab is typed in. Values are "
             "stored in points regardless, so switching units re-displays "
@@ -756,22 +819,6 @@ class LayoutPanel:
         )
         signature_form.addRow("Sewing stations:", self.sewing_stations_spinbox)
 
-        self.paper_thickness_spinbox = QDoubleSpinBox(self.widget)
-        self.paper_thickness_spinbox.setDecimals(3)
-        self.paper_thickness_spinbox.setSingleStep(0.001)
-        self.paper_thickness_spinbox.setRange(0.0, from_points(10.0, self._unit))
-        self.paper_thickness_spinbox.setValue(
-            from_points(state.project.layout.paper_thickness_pt, self._unit)
-        )
-        self.paper_thickness_spinbox.setToolTip(
-            "The thickness of one sheet of your paper, used to estimate "
-            "creep.\n\nWhen sheets nest inside one another, the inner ones "
-            "stick out further at the fore-edge -- the thicker the stock and "
-            "the more sheets per signature, the worse it gets. Leave at 0 if "
-            "you plan to trim the fore-edge after binding, which removes the "
-            "problem entirely."
-        )
-        signature_form.addRow("Paper thickness:", self.paper_thickness_spinbox)
 
         # Live readout -- "17 signatures · 67 sheets · 2 blanks" -- derived
         # from the recomputed SheetPlan, since that arithmetic is the thing
@@ -813,6 +860,7 @@ class LayoutPanel:
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
+        self.grain_combo.currentIndexChanged.connect(self._on_grain_changed)
         self.paper_combo.currentTextChanged.connect(self._on_paper_changed)
         self.orientation_combo.currentTextChanged.connect(self._on_orientation_changed)
         self.tabs.currentChanged.connect(self._on_mode_tab_changed)
@@ -999,6 +1047,18 @@ class LayoutPanel:
 
     def _on_landscape_policy_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_landscape_policy(project, value))
+        self.layout_changed.emit(plan)
+
+    def _on_grain_changed(self, index: int) -> None:
+        """Record the stock's grain. Changes no geometry, only the warning.
+
+        :returns: nothing.
+        """
+        if not 0 <= index < len(self._grain_keys):
+            return
+        plan = apply_layout_change(
+            self.state, lambda project: set_grain(project, self._grain_keys[index])
+        )
         self.layout_changed.emit(plan)
 
     def _current_paper_pt(self) -> tuple[float, float]:

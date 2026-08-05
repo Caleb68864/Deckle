@@ -180,6 +180,8 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         sheets_per_signature=args.sheets_per_signature,
         blank_mode=args.blank_mode,
         sewing_stations=args.sewing_stations,
+        paper_thickness_pt=args.paper_thickness,
+        grain=args.grain,
     )
 
 
@@ -225,6 +227,17 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
         "--blank-mode", choices=["end", "balanced"], default="end",
         help="how padding blanks are distributed across signatures, under "
         "--fold-scheme folio (default: end)",
+    )
+    parser.add_argument(
+        "--grain", choices=["long", "short", "unknown"], default="unknown",
+        help="which way the paper's fibres run. Ordinary office letter and "
+        "A4 are long grain. Deckle warns when the spine would run across "
+        "the grain, which cracks the fold (default: unknown, silent)",
+    )
+    parser.add_argument(
+        "--paper-thickness", type=_parse_length_pt, default=0.0,
+        help="caliper of one sheet, e.g. 0.004in or 0.1mm. Used to estimate "
+        "fore-edge creep and spine thickness (default: 0, unset)",
     )
     parser.add_argument(
         "--sewing-stations", type=int, default=3,

@@ -896,3 +896,73 @@ def test_paper_helpers_are_pure_and_orientation_aware():
     # Recognised in either orientation.
     assert layout_panel.preset_name_for((792.0, 612.0)) == "Letter"
     assert layout_panel.preset_name_for((500.0, 700.0)) is None
+
+
+# -- grain and thickness are stock properties, not mode settings --------
+
+
+def test_grain_and_thickness_live_with_the_paper_not_in_a_mode_tab(qapp):
+    """Both describe the STOCK, so both modes need them.
+
+    Thickness was briefly duplicated -- once in Page setup and once on the
+    Signatures tab -- which is the same two-controls-one-decision problem
+    the fold-scheme dropdown had.
+    """
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8)))
+
+    for widget in (panel.grain_combo, panel.paper_thickness_spinbox):
+        for index in range(panel.tabs.count()):
+            assert widget.parent() is not panel.tabs.widget(index), (
+                "a stock property is trapped inside a mode tab"
+            )
+
+
+def test_grain_defaults_to_unknown_and_stays_quiet(qapp):
+    """Most people have not checked their paper. A warning they cannot act
+    on is noise."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8))
+    panel = layout_panel.LayoutPanel(state)
+
+    assert panel.grain_combo.currentText() == "Unknown"
+    assert state.project.layout.grain == "unknown"
+
+
+def test_setting_long_grain_on_landscape_stock_raises_the_warning(qapp):
+    """Ordinary office paper, folded the usual way: the common mistake."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(16, paper=LETTER_LANDSCAPE, gutter_pt=0.0))
+    panel = layout_panel.LayoutPanel(state)
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+
+    panel.grain_combo.setCurrentText("Long grain")
+
+    kinds = {w.kind for w in layout_panel.recompute_plan(state.project).warnings}
+    assert "grain_direction" in kinds
+
+    panel.grain_combo.setCurrentText("Short grain")
+    kinds = {w.kind for w in layout_panel.recompute_plan(state.project).warnings}
+    assert "grain_direction" not in kinds
+
+
+def test_thickness_feeds_the_spine_estimate(qapp):
+    from deckle.app.state import AppState
+    from deckle.core.schedule import build_schedule
+
+    state = AppState(_project(16, paper=LETTER_LANDSCAPE, gutter_pt=0.0))
+    panel = layout_panel.LayoutPanel(state)
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+
+    schedule = build_schedule(layout_panel.recompute_plan(state.project), state.project.layout)
+    assert schedule.spine_width_pt is None, "unset thickness must not invent a spine"
+
+    panel.paper_thickness_spinbox.setValue(0.004)  # inches, the panel's unit
+
+    schedule = build_schedule(layout_panel.recompute_plan(state.project), state.project.layout)
+    assert schedule.spine_width_pt is not None
+    low, high = schedule.spine_width_pt
+    assert 0 < low < high

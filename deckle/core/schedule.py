@@ -101,6 +101,9 @@ class Schedule:
     :ivar paper_thickness_pt: the stock thickness used for the creep
         estimate, or 0 if unset.
     :ivar fold_scheme: the imposition this schedule describes.
+    :ivar spine_width_pt: likely sewn-block thickness at the spine as a
+        ``(low, high)`` range in points, or ``None`` when paper thickness is
+        unset. What you cut boards against.
     :ivar notes: advisories worth reading before cutting paper.
     """
 
@@ -111,6 +114,7 @@ class Schedule:
     sewing_margin_pt: float
     paper_thickness_pt: float
     fold_scheme: str
+    spine_width_pt: tuple[float, float] | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -132,6 +136,38 @@ def _page_numbers(side) -> tuple[int | None, ...]:
         None if page.source_ref is None else page.source_ref.page_index + 1
         for page in side.pages
     )
+
+
+#: Sewing thread accumulates in every fold, so a sewn block is thicker at the
+#: spine than at the fore-edge. This is "swell". The fraction is a working
+#: rule of thumb, not a measurement -- thread weight, sewing style and how
+#: hard the block is pressed all move it, which is why the schedule reports a
+#: RANGE and names the assumption rather than printing a single number.
+SWELL_FRACTION_LOW = 0.10
+SWELL_FRACTION_HIGH = 0.25
+
+
+def spine_width_pt(sheet_count: int, thickness_pt: float) -> tuple[float, float] | None:
+    """The likely thickness of the sewn block at the spine, as a range.
+
+    :param sheet_count: pieces of paper in the whole book.
+    :param thickness_pt: caliper of one sheet, in points.
+    :returns: ``(low, high)`` in points, or ``None`` if thickness is unset.
+
+    You cut the boards and the spine piece *before* the block is finished,
+    so this is the number you need early and cannot measure yet. Getting it
+    wrong means recutting boards.
+
+    Reported as a range on purpose. The block is folded, so its thickness is
+    ``sheets x caliper``; sewing then adds swell at the spine that the
+    fore-edge does not have. Paper caliper itself varies a few percent with
+    humidity. A single confident number here would be false precision about
+    something the binder will measure again before gluing.
+    """
+    if thickness_pt <= 0 or sheet_count <= 0:
+        return None
+    block = sheet_count * thickness_pt
+    return (block * (1.0 + SWELL_FRACTION_LOW), block * (1.0 + SWELL_FRACTION_HIGH))
 
 
 def _creep_note(signature_sheets: int, thickness_pt: float) -> str | None:
@@ -218,6 +254,7 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
         sewing_margin_pt=SEWING_MARGIN_PT,
         paper_thickness_pt=settings.paper_thickness_pt,
         fold_scheme=settings.fold_scheme,
+        spine_width_pt=spine_width_pt(len(plan.sheets), settings.paper_thickness_pt),
         notes=tuple(notes),
     )
 
@@ -304,6 +341,29 @@ def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
     lines.append("AFTER SEWING")
     lines.append("-" * len("AFTER SEWING"))
     lines.append("  Stack the signatures in order, 1 first.")
+    if schedule.spine_width_pt is not None:
+        low, high = schedule.spine_width_pt
+        lines.append("")
+        lines.append(
+            f"  Spine thickness: about {low / 72:.2f}-{high / 72:.2f}in "
+            f"({low:.0f}-{high:.0f}pt)."
+        )
+        lines.append(
+            f"    {schedule.sheets_total} sheets at "
+            f"{schedule.paper_thickness_pt:.3f}pt, plus "
+            f"{int(SWELL_FRACTION_LOW * 100)}-{int(SWELL_FRACTION_HIGH * 100)}% "
+            "swell from the sewing thread."
+        )
+        lines.append(
+            "    Cut boards and spine against this, then measure the real "
+            "block before covering."
+        )
+    else:
+        lines.append("")
+        lines.append(
+            "  Spine thickness is not estimated -- set paper thickness to "
+            "get a figure to cut boards against."
+        )
     if schedule.notes:
         lines.append("")
         for note in schedule.notes:

@@ -304,3 +304,10 @@
 - Surfaces: A sheet whose front hinges at the fold and whose back hinges at the trimmed edges produces a book that will not open. Nothing else would complain -- the PDF is valid either way.
 - Watch: The new symmetry test measures raw placements rather than going through `actual_margins_pt`, deliberately: a per-cell helper and the placement code can agree with each other and both be wrong about where the fold is. Verified by mutation -- flipping both spine sides to face outward fails five tests, only two of which existed before.
 - Commit: (this commit)
+
+## 2026-08-05 - Paper grain and spine thickness, from the competitive gap analysis
+- Symptom: The gap research found that NO surveyed imposition tool models paper grain, though the bookbinding literature calls it the most consequential material property, and that spine width lives in standalone calculators rather than in the tool that already knows the sheet count.
+- Fix: `LayoutSettings.grain` plus a `grain_direction` LayoutWarning emitted by both strategies, and a spine-thickness range on the binding schedule. Both exposed in the CLI (`--grain`, `--paper-thickness`) and the GUI, in Page setup.
+- Surfaces: The warning catches the commonest home-binding mistake there is. Letter and A4 are LONG grain; turn a sheet landscape to fold a booklet and the fold now runs across the grain, so the crease cracks and the book will not open flat. Default is `unknown` and silent -- most people have not checked their stock, and a warning nobody can act on is noise.
+- Watch: Grain and thickness describe the STOCK, so they belong in Page setup where both modes reach them, not on the Signatures tab. Thickness was briefly duplicated across both -- the same two-controls-one-decision problem the fold-scheme dropdown had, caught by ruff F811 rather than by thinking. The spine figure is deliberately a RANGE with its assumption printed: caliper moves a few percent with humidity and sewing swell depends on thread and press, so a single number would be false precision about something the binder measures again before covering.
+- Commit: (this commit)
