@@ -143,3 +143,43 @@ def test_cli_runs_headlessly_as_a_subprocess():
     )
     assert result.returncode == 0, result.stderr
     assert "page count:" in result.stdout
+
+
+def test_export_surfaces_layout_warnings_on_stderr(tmp_path):
+    """Hardening: ``export`` used to compute layout warnings and drop them.
+
+    Only ``info`` printed them, so ``export --fold-scheme folio`` onto
+    portrait paper squeezed two pages onto every portrait sheet and said
+    nothing. Warnings belong on stderr so stdout stays clean for scripting,
+    and they must not change the exit code -- a warning is advice.
+    """
+    out = tmp_path / "out.pdf"
+    result = subprocess.run(
+        [
+            sys.executable, "-m", "deckle.cli", "export", FIXTURE,
+            "-o", str(out),
+            "--fold-scheme", "folio",
+            "--sheets-per-signature", "4",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "sheet_orientation" in result.stderr
+    assert "layout warnings:" in result.stderr
+    # stdout stays scriptable: the path, not the commentary.
+    assert "sheet_orientation" not in result.stdout
+    assert out.exists()
+
+
+def test_export_says_nothing_extra_when_there_are_no_warnings(tmp_path):
+    out = tmp_path / "clean.pdf"
+    result = subprocess.run(
+        [sys.executable, "-m", "deckle.cli", "export", FIXTURE, "-o", str(out)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "layout warnings" not in result.stderr

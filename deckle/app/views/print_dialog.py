@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import Callable, Sequence
 
+from deckle.core.diagnostics import log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.print_session import PrintSession, SessionSummary
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
@@ -36,7 +37,12 @@ def select_preselected_printer(
     for name in printer_names:
         try:
             profile_loader(name)
-        except (FileNotFoundError, OSError):
+        except (FileNotFoundError, OSError) as exc:
+            # No calibration profile for this printer -- try the next one.
+            # Worth recording: the fallback silently lands on
+            # printer_names[0], and a user wondering why Deckle picked the
+            # "wrong" printer has no other way to see this happened.
+            log_exception("printer_profile_unavailable", exc, printer=name)
             continue
         else:
             return name

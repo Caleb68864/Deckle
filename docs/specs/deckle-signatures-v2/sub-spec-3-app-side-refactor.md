@@ -320,7 +320,7 @@ Per-criterion acceptance check:
 
 ```bash
 # REQ-013 -- clipping is computed per page within a side
-python -m pytest tests/test_preview_fidelity.py -q -k second_page_of_a_two_page_side_is_reported_as_clipped
+python -m pytest tests/test_preview_fidelity.py -q -k second_page_of_a_two_page_side_overflowing_is_reported
 grep -q "for output_page in side.pages" deckle/app/views/preview_view.py || (echo "FAIL: clipping still evaluated per side" && exit 1)
 
 # REQ-012 -- every page on a side reaches the raster
@@ -344,7 +344,7 @@ confirmed to exit 0.
 | # | Criterion | Type | Command |
 |---|---|---|---|
 | 1 | Clipping is computed per page within a side (REQ-013) | [STRUCTURAL] | `grep -q "for output_page in side.pages" deckle/app/views/preview_view.py \|\| (echo "FAIL: clipping still evaluated per side" && exit 1)` |
-| 2 | The under-report regression test exists and passes (REQ-013) | [MECHANICAL] | `python -m pytest tests/test_preview_fidelity.py -q -k second_page_of_a_two_page_side_is_reported_as_clipped \|\| (echo "FAIL: per-page clipping under-reports on a 2-up side" && exit 1)` |
+| 2 | The under-report regression test exists and passes (REQ-013) | [MECHANICAL] | `python -m pytest tests/test_preview_fidelity.py -q -k second_page_of_a_two_page_side_overflowing_is_reported \|\| (echo "FAIL: per-page clipping under-reports on a 2-up side" && exit 1)` |
 | 3 | Both leaves of a side can be reported (REQ-013) | [MECHANICAL] | `python -m pytest tests/test_preview_fidelity.py -q -k both_pages_of_a_side_can_be_reported \|\| (echo "FAIL: clipping loop breaks after the first warning" && exit 1)` |
 | 4 | A clean two-page side reports nothing (negative control) | [MECHANICAL] | `python -m pytest tests/test_preview_fidelity.py -q -k two_page_side_with_no_overflow_reports_nothing \|\| (echo "FAIL: clipping over-reports" && exit 1)` |
 | 5 | `_output_page_bbox` keeps its `OutputPage` signature | [STRUCTURAL] | `grep -q "def _output_page_bbox(output_page: OutputPage)" deckle/app/views/preview_view.py \|\| (echo "FAIL: _output_page_bbox signature changed -- it is already per-page and correct" && exit 1)` |

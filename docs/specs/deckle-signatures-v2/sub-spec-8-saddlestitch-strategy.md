@@ -490,7 +490,7 @@ absent*, which records the cascade that a bare `grep` caused across seven sub-sp
 | Spine derived from cell position on both sides | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k spine \|\| (echo "FAIL: spine side wrong under folio" && exit 1)` |
 | `binding_edge` mirrors the cells | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k binding_edge \|\| (echo "FAIL: binding_edge does not mirror under folio" && exit 1)` |
 | `paper_thickness_pt` confined to `_creep_advisory` | [MECHANICAL] | `python -m pytest tests/test_layout_saddle.py -q -k creep_references_are_isolated \|\| (echo "FAIL: paper_thickness_pt escaped _creep_advisory" && exit 1)` |
-| Thickness never moves a placement | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k thickness_never_moves \|\| (echo "FAIL: creep reached placement geometry" && exit 1)` |
+| Thickness never moves a placement | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k creep_never_affects_placement_geometry \|\| (echo "FAIL: creep reached placement geometry" && exit 1)` |
 | `paper_thickness_pt` never reaches the exporter | [MECHANICAL] | `! grep -n "paper_thickness_pt" deckle/core/export.py \|\| (echo "FAIL: paper_thickness_pt reached the exporter" && exit 1)` |
 | Portrait paper warns, does not block or rotate | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k portrait \|\| (echo "FAIL: portrait folio handling wrong" && exit 1)` |
 | Marks on the right sheets and sides | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k marks \|\| (echo "FAIL: mark predicate wrong" && exit 1)` |

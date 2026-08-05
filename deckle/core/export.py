@@ -35,6 +35,7 @@ import pikepdf
 from pikepdf import Name, Page, Rectangle
 from pikepdf.canvas import ContentStreamBuilder
 
+from deckle.core.diagnostics import log_exception
 from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
 
 _CACHE_DIR_NAME = "deckle_export_cache"
@@ -372,10 +373,16 @@ class _LRUCache:
 
 
 def _safe_remove(path: str) -> None:
+    """Delete a temp file, tolerating failure.
+
+    Failing to clean up must never fail the export that succeeded -- but
+    silent failures accumulate, and a user who runs out of disk after a
+    long session deserves a trail explaining where the space went.
+    """
     try:
         os.remove(path)
-    except OSError:
-        pass
+    except OSError as exc:
+        log_exception("temp_file_cleanup_failed", exc, path=path)
 
 
 _cache = _LRUCache(_DEFAULT_CACHE_SIZE)

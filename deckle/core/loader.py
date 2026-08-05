@@ -21,6 +21,7 @@ import pikepdf
 import pypdfium2 as pdfium
 from PIL import Image
 
+from deckle.core.diagnostics import log_exception
 from deckle.core.models import LayoutWarning, SourcePage, SourceRef
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -61,7 +62,11 @@ def _evict_lru_cache_entries(cache_dir: str, max_bytes: int) -> None:
             continue
         try:
             stat = entry.stat()
-        except OSError:
+        except OSError as exc:
+            # A file that vanished or is unreadable simply does not count
+            # toward the cache budget. Recorded because a cache that will
+            # not shrink is otherwise a mystery.
+            log_exception("cache_entry_stat_failed", exc, path=entry.path)
             continue
         total += stat.st_size
         recency = getattr(stat, "st_atime", None) or stat.st_mtime
@@ -76,7 +81,12 @@ def _evict_lru_cache_entries(cache_dir: str, max_bytes: int) -> None:
             break
         try:
             os.remove(file_path)
-        except OSError:
+        except OSError as exc:
+            # Undeletable entry -- skip it and keep evicting others. Note
+            # `total` is deliberately NOT decremented here: the bytes are
+            # still on disk, so pretending otherwise would end eviction
+            # early and leave the cache over budget.
+            log_exception("cache_eviction_failed", exc, path=file_path)
             continue
         total -= size
 
@@ -116,9 +126,13 @@ def _is_encrypted(path: str) -> bool:
             return False
     except pikepdf.PasswordError:
         return True
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 -- classification probe, not the open
         # Not a password issue -- some other corruption; let the original
         # pypdfium2 error surface instead of misreporting it as encrypted.
+        # The probe's own failure is still worth recording: the error the
+        # user eventually sees comes from a different library, so without
+        # this the pikepdf-side detail is lost entirely.
+        log_exception("encryption_probe_failed", exc, path=path)
         return False
 
 

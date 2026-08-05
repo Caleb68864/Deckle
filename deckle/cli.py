@@ -21,6 +21,7 @@ from typing import Sequence
 from deckle import __version__ as _DECKLE_VERSION
 from deckle.core.export import export as export_plan
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
+from deckle.core.diagnostics import log_event
 from deckle.core.loader import EncryptedPdfError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.project_io import SourceChangedWarning, save_project
@@ -201,6 +202,28 @@ def _cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_warnings(pages, plan) -> None:
+    """Print every layout warning to stderr, and record them.
+
+    Warnings go to **stderr** so ``deckle export`` keeps a clean stdout for
+    scripting, and they never change the exit code -- a warning is advice,
+    not a failure. But they must be said out loud somewhere: until this
+    existed only ``deckle info`` printed them, so
+    ``export --fold-scheme folio`` onto portrait paper emitted the
+    ``sheet_orientation`` warning, squeezed two pages onto every portrait
+    sheet, and told the user nothing at all.
+    """
+    warnings = list(getattr(pages, "warnings", [])) + list(plan.warnings)
+    if not warnings:
+        return
+    print("layout warnings:", file=sys.stderr)
+    for w in warnings:
+        print(f"  [{w.kind}] sheet {w.sheet_index}: {w.detail}", file=sys.stderr)
+        log_event(
+            "layout_warning", kind=w.kind, sheet_index=w.sheet_index, detail=w.detail
+        )
+
+
 def _cmd_export(args: argparse.Namespace) -> int:
     try:
         pages = _load_source(args.source)
@@ -210,6 +233,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     settings = _build_layout_settings(args)
     plan = _strategy_for(settings).impose(pages, settings)
+    _emit_warnings(pages, plan)
     export_plan(plan, args.output)
     print(f"wrote {args.output}")
     return 0
@@ -223,6 +247,7 @@ def _cmd_impose(args: argparse.Namespace) -> int:
         return 1
 
     settings = _build_layout_settings(args)
+    _emit_warnings(pages, _strategy_for(settings).impose(pages, settings))
     project = Project(pages=list(pages), layout=settings, printer=args.printer)
     try:
         save_project(project, args.output)

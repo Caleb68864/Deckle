@@ -395,7 +395,7 @@ git diff --quiet b54194c -- deckle/core/printing.py deckle/core/profiles.py || (
 python -m pytest tests/test_print_session.py -q -k public_surface
 
 # REQ-035 -- per-signature printing needs no new branch
-python -m pytest tests/test_seam_zero_diff.py -q -k per_signature_subset
+python -m pytest tests/test_printing.py tests/test_integration_signatures.py -q -k "plan_passes_with_explicit_sheets_covers_only_those_sheets or end_to_end_folio_signature_impose_export_fold_and_print"
 
 # print_session.py changed in exactly one place
 test $(git diff --unified=0 HEAD -- deckle/core/print_session.py | grep -c "^@@") -le 1 || (echo "FAIL: print_session.py changed in more than one place" && exit 1)
@@ -420,7 +420,7 @@ confirmed to exit 0.
 | 10 | The seam files are byte-identical to the v2 baseline (REQ-015) | [MECHANICAL] | `git diff --quiet b54194c -- deckle/core/printing.py deckle/core/profiles.py \|\| (echo "FAIL: printing.py or profiles.py diverged from the v2 baseline -- ESCALATE" && exit 1)` |
 | 11 | The pinned digests are the ones on disk (REQ-015) | [MECHANICAL] | `python -c "import hashlib,pathlib,sys; P={'deckle/core/printing.py':'cbf1a0e81404cf85794242b0da466e6be82f9f0116ba111fdba803123d47607e','deckle/core/profiles.py':'390ebd76acd340aec2fd327d1edf3e7c01250026e6b35068d3c85e268c88ae95'}; sys.exit(1 if [p for p,h in P.items() if hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()!=h] else 0)" \|\| (echo "FAIL: seam file digest changed -- ESCALATE, do not re-pin" && exit 1)` |
 | 12 | No signature/side concept leaked into the seam (REQ-015) | [MECHANICAL] | `! grep -n "\.front\|\.back\|Side\|Signature\|Mark\|marks" deckle/core/printing.py deckle/core/profiles.py \|\| (echo "FAIL: signature/side concepts leaked into the manual-duplex seam" && exit 1)` |
-| 13 | Per-signature printing uses the existing subset path (REQ-035) | [MECHANICAL] | `python -m pytest tests/test_seam_zero_diff.py -q -k per_signature_subset \|\| (echo "FAIL: per-signature subset path broken" && exit 1)` |
+| 13 | Per-signature printing uses the existing subset path (REQ-035) | [MECHANICAL] | `python -m pytest tests/test_printing.py tests/test_integration_signatures.py -q -k "plan_passes_with_explicit_sheets_covers_only_those_sheets or end_to_end_folio_signature_impose_export_fold_and_print" \|\| (echo "FAIL: per-signature subset path broken" && exit 1)` |
 | 14 | `plan_passes` reads only `Sheet.index` (REQ-035) | [MECHANICAL] | `python -m pytest tests/test_seam_zero_diff.py -q -k reads_only_sheet_index \|\| (echo "FAIL: plan_passes touches a Sheet attribute other than index" && exit 1)` |
 | 15 | The pin file names re-pinning as an escalation | [STRUCTURAL] | `grep -qi "escalation" tests/test_seam_zero_diff.py \|\| (echo "FAIL: pin file does not state that re-pinning is an escalation" && exit 1)` |
 | 16 | No Qt in `print_session.py` | [MECHANICAL] | `! grep -rn "PySide6\|QtWidgets" deckle/core/print_session.py \|\| (echo "FAIL: Qt in print_session" && exit 1)` |

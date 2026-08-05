@@ -33,6 +33,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
 
+from deckle.core.diagnostics import log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_passes
 from deckle.core.profiles import PrinterProfile
@@ -293,7 +294,13 @@ class PrintSession:
                 continue
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+            except (OSError, json.JSONDecodeError) as exc:
+                # Skipping is right -- one corrupt file must not hide every
+                # other resumable session. But a user whose state file was
+                # truncated by the very crash they are trying to resume from
+                # would otherwise watch the session silently not appear, with
+                # no way to find out why. Record it and carry on.
+                log_exception("session_state_unreadable", exc, path=str(path))
                 continue
             summaries.append(
                 SessionSummary(

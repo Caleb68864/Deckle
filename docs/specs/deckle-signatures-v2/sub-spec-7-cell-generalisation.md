@@ -502,7 +502,7 @@ def test_explicit_spine_side_left_and_right_are_mirror_images():
     assert left.placement.tx != pytest.approx(right.placement.tx)   # but the leaf moved
 ```
 
-**Run:** `python -m pytest tests/test_layout.py -q -k spine_side` → green if Step 9 wired
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k actual_margins_are_measured_against_the_cell` → green if Step 9 wired
 `spine_side` correctly; red if parity still leaks in. The parametrisation over four output
 indices and both binding edges is what proves the bypass, because parity and `binding_edge` are
 the only two inputs `_gutter_side_is_left` consumes.
@@ -611,7 +611,7 @@ Bash on this machine.
 | 5 | `content_box_rect_pt` with cell `(396, 0, 792, 612)` and a right-hand spine returns `x0 == 396 + gutter_pt` (REQ-020) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k content_box_rect_is_measured_inside_the_cell` |
 | 6 | `document_scale` against a half-width cell is smaller and still single-valued (REQ-023) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k document_scale_against_a_half_width_cell` |
 | 7 | `actual_margins_pt` measures `(inner, outer, top, bottom)` relative to the cell (REQ-020, REQ-025) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k actual_margins_are_measured_against_the_cell` |
-| 8 | An explicit `spine_side` bypasses output-page parity (REQ-025) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k spine_side` |
+| 8 | An explicit `spine_side` bypasses output-page parity (REQ-025) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k actual_margins_are_measured_against_the_cell` |
 | 9 | The existing layout suite passes with no fewer than 46 test functions / 81 collected cases (REQ-009) | `[MECHANICAL]` | `python -m pytest tests/test_layout.py -q && test "$(python -m pytest tests/test_layout.py --collect-only -q 2>/dev/null \| grep -c '::')" -ge 81` |
 | 10 | The Pinebox golden fixture passes, skipping cleanly when the fixture is absent (REQ-009) | `[MECHANICAL]` | `python -m pytest tests/test_golden_pinebox.py -q` |
 | 11 | Downstream consumers of `layout.py` still pass | `[MECHANICAL]` | `python -m pytest tests/test_export.py tests/test_render.py tests/test_preview_fidelity.py -q` |

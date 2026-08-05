@@ -240,7 +240,7 @@ python -m pytest tests/test_models.py -q
 ### Step 10. Run them and watch them fail, then implement
 
 ```bash
-python -m pytest tests/test_models.py -q -k "warning_kind or v2"
+python -m pytest tests/test_models.py -q -k "layout_warning_new_kinds or layout_settings_defaults"
 ```
 
 Then in `deckle/core/models.py`:

@@ -534,7 +534,7 @@ python -m pytest tests/test_signatures.py -q -k fold_reading_order_does_not_call
 python -m pytest tests/test_signatures.py -q -k fold_reading_order_works_with_saddle_order_disabled
 
 # 3. The pinned vault value.
-python -m pytest tests/test_signatures.py -q -k saddle_order_pinned_for_eight_pages
+python -m pytest tests/test_signatures.py -q -k saddle_order_pinned_against_vault_note_n8
 
 # 4. Purity and lint.
 python -m pytest tests/test_core_purity.py -q
@@ -559,10 +559,10 @@ more. Run from the repository root in Git Bash. `ruff` is invoked as `python -m 
 |---|---|---|---|
 | 1 | `signatures.py` exposes the three functions, and `fold_reading_order(plan)` is a valid positional call exactly as the contract writes it | `[STRUCTURAL]` | `python -c "import inspect,sys; from deckle.core import signatures as s; missing=[n for n in ('split_signatures','saddle_order','fold_reading_order') if not callable(getattr(s,n,None))]; sys.exit('FAIL: missing '+repr(missing)) if missing else None; p=list(inspect.signature(s.fold_reading_order).parameters.values()); sys.exit('FAIL: first param is not a positional plan') if p[0].name!='plan' or p[0].kind is not inspect.Parameter.POSITIONAL_OR_KEYWORD else print('OK')"` |
 | 2 | `split_signatures` properties: contiguous, gapless, non-overlapping, remainder last | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k split_signatures` |
-| 3 | `saddle_order(n)` is a permutation of `range(n)` for every multiple of 4 up to 128 | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k saddle_order_is_a_permutation` |
-| 4 | `saddle_order(8) == [7, 0, 1, 6, 5, 2, 3, 4]`, pinned to the vault note's executed output | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k saddle_order_pinned_for_eight_pages` |
-| 5 | `saddle_order(n)[:2] == [n - 1, 0]` — nested, not stacked | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k outermost_sheet_carries_last_and_first_page` |
-| 6 | `saddle_order` raises `ValueError` for non-positive-multiples of 4 | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k saddle_order_rejects_non_multiples_of_four` |
+| 3 | `saddle_order(n)` is a permutation of `range(n)` for every multiple of 4 up to 128 | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k saddle_order_is_permutation_for_multiples_of_4` |
+| 4 | `saddle_order(8) == [7, 0, 1, 6, 5, 2, 3, 4]`, pinned to the vault note's executed output | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k saddle_order_pinned_against_vault_note_n8` |
+| 5 | `saddle_order(n)[:2] == [n - 1, 0]` — nested, not stacked | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k saddle_order_outermost_sheet_carries_first_and_last_page` |
+| 6 | `saddle_order` raises `ValueError` for non-positive-multiples of 4 | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k "saddle_order_raises_on_non_multiple_of_4 or saddle_order_raises_on_non_positive"` |
 | 7 | **`fold_reading_order` contains no static reference to `saddle_order`** (REQ-018) | `[MECHANICAL]` | `python -m pytest tests/test_signatures.py -q -k fold_reading_order_does_not_call_saddle_order` |
 | 8 | Same check, standalone, without pytest — for a reviewer with only a shell | `[MECHANICAL]` | `python -c "import ast,sys; src=open('deckle/core/signatures.py',encoding='utf-8').read(); fns=[n for n in ast.walk(ast.parse(src)) if isinstance(n,ast.FunctionDef) and n.name=='fold_reading_order']; sys.exit('FAIL: fold_reading_order not found') if not fns else None; bad=[n for f in fns for n in ast.walk(f) if (isinstance(n,ast.Name) and n.id=='saddle_order') or (isinstance(n,ast.Attribute) and n.attr=='saddle_order')]; sys.exit('FAIL: fold_reading_order references saddle_order') if bad else print('OK')"` |
 | 9 | **`fold_reading_order` does not reuse `saddle_order` at runtime either** (REQ-018) | `[MECHANICAL]` | `python -m pytest tests/test_signatures.py -q -k fold_reading_order_works_with_saddle_order_disabled` |

@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 
 from deckle.app.state import AppState
+from deckle.core.diagnostics import log_exception
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
@@ -45,9 +46,12 @@ class _PrinterQueryWorker:
     def run(self) -> None:
         try:
             self.names = available_printer_names()
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 -- degraded, not fatal
             # A spooler failure must not take the window down; the app is
-            # fully usable for Save PDF with no printers at all.
+            # fully usable for Save PDF with no printers at all. Record why,
+            # though: "the printer list was empty" is otherwise a support
+            # report with nothing behind it.
+            log_exception("printer_enumeration_failed", exc)
             self.names = []
 
 
