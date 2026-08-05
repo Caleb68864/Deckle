@@ -665,7 +665,7 @@ per signature"). **It must never enter placement geometry.** Confine every refer
 ---
 sub_spec_id: SS-09
 phase: run
-depends_on: ['SS-02', 'SS-06', 'SS-08']
+depends_on: ['SS-02', 'SS-06']
 ---
 
 ### 9. Mark rendering in `export.py` via `pikepdf.canvas.ContentStreamBuilder`
