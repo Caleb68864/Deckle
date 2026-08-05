@@ -289,7 +289,7 @@ def test_gutter_shift_placements_are_byte_identical_to_the_pin():
 
 **Assertion:** `_placement_digest() == "68c325043f7e0f3d5703a072f1bcb0fd0b0bf742dceb8a10f82958d3d2c507dc"`.
 
-**Run:** `python -m pytest tests/test_layout.py -q -k byte_identical_to_the_pin`
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k byte_identical_to_the_pin`
 **Expect:** **green immediately.** This value was computed against the tree at authoring time
 and re-verified twice. Green here is the point: it establishes the baseline. If it is red
 before you have edited anything, the tree already drifted — stop and surface before proceeding.
@@ -314,7 +314,7 @@ def test_the_four_placement_functions_accept_a_full_sheet_cell():
     assert content_box_rect_pt(se, is_recto=True, cell=full) == content_box_rect_pt(se, is_recto=True)
 ```
 
-**Run:** `python -m pytest tests/test_layout.py -q -k accept_a_full_sheet_cell`
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k accept_a_full_sheet_cell`
 **Expect:** red — `Cell` is undefined and `content_box_size` takes no `cell`.
 
 ---
@@ -331,7 +331,7 @@ the full sheet, then substituting `cell_w` / `cell_h` for `paper_w` / `paper_h`.
 **Run:**
 
 ```
-python -m pytest tests/test_layout.py -q -k "accept_a_full_sheet_cell or byte_identical_to_the_pin"
+python -m pytest tests/test_cell_geometry.py -q -k "accept_a_full_sheet_cell or byte_identical_to_the_pin"
 python -m pytest tests/test_layout.py -q
 ```
 
@@ -356,7 +356,7 @@ def test_document_scale_against_a_half_width_cell_is_smaller_and_still_single_va
     assert document_scale(pages[:3], se, cell=(0.0, 0.0, 306.0, 792.0)) == pytest.approx(half)
 ```
 
-**Run:** `python -m pytest tests/test_layout.py -q -k half_width_cell` → red.
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k half_width_cell` → red.
 
 > The second assertion holds because every page in the fixture is the same size, so any subset
 > yields the same minimum. Use a uniform-size fixture deliberately; a mixed-size one would make
@@ -392,7 +392,7 @@ def test_content_box_rect_is_measured_inside_the_cell_not_from_the_sheet_edge():
     assert (y0, y1) == pytest.approx((18.0, 612.0 - 18.0))
 ```
 
-**Run:** `python -m pytest tests/test_layout.py -q -k measured_inside_the_cell` → red.
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k measured_inside_the_cell` → red.
 
 ---
 
@@ -429,7 +429,7 @@ def test_actual_margins_are_measured_against_the_cell():
     assert inner < 396.0
 ```
 
-**Run:** `python -m pytest tests/test_layout.py -q -k measured_against_the_cell` → red.
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k measured_against_the_cell` → red.
 
 > Assert **measured margins**, never raw `tx`/`ty`, per `docs/decisions.md`,
 > *Rebuilt the placement math on one rule for both axes*: "The old suite asserted raw `tx`/`ty`
@@ -453,7 +453,7 @@ def test_actual_margins_are_measured_against_the_cell():
 
 ```
 python -m pytest tests/test_layout.py -q
-python -m pytest tests/test_layout.py -q -k byte_identical_to_the_pin
+python -m pytest tests/test_cell_geometry.py -q -k byte_identical_to_the_pin
 python -m pytest tests/test_golden_pinebox.py -q
 ```
 
@@ -536,7 +536,7 @@ def test_full_sheet_cell_is_identical_to_omitting_the_cell(size, binding_edge, s
                                      binding_edge=binding_edge))
 ```
 
-**Run:** `python -m pytest tests/test_layout.py -q -k full_sheet_cell_is_identical` → green.
+**Run:** `python -m pytest tests/test_cell_geometry.py -q -k full_sheet_cell_is_identical` → green.
 24 parametrised cases (4 × 2 × 3), each checking four functions on both parities. This is
 REQ-020's "returns exactly what it returned before" criterion made executable.
 
@@ -572,14 +572,14 @@ than 237 tests.
 cd "C:/Users/CalebBennett/Documents/GitHub/BookBinder"
 
 # 1. The MVP did not move. If either of these is red, STOP.
-python -m pytest tests/test_layout.py -q -k byte_identical_to_the_pin
+python -m pytest tests/test_cell_geometry.py -q -k byte_identical_to_the_pin
 python -m pytest tests/test_golden_pinebox.py -q
 
 # 2. The whole layout suite, no fewer than 46 test functions / 81 cases.
 python -m pytest tests/test_layout.py -q
 
 # 3. The new cell behaviour.
-python -m pytest tests/test_layout.py -q -k "cell or spine_side"
+python -m pytest tests/test_cell_geometry.py -q -k "cell or spine_side"
 
 # 4. Downstream consumers of layout.py.
 python -m pytest tests/test_export.py tests/test_render.py tests/test_preview_fidelity.py -q
@@ -606,11 +606,11 @@ Bash on this machine.
 |---|---|---|---|
 | 1 | `layout.py` defines `Cell` and all four functions accept a keyword-only `cell` defaulting to the full sheet (REQ-020) | `[STRUCTURAL]` | `python -c "import inspect,sys; from deckle.core import layout as L; sys.exit('FAIL: Cell alias missing') if not hasattr(L,'Cell') else None; bad=[n for n in ('document_scale','content_box_size','content_box_rect_pt','actual_margins_pt') if (lambda p: 'cell' not in p or p['cell'].kind is not inspect.Parameter.KEYWORD_ONLY or p['cell'].default is not None)(inspect.signature(getattr(L,n)).parameters)]; sys.exit('FAIL: no keyword-only cell=None on '+repr(bad)) if bad else print('OK')"` |
 | 2 | `_place_page` accepts keyword-only `cell` and `spine_side`, both defaulting to `None` (REQ-025) | `[STRUCTURAL]` | `python -c "import inspect,sys; from deckle.core.layout import _place_page as f; p=inspect.signature(f).parameters; bad=[n for n in ('cell','spine_side') if n not in p or p[n].kind is not inspect.Parameter.KEYWORD_ONLY or p[n].default is not None]; sys.exit('FAIL: _place_page missing keyword-only '+repr(bad)) if bad else print('OK')"` |
-| 3 | **`GutterShiftStrategy`'s placements are byte-identical to the pre-SS-07 tree** (REQ-009) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k byte_identical_to_the_pin` |
-| 4 | A full-sheet cell returns exactly the pre-SS-07 value, over 4 aspect ratios × 2 binding edges × 3 `slack_to` (REQ-020) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k full_sheet_cell_is_identical_to_omitting_the_cell` |
-| 5 | `content_box_rect_pt` with cell `(396, 0, 792, 612)` and a right-hand spine returns `x0 == 396 + gutter_pt` (REQ-020) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k content_box_rect_is_measured_inside_the_cell` |
-| 6 | `document_scale` against a half-width cell is smaller and still single-valued (REQ-023) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k document_scale_against_a_half_width_cell` |
-| 7 | `actual_margins_pt` measures `(inner, outer, top, bottom)` relative to the cell (REQ-020, REQ-025) | `[BEHAVIORAL]` | `python -m pytest tests/test_layout.py -q -k actual_margins_are_measured_against_the_cell` |
+| 3 | **`GutterShiftStrategy`'s placements are byte-identical to the pre-SS-07 tree** (REQ-009) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k byte_identical_to_the_pin` |
+| 4 | A full-sheet cell returns exactly the pre-SS-07 value, over 4 aspect ratios × 2 binding edges × 3 `slack_to` (REQ-020) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k full_sheet_cell_is_identical_to_omitting_the_cell` |
+| 5 | `content_box_rect_pt` with cell `(396, 0, 792, 612)` and a right-hand spine returns `x0 == 396 + gutter_pt` (REQ-020) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k content_box_rect_is_measured_inside_the_cell` |
+| 6 | `document_scale` against a half-width cell is smaller and still single-valued (REQ-023) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k document_scale_against_a_half_width_cell` |
+| 7 | `actual_margins_pt` measures `(inner, outer, top, bottom)` relative to the cell (REQ-020, REQ-025) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k actual_margins_are_measured_against_the_cell` |
 | 8 | An explicit `spine_side` bypasses output-page parity (REQ-025) | `[BEHAVIORAL]` | `python -m pytest tests/test_cell_geometry.py -q -k actual_margins_are_measured_against_the_cell` |
 | 9 | The existing layout suite passes with no fewer than 46 test functions / 81 collected cases (REQ-009) | `[MECHANICAL]` | `python -m pytest tests/test_layout.py -q && test "$(python -m pytest tests/test_layout.py --collect-only -q 2>/dev/null \| grep -c '::')" -ge 81` |
 | 10 | The Pinebox golden fixture passes, skipping cleanly when the fixture is absent (REQ-009) | `[MECHANICAL]` | `python -m pytest tests/test_golden_pinebox.py -q` |

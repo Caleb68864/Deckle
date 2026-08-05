@@ -106,7 +106,7 @@ Add `test_cli_accepts_folio_flags` to `tests/test_cli.py`: call
 assert each attribute lands on the namespace.
 
 ```bash
-python -m pytest tests/test_cli.py -q -k cli_accepts_folio_flags
+python -m pytest tests/test_spec_residue.py -q -k cli_accepts_folio_flags
 ```
 
 Expect a `SystemExit(2)` — argparse rejects the unknown options.

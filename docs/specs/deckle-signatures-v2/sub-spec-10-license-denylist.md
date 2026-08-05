@@ -140,7 +140,7 @@ def test_denylist_names_every_undistributable_tool():
     assert {"pymupdf", "fitz", "pdfimpose", "cpdf"} <= FORBIDDEN_DISTRIBUTIONS
 ```
 
-Run `python -m pytest tests/test_license_audit.py -q -k denylist_names`. Expect failure:
+Run `python -m pytest tests/test_spec_residue.py -q -k denylist_names`. Expect failure:
 `pdfimpose` and `cpdf` are absent.
 
 ### Step 2. Extend the set, green

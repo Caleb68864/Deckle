@@ -159,7 +159,7 @@ Write it against the **current** (`OutputPage`-valued) `sheet.front`, so it is g
 ### Step 2. Run it and confirm it is green on the pre-refactor tree
 
 ```bash
-python -m pytest tests/test_layout.py -q -k placements_are_identical
+python -m pytest tests/test_side_reporting.py -q -k placements_are_identical
 ```
 
 Green here is the point: this is a *characterisation* test. It captures behaviour before the

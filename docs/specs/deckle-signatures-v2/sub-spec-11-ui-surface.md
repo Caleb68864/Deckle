@@ -139,7 +139,7 @@ the original `Project` is unchanged (purity), matching the `replace`-based style
 `set_gutter_pt`.
 
 ```bash
-python -m pytest tests/test_layout_panel_binding.py -q -k binding_mutators_return_new_projects
+python -m pytest tests/test_ui_surface.py -q -k binding_mutators_return_new_projects
 ```
 
 Expect `ImportError`/`AttributeError` — the mutators do not exist.
@@ -376,20 +376,20 @@ command below was executed in its **unescaped** form against the current tree.
 | Criterion | Type | Command |
 |---|---|---|
 | Five Qt-free binding mutators exist (REQ-036) | [STRUCTURAL] | `for s in set_fold_scheme set_sheets_per_signature set_blank_mode set_sewing_stations set_paper_thickness_pt; do grep -qE "^def $s\(" deckle/app/views/layout_panel.py \|\| { echo "FAIL: layout_panel.py is missing the Qt-free mutator $s"; exit 1; }; done` |
-| Each mutator returns a new `Project` via `replace` | [STRUCTURAL] | `python -m pytest tests/test_layout_panel_binding.py -q -k binding_mutators_return_new_projects` |
-| `strategy_for` dispatches on `fold_scheme` (REQ-021, REQ-036) | [MECHANICAL] | `python -m pytest tests/test_layout_panel_binding.py -q -k strategy_for_dispatches_on_fold_scheme` |
-| Folio through the panel emits a plan with signatures (REQ-036) | [MECHANICAL] | `python -m pytest tests/test_layout_panel_binding.py -q -k recompute_plan_under_folio_yields_signatures` |
-| Readout names signatures/sheets/blanks, headlessly (REQ-036) | [MECHANICAL] | `python -m pytest tests/test_layout_panel_binding.py -q -k binding_readout` |
+| Each mutator returns a new `Project` via `replace` | [STRUCTURAL] | `python -m pytest tests/test_ui_surface.py -q -k binding_mutators_return_new_projects` |
+| `strategy_for` dispatches on `fold_scheme` (REQ-021, REQ-036) | [MECHANICAL] | `python -m pytest tests/test_ui_surface.py -q -k strategy_for_dispatches_on_fold_scheme` |
+| Folio through the panel emits a plan with signatures (REQ-036) | [MECHANICAL] | `python -m pytest tests/test_ui_surface.py -q -k recompute_plan_under_folio_yields_signatures` |
+| Readout names signatures/sheets/blanks, headlessly (REQ-036) | [MECHANICAL] | `python -m pytest tests/test_ui_surface.py -q -k binding_readout` |
 | `binding_readout` exposed as a pure module-level function | [STRUCTURAL] | `grep -qE "^def binding_readout\(" deckle/app/views/layout_panel.py \|\| { echo "FAIL: binding_readout is not a module-level pure helper"; exit 1; }` |
 | New unit-aware spinbox registered in `_on_unit_changed` | [STRUCTURAL] | `grep -q "paper_thickness_spinbox" deckle/app/views/layout_panel.py && sed -n '/_on_unit_changed/,/blockSignals(False)/p' deckle/app/views/layout_panel.py \| grep -q "paper_thickness" \|\| { echo "FAIL: paper_thickness_spinbox is not registered in _on_unit_changed's boxes list"; exit 1; }` |
 | Per-cell guides and labels under folio (REQ-037) | [MECHANICAL] | `python -m pytest tests/test_preview_fidelity.py -q -k "folio_side_produces_one_content_box_guide_per_cell or cell_labels_carry_source_page_number_and_signature_index"` |
-| One guide per side under `fold_scheme="none"` (REQ-037) | [MECHANICAL] | `python -m pytest tests/test_preview_fidelity.py -q -k non_folio_side_produces_exactly_one_guide` |
+| One guide per side under `fold_scheme="none"` (REQ-037) | [MECHANICAL] | `python -m pytest tests/test_ui_surface.py -q -k non_folio_side_produces_exactly_one_guide` |
 | Signature selector populates `sheets=` (REQ-038) | [MECHANICAL] | `python -m pytest tests/test_ui_surface.py -q -k signature_selection_carries_the_signature_sheet_indices` |
 | Subset path covers exactly one signature (REQ-035) | [MECHANICAL] | `python -m pytest -q -k "plan_passes_with_explicit_sheets_covers_only_those_sheets or end_to_end_folio_signature_impose_export_fold_and_print"` |
 | No ordering arithmetic in the print UI (REQ-038) | [MECHANICAL] | `! grep -nE "reverse\|sheet_order\|% 2" deckle/app/views/print_dialog.py \|\| (echo "FAIL: ordering logic leaked into the print UI" && exit 1)` |
 | Printer enumeration stays at its one existing call site | [MECHANICAL] | `test "$(grep -c 'QPrinterInfo.availablePrinters()' deckle/app/views/print_dialog.py)" = "1" \|\| (echo "FAIL: printer enumeration call sites changed in print_dialog.py" && exit 1)` |
 | No printer enumeration in the panel or the preview | [MECHANICAL] | `! grep -rnE "QPrinterInfo\|availablePrinters" deckle/app/views/layout_panel.py deckle/app/views/preview_view.py \|\| (echo "FAIL: printer enumeration reached a non-print view -- this hung the app on launch once" && exit 1)` |
-| Selecting a signature enumerates nothing | [MECHANICAL] | `python -m pytest tests/test_print_dialog.py -q -k signature_selection_enumerates_no_printers` |
+| Selecting a signature enumerates nothing | [MECHANICAL] | `python -m pytest tests/test_ui_surface.py -q -k signature_selection_enumerates_no_printers` |
 | Qt stays lazily imported; modules import headlessly | [MECHANICAL] | `! grep -nE "^(import\|from)[[:space:]]+PySide6" deckle/app/views/layout_panel.py deckle/app/views/preview_view.py deckle/app/views/print_dialog.py \|\| (echo "FAIL: module-scope Qt import breaks headless importability" && exit 1)` |
 | Importing all three views loads no Qt | [MECHANICAL] | `python -c "import sys, deckle.app.views.layout_panel, deckle.app.views.preview_view, deckle.app.views.print_dialog; sys.exit(0 if 'PySide6' not in sys.modules else 1)" \|\| (echo "FAIL: importing a view pulled in PySide6" && exit 1)` |
 | Preview supersede/cancel guard intact | [MECHANICAL] | `grep -q "self._worker.cancel.set()" deckle/app/views/preview_view.py && grep -q "worker is not self._worker" deckle/app/views/preview_view.py \|\| { echo "FAIL: PreviewView lost its supersede/cancel guard -- a slow earlier render can repaint over a newer one"; exit 1; }` |

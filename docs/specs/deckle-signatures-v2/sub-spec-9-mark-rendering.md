@@ -395,7 +395,7 @@ against the working tree at authoring time and confirmed to exit 0.
 | Two pure-translation `Do` blocks per folio page | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k pure_translation \|\| (echo "FAIL: not two pure-translation placements per page" && exit 1)` |
 | No scale drift between the two cells | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k two_page_side_shares_identical_scale_no_drift \|\| (echo "FAIL: scale drifted between cells" && exit 1)` |
 | Five marks stroke five segments | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k five_marks \|\| (echo "FAIL: mark stroke count wrong" && exit 1)` |
-| Fold lines dashed, stations solid | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k dashed \|\| (echo "FAIL: dash pattern wrong" && exit 1)` |
+| Fold lines dashed, stations solid | [STRUCTURAL] | `python -m pytest tests/test_spec_residue.py -q -k "fold_lines_are_dashed_and_other_marks_are_not or markless_side_emits_no_dashed_or_solid_dash_operator" \|\| (echo "FAIL: dash pattern wrong" && exit 1)` |
 | Marks are additive, never mandatory | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k side_with_no_marks_exports_no_stroke_ops \|\| (echo "FAIL: a markless side emitted strokes" && exit 1)` |
 | Filler leaf does not corrupt its sibling | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k filler \|\| (echo "FAIL: padded signature corrupted" && exit 1)` |
 | Artifact reopens with the expected page count | [STRUCTURAL] | `python -m pytest tests/test_export_marks.py -q -k reopens \|\| (echo "FAIL: exported PDF does not reopen cleanly" && exit 1)` |

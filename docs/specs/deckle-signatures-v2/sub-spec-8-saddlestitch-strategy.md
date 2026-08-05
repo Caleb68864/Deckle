@@ -482,9 +482,9 @@ absent*, which records the cascade that a bare `grep` caused across seven sub-sp
 | `SaddleStitchStrategy` defined in the imposer | [STRUCTURAL] | `grep -q "class SaddleStitchStrategy" deckle/core/layout.py \|\| (echo "FAIL: SaddleStitchStrategy missing" && exit 1)` |
 | `impose` signature is character-identical to the seam | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k protocol_signature_unchanged \|\| (echo "FAIL: LayoutStrategy.impose signature moved" && exit 1)` |
 | 266 pages / 4 per signature → 17 sig, 67 sheets, 2 blanks | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k 266 \|\| (echo "FAIL: 266-page arithmetic wrong" && exit 1)` |
-| Exactly one document-wide scale | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k one_scale \|\| (echo "FAIL: more than one document scale" && exit 1)` |
+| Exactly one document-wide scale | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k one_distinct_scale \|\| (echo "FAIL: more than one document scale" && exit 1)` |
 | Padding runs exactly one pass, one warning | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k padding \|\| (echo "FAIL: padding pass or warning wrong" && exit 1)` |
-| `rotate_deg == 0` for every folio leaf | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k never_rotates \|\| (echo "FAIL: folio path rotated a leaf" && exit 1)` |
+| `rotate_deg == 0` for every folio leaf | [STRUCTURAL] | `python -m pytest tests/test_spec_residue.py -q -k folio_never_rotates_a_leaf \|\| (echo "FAIL: folio path rotated a leaf" && exit 1)` |
 | Rotation machinery never entered the imposer | [MECHANICAL] | `! grep -n "_rotation_matrix" deckle/core/layout.py \|\| (echo "FAIL: rotation machinery reached the imposer" && exit 1)` |
 | Signature sheet indices contiguous and covering | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k contiguous \|\| (echo "FAIL: signatures not contiguous over the plan" && exit 1)` |
 | Spine derived from cell position on both sides | [STRUCTURAL] | `python -m pytest tests/test_layout_saddle.py -q -k spine \|\| (echo "FAIL: spine side wrong under folio" && exit 1)` |

@@ -531,7 +531,7 @@ python -m pytest tests/test_signatures.py -q
 
 # 2. The two independence checks, named individually.
 python -m pytest tests/test_signatures.py -q -k fold_reading_order_does_not_call_saddle_order
-python -m pytest tests/test_signatures.py -q -k fold_reading_order_works_with_saddle_order_disabled
+python -m pytest tests/test_spec_residue.py -q -k fold_reading_order_works_with_saddle_order_disabled
 
 # 3. The pinned vault value.
 python -m pytest tests/test_signatures.py -q -k saddle_order_pinned_against_vault_note_n8
@@ -565,7 +565,7 @@ more. Run from the repository root in Git Bash. `ruff` is invoked as `python -m 
 | 6 | `saddle_order` raises `ValueError` for non-positive-multiples of 4 | `[BEHAVIORAL]` | `python -m pytest tests/test_signatures.py -q -k "saddle_order_raises_on_non_multiple_of_4 or saddle_order_raises_on_non_positive"` |
 | 7 | **`fold_reading_order` contains no static reference to `saddle_order`** (REQ-018) | `[MECHANICAL]` | `python -m pytest tests/test_signatures.py -q -k fold_reading_order_does_not_call_saddle_order` |
 | 8 | Same check, standalone, without pytest — for a reviewer with only a shell | `[MECHANICAL]` | `python -c "import ast,sys; src=open('deckle/core/signatures.py',encoding='utf-8').read(); fns=[n for n in ast.walk(ast.parse(src)) if isinstance(n,ast.FunctionDef) and n.name=='fold_reading_order']; sys.exit('FAIL: fold_reading_order not found') if not fns else None; bad=[n for f in fns for n in ast.walk(f) if (isinstance(n,ast.Name) and n.id=='saddle_order') or (isinstance(n,ast.Attribute) and n.attr=='saddle_order')]; sys.exit('FAIL: fold_reading_order references saddle_order') if bad else print('OK')"` |
-| 9 | **`fold_reading_order` does not reuse `saddle_order` at runtime either** (REQ-018) | `[MECHANICAL]` | `python -m pytest tests/test_signatures.py -q -k fold_reading_order_works_with_saddle_order_disabled` |
+| 9 | **`fold_reading_order` does not reuse `saddle_order` at runtime either** (REQ-018) | `[MECHANICAL]` | `python -m pytest tests/test_spec_residue.py -q -k fold_reading_order_works_with_saddle_order_disabled` |
 | 10 | No I/O and no Qt in `signatures.py` (REQ-040) | `[MECHANICAL]` | `! grep -nE "^import (os\|io)$\|open\(\|requests\|urllib\|socket\|PySide6" deckle/core/signatures.py \|\| (echo "FAIL: I/O or Qt in signatures.py" && exit 1)` |
 | 11 | No Qt import anywhere in `deckle.core` — anchored to import statements, because the unanchored form matches the "must not import PySide6" docstrings at `models.py:5` and `__init__.py:3` and fails on a clean tree | `[MECHANICAL]` | `! grep -rnE "^[[:space:]]*(import\|from)[[:space:]]+(PySide6\|PyQt)" deckle/core/ \|\| (echo "FAIL: Qt imported in deckle.core" && exit 1)` |
 | 12 | `signatures.py` does not import `layout.py` — SS-08's `layout.py` imports this module, so the reverse edge is a cycle | `[MECHANICAL]` | `! grep -nE "^[[:space:]]*(import\|from)[[:space:]]+deckle\.core\.layout" deckle/core/signatures.py \|\| (echo "FAIL: signatures.py imports layout.py" && exit 1)` |

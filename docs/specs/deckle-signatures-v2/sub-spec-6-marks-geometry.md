@@ -472,7 +472,7 @@ Bash on this machine.
 | # | Criterion | Type | Command |
 |---|---|---|---|
 | 1 | `marks.py` exposes `sewing_stations`, `signature_order_mark`, `fold_line` and `SEWING_MARGIN_PT == 36.0` | `[STRUCTURAL]` | `python -c "import sys; from deckle.core import marks as m; missing=[n for n in ('sewing_stations','signature_order_mark','fold_line') if not callable(getattr(m,n,None))]; sys.exit('FAIL: missing '+repr(missing)) if missing else None; sys.exit('FAIL: SEWING_MARGIN_PT is not 36.0') if getattr(m,'SEWING_MARGIN_PT',None)!=36.0 else print('OK')"` |
-| 2 | Each function returns `Mark` values only | `[STRUCTURAL]` | `python -m pytest tests/test_marks.py -q -k every_public_function_returns_only_Mark_values` |
+| 2 | Each function returns `Mark` values only | `[STRUCTURAL]` | `python -m pytest tests/test_spec_residue.py -q -k every_public_function_returns_only_Mark_values` |
 | 3 | 3 stations, kind `sewing_station`, evenly spaced, first at the tail inset and last at the head inset (REQ-028) | `[BEHAVIORAL]` | `python -m pytest tests/test_marks.py -q -k "sewing_stations_count_and_kind or sewing_stations_evenly_spaced or sewing_stations_first_and_last_margins"` |
 | 4 | Every station's x-interval contains `fold_x` (REQ-028) | `[BEHAVIORAL]` | `python -m pytest tests/test_marks.py -q -k sewing_stations_straddle_fold` |
 | 5 | `count=0` returns `()`; `count=1` returns one centred station (REQ-028) | `[BEHAVIORAL]` | `python -m pytest tests/test_marks.py -q -k "sewing_stations_zero_count_returns_empty or sewing_stations_count_one_is_centred"` |
