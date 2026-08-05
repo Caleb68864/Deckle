@@ -234,3 +234,62 @@ def test_clipping_warnings_are_surfaced_on_the_badge():
     assert view.warning_label.text() != "", (
         "a clipped sheet produced no visible warning"
     )
+
+
+# -- jumping to the ends --------------------------------------------------
+
+
+def test_first_and_last_buttons_jump_to_the_ends():
+    """Stepping a spinbox to the end of a 67-sheet book is 66 clicks, and
+    the ends are what a binder checks: the cover and the final leaf."""
+    view = _view(n_pages=12)
+    last_index = len(view.plan.sheets) - 1
+    assert last_index > 0, "the fixture must have several sheets"
+
+    view.go_to_last_sheet()
+    assert view.sheet_index == last_index
+
+    view.go_to_first_sheet()
+    assert view.sheet_index == 0
+
+
+def test_each_end_button_disables_at_its_own_end():
+    """A control that responds to a click by doing nothing is
+    indistinguishable from one that is broken."""
+    view = _view(n_pages=12)
+
+    assert view.first_button.isEnabled() is False, "already at the first sheet"
+    assert view.last_button.isEnabled() is True
+
+    view.go_to_last_sheet()
+    assert view.first_button.isEnabled() is True
+    assert view.last_button.isEnabled() is False
+
+
+def test_the_readout_says_how_many_sheets_there_are():
+    view = _view(n_pages=12)
+
+    assert view.sheet_count_label.text() == f"of {len(view.plan.sheets)}"
+
+
+def test_the_ends_follow_a_changed_plan():
+    """Re-imposing changes the sheet count; the buttons and readout must
+    not go on describing the old document."""
+    view = _view(n_pages=4)
+    view.on_layout_changed(_plan(n_pages=24), _settings())
+
+    assert view.sheet_count_label.text() == f"of {len(view.plan.sheets)}"
+    view.go_to_last_sheet()
+    assert view.sheet_index == len(view.plan.sheets) - 1
+
+
+def test_an_empty_plan_lands_on_zero_rather_than_minus_one():
+    from deckle.core.layout import GutterShiftStrategy
+
+    empty = GutterShiftStrategy().impose([], _settings())
+    view = _view(plan=empty)
+
+    view.go_to_last_sheet()
+
+    assert view.sheet_index == 0
+    assert "no sheets" in view.sheet_count_label.text()

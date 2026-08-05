@@ -560,9 +560,24 @@ class PreviewView:
         self.sheet_spinbox.setMinimum(0)
         self.sheet_spinbox.setMaximum(max(0, len(plan.sheets) - 1))
         self.sheet_spinbox.setValue(self.sheet_index)
+
+        # Jumping to the ends is what a binder actually does: the first and
+        # last sheets are the ones that carry the cover and the final leaf,
+        # and they are the ones worth checking before committing paper.
+        # Stepping there through a spinbox on a 67-sheet book is 66 clicks.
+        self.first_button = QPushButton("|<", self.widget)
+        self.first_button.setToolTip("Go to the first sheet")
+        self.last_button = QPushButton(">|", self.widget)
+        self.last_button.setToolTip("Go to the last sheet")
+
         toolbar.addWidget(self.front_button)
         toolbar.addWidget(self.back_button)
+        toolbar.addWidget(self.first_button)
         toolbar.addWidget(self.sheet_spinbox)
+        toolbar.addWidget(self.last_button)
+        self.sheet_count_label = QLabel("", self.widget)
+        self.sheet_count_label.setToolTip("Which sheet you are looking at, of how many")
+        toolbar.addWidget(self.sheet_count_label)
         outer.addLayout(toolbar)
 
         # Zoom controls. `self._zoom is None` means fit-to-window, which is
@@ -617,6 +632,9 @@ class PreviewView:
         self.back_button.clicked.connect(lambda: self._set_side("back"))
         self.both_button.toggled.connect(self._set_spread)
         self.sheet_spinbox.valueChanged.connect(self._set_sheet_index)
+        self.first_button.clicked.connect(self.go_to_first_sheet)
+        self.last_button.clicked.connect(self.go_to_last_sheet)
+        self._refresh_sheet_counter()
 
         self._QThread = QThread
         self._thread = None
@@ -640,8 +658,39 @@ class PreviewView:
         self.back_button.setEnabled(not self._spread)
         self.refresh()
 
+    def go_to_first_sheet(self) -> None:
+        """Show the first sheet.
+
+        :returns: nothing.
+        """
+        self.sheet_spinbox.setValue(0)
+
+    def go_to_last_sheet(self) -> None:
+        """Show the last sheet.
+
+        :returns: nothing. Clamped through the spinbox, so an empty plan
+            lands on 0 rather than -1.
+        """
+        self.sheet_spinbox.setValue(max(0, len(self.plan.sheets) - 1))
+
+    def _refresh_sheet_counter(self) -> None:
+        """Keep the "sheet N of M" readout and the end buttons honest.
+
+        Both buttons disable at their own end rather than being clickable
+        no-ops -- a control that responds to a click by doing nothing is
+        indistinguishable from one that is broken.
+        """
+        total = len(self.plan.sheets)
+        if total == 0:
+            self.sheet_count_label.setText("no sheets")
+        else:
+            self.sheet_count_label.setText(f"of {total}")
+        self.first_button.setEnabled(total > 0 and self.sheet_index > 0)
+        self.last_button.setEnabled(total > 0 and self.sheet_index < total - 1)
+
     def _set_sheet_index(self, sheet_index: int) -> None:
         self.sheet_index = sheet_index
+        self._refresh_sheet_counter()
         self.refresh()
 
     def set_layout_settings(self, settings) -> None:
@@ -666,6 +715,7 @@ class PreviewView:
         if settings is not None:
             self.layout_settings = settings
         self.sheet_spinbox.setMaximum(max(0, len(plan.sheets) - 1))
+        self._refresh_sheet_counter()
         self.refresh()
 
     # -- rendering -----------------------------------------------------------
