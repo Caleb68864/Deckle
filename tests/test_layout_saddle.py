@@ -247,9 +247,13 @@ def test_both_leaves_sit_the_same_distance_from_the_fold(gutter_pt):
 
     for side in (plan.sheets[0].front, plan.sheets[0].back):
         left_op, right_op = side.pages
-        left_ref, right_ref = left_op.source_ref, right_op.source_ref
 
-        left_edge = left_op.placement.tx + left_ref.width_pt * left_op.placement.scale_x
+        # The left leaf's RIGHT edge and the right leaf's LEFT edge are the
+        # two that face the fold; those are the ones that must match.
+        left_edge = (
+            left_op.placement.tx
+            + left_op.source_ref.width_pt * left_op.placement.scale_x
+        )
         right_edge = right_op.placement.tx
 
         gap_left = fold_x - left_edge
