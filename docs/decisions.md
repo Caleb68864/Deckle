@@ -276,3 +276,10 @@
 - Surfaces: Anything edited by matching a name that appears both as a jump target and as a definition -- labels, anchors, headings. The first match is almost never the one you mean.
 - Watch: Nothing tested run.bat, so 572 tests stayed green while the launcher was unusable. It now has structural tests: labels unique, every subcommand dispatching to its OWN label, every branch terminating, and a bare invocation reaching the GUI without reaching PyInstaller. Verified by mutation. One of those new tests then hit the identical goto-versus-label confusion in its own splitting logic.
 - Commit: (this commit)
+
+## 2026-08-05 - The tabs ARE the mode; the fold-scheme dropdown is gone
+- Symptom: "When I click the Signatures tab nothing happens." The tab was disabled under fold_scheme=none, and a disabled tab swallows the click silently -- the explanation was in a tooltip nobody hovers. Enabling it but greying its contents was also wrong: two controls (dropdown and tab) for one decision, so the tab could look active while the dropdown said otherwise.
+- Fix: Deleted the fold-scheme dropdown. Selecting a tab sets the scheme. Tab 1 "Single pages", tab 2 "Signatures" -- one decision, one control, and no reachable state where you are imposing single pages with a signature control in front of you.
+- Surfaces: Gutter, margins, slack, binding edge and landscape policy moved ABOVE the tabs, because both ways of making a book need them -- a folded signature has a gutter exactly as a single page does. Only genuinely mode-specific settings live in a tab, which is why the Single pages tab holds a description rather than controls: that mode has no extra settings, and saying so is more honest than inventing some.
+- Watch: Tab selection is guarded against re-entry. setCurrentIndex fires currentChanged, so syncing the tab to a reopened project would write the scheme straight back and push a redundant undo entry. There is a test asserting a no-op tab selection leaves project identity untouched.
+- Commit: (this commit)

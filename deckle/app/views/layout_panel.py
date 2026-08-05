@@ -35,6 +35,14 @@ FOLD_SCHEMES: tuple[str, ...] = ("none", "folio")
 
 BLANK_MODES: tuple[str, ...] = ("end", "balanced")
 
+SCHEDULE_TOOLTIP = (
+    "Write the binding schedule to a text file: which sheets gather into "
+    "each signature, which way round they nest, where the blanks fall, and "
+    "where to pierce for sewing.\n\n"
+    "Print it and keep it at the bench -- the imposed PDF says nothing "
+    "about what to do with the paper."
+)
+
 # -- pure layout-settings mutators, each routed through AppState.mutate ----
 
 
@@ -399,34 +407,48 @@ class LayoutPanel:
         self.widget = QWidget(parent)
         outer = QVBoxLayout(self.widget)
 
-        # Fold scheme sits ABOVE the tabs, not inside one. It is a mode
-        # selector, not a setting: it decides which tab's controls are
-        # live, so burying it in a tab would mean switching to the tab you
-        # cannot use in order to enable it.
-        mode_form = QFormLayout()
-        self.fold_scheme_combo = QComboBox(self.widget)
-        self.fold_scheme_combo.addItems(list(FOLD_SCHEMES))
-        self.fold_scheme_combo.setCurrentText(state.project.layout.fold_scheme)
-        self.fold_scheme_combo.setToolTip(
-            "'none' shifts a gutter and prints one page per side -- the "
-            "proven path. 'folio' imposes two-up saddle-stitch signatures "
-            "and is experimental; see the README before trusting it with "
-            "paper."
-        )
-        mode_form.addRow("Fold scheme:", self.fold_scheme_combo)
-        outer.addLayout(mode_form)
-
-        self.tabs = QTabWidget(self.widget)
-        outer.addWidget(self.tabs)
-
-        page_tab = QWidget(self.widget)
-        form = QFormLayout(page_tab)
+        # Page setup sits ABOVE the tabs because BOTH ways of making a book
+        # need it: a folded signature has a gutter and margins exactly as a
+        # single page does. Only what differs between the two goes in a tab.
+        page_setup = QWidget(self.widget)
+        form = QFormLayout(page_setup)
         # Numeric fields hold values like "0.750". Letting them stretch to
         # the pane width pushes the form wider than the column and grows a
         # horizontal scrollbar across the whole settings panel -- the one
         # kind of scrolling a settings form should never need.
         form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
-        self.tabs.addTab(page_tab, "Page && margins")
+        outer.addWidget(page_setup)
+
+        # The tabs ARE the mode. Selecting one sets ``fold_scheme``, so the
+        # two ways of making a book are mutually exclusive by construction:
+        # there is no state in which you are imposing single pages while a
+        # signature control is reachable, and no separate dropdown that can
+        # disagree with the tab you are looking at.
+        #
+        # The earlier design had a fold-scheme dropdown AND tabs, with the
+        # unusable tab disabled. That was worse twice over: a disabled tab
+        # silently swallows the click, and having two controls for one
+        # decision meant the tab could look active while the dropdown said
+        # otherwise.
+        self.tabs = QTabWidget(self.widget)
+        outer.addWidget(self.tabs)
+
+        single_tab = QWidget(self.widget)
+        single_form = QFormLayout(single_tab)
+        single_form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
+        self.tabs.addTab(single_tab, "Single pages")
+        self._single_tab_index = self.tabs.indexOf(single_tab)
+
+        self.single_hint_label = QLabel(
+            "One page per sheet side, with the gutter alternating so it "
+            "always falls on the bound edge.\n\n"
+            "Print all fronts, reload the stack, print all backs, then bind "
+            "the sheets however you like -- there is nothing to fold.\n\n"
+            "Everything this mode needs is in Page setup above.",
+            single_tab,
+        )
+        self.single_hint_label.setWordWrap(True)
+        single_form.addRow(self.single_hint_label)
 
         signature_tab = QWidget(self.widget)
         signature_form = QFormLayout(signature_tab)
@@ -645,16 +667,15 @@ class LayoutPanel:
         # gather, so the button would be permanently inert next to the
         # export actions.
         self.save_schedule_button = QPushButton("Save schedule...", signature_tab)
-        self.save_schedule_button.setToolTip(
-            "Write the binding schedule to a text file: which sheets gather "
-            "into each signature, which way round they nest, where the "
-            "blanks fall, and where to pierce for sewing.\n\n"
-            "Print it and keep it at the bench -- the imposed PDF says "
-            "nothing about what to do with the paper."
-        )
+        self.save_schedule_button.setToolTip(SCHEDULE_TOOLTIP)
         signature_form.addRow("", self.save_schedule_button)
         self.save_schedule_button.clicked.connect(self._on_save_schedule_clicked)
 
+        self.tabs.setCurrentIndex(
+            self._signature_tab_index
+            if state.project.layout.fold_scheme == "folio"
+            else self._single_tab_index
+        )
         self._sync_signature_tab()
 
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
@@ -668,7 +689,7 @@ class LayoutPanel:
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
-        self.fold_scheme_combo.currentTextChanged.connect(self._on_fold_scheme_changed)
+        self.tabs.currentChanged.connect(self._on_mode_tab_changed)
         self.sheets_per_signature_spinbox.valueChanged.connect(
             self._on_sheets_per_signature_changed
         )
@@ -732,37 +753,33 @@ class LayoutPanel:
         self.schedule_saved.emit(f"Saved binding schedule to {path}")
 
     def _sync_signature_tab(self) -> None:
-        """Enable the Signatures tab only when the fold scheme uses it.
+        """Keep the Signatures tab consistent with the current mode.
 
-        Under ``fold_scheme="none"`` the imposer never reads sheets per
-        signature, blank mode, sewing stations or paper thickness. Leaving
-        them editable invites the user to set a value, watch the preview not
-        change, and conclude the app is broken -- so the tab is disabled and
-        says which setting would turn it on.
+        The tab IS the mode now, so there is nothing to grey out: a control
+        on the Signatures tab is only reachable when signatures are what you
+        are making. All this does is keep the selected tab honest if the
+        scheme changed from elsewhere (reopening a project, undo), and gate
+        the schedule button on having a document to schedule.
         """
         folio = self.state.project.layout.fold_scheme == "folio"
         loaded = getattr(self, "_document_loaded", bool(self.state.project.pages))
-        # A schedule for nothing is an empty schedule, so the button
-        # needs both a fold scheme that gathers AND something to gather.
+
+        wanted = self._signature_tab_index if folio else self._single_tab_index
+        if self.tabs.currentIndex() != wanted:
+            # Guarded: setCurrentIndex fires currentChanged, which would
+            # write the scheme straight back and push a redundant undo entry.
+            self._syncing_mode = True
+            try:
+                self.tabs.setCurrentIndex(wanted)
+            finally:
+                self._syncing_mode = False
+
+        # A schedule for nothing is an empty schedule, so the button needs
+        # both a fold scheme that gathers AND something to gather.
         self.save_schedule_button.setEnabled(folio and loaded)
-        self.tabs.setTabEnabled(self._signature_tab_index, folio)
-        if folio:
-            self.signature_hint_label.setText(
-                "Saddle-stitch signatures. Gutter and margins still come from "
-                "the Page & margins tab -- these settings only control how "
-                "sheets are folded and gathered.\n\n"
-                "Experimental: fold a test signature on scrap and read it "
-                "before committing a book."
-            )
-            self.tabs.setTabToolTip(self._signature_tab_index, "")
-        else:
-            self.signature_hint_label.setText(
-                'These settings apply only when Fold scheme is "folio".'
-            )
-            self.tabs.setTabToolTip(
-                self._signature_tab_index,
-                'Set Fold scheme to "folio" to use signature settings.',
-            )
+        self.save_schedule_button.setToolTip(
+            SCHEDULE_TOOLTIP if loaded else "Import a document to build a schedule."
+        )
 
     def _on_gutter_changed(self, value: float) -> None:
         points = to_points(value, self._unit)
@@ -857,6 +874,24 @@ class LayoutPanel:
     def _on_landscape_policy_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_landscape_policy(project, value))
         self.layout_changed.emit(plan)
+
+    def _on_mode_tab_changed(self, index: int) -> None:
+        """Switching tab switches how the book is made.
+
+        :param index: the newly selected tab.
+        :returns: nothing.
+
+        The tab IS the mode, so this is the only place ``fold_scheme`` is
+        set from the UI. Guarded against re-entry: selecting the tab during
+        construction, or from :meth:`refresh`, must not write the value back
+        and push a redundant undo entry.
+        """
+        if getattr(self, "_syncing_mode", False):
+            return
+        scheme = "folio" if index == self._signature_tab_index else "none"
+        if scheme == self.state.project.layout.fold_scheme:
+            return
+        self._on_fold_scheme_changed(scheme)
 
     def _on_fold_scheme_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_fold_scheme(project, value))

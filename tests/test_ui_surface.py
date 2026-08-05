@@ -519,44 +519,7 @@ def _panel(**layout_overrides):
     return layout_panel.LayoutPanel(state)
 
 
-def test_signature_tab_is_disabled_until_the_fold_scheme_uses_it():
-    """Under fold_scheme="none" the imposer reads none of these settings.
 
-    Leaving them editable invites the user to change a value, watch the
-    preview not move, and conclude the app is broken.
-    """
-    panel = _panel(fold_scheme="none")
-
-    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is False
-    assert "folio" in panel.signature_hint_label.text()
-    assert "folio" in panel.tabs.tabToolTip(panel._signature_tab_index)
-
-
-def test_signature_tab_enables_when_the_fold_scheme_becomes_folio():
-    panel = _panel(fold_scheme="none")
-    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is False
-
-    panel.fold_scheme_combo.setCurrentText("folio")
-
-    assert panel.tabs.isTabEnabled(panel._signature_tab_index) is True
-    text = panel.signature_hint_label.text()
-    # Says the gutter still comes from the other tab -- folio uses both.
-    assert "margins" in text.lower()
-    # And carries the experimental caveat where it will actually be read.
-    assert "xperimental" in text
-
-
-def test_the_fold_scheme_selector_is_not_inside_the_tabs():
-    """It is a mode selector, not a setting.
-
-    If it lived on the Signatures tab, enabling signatures would require
-    reaching the tab that is disabled until signatures are enabled.
-    """
-    panel = _panel(fold_scheme="none")
-
-    for index in range(panel.tabs.count()):
-        page = panel.tabs.widget(index)
-        assert panel.fold_scheme_combo.parent() is not page
 
 
 def test_page_and_margins_tab_stays_enabled_under_folio():
@@ -684,19 +647,6 @@ def test_the_schedule_button_needs_both_folio_and_a_document(qapp):
     assert panel.save_schedule_button.isEnabled() is True
 
 
-def test_switching_to_folio_enables_the_schedule_button(qapp):
-    from deckle.app.state import AppState
-
-    panel = layout_panel.LayoutPanel(
-        AppState(_project(8, paper=LETTER_LANDSCAPE, gutter_pt=0.0, fold_scheme="none"))
-    )
-    panel.set_document_loaded(True)
-    assert panel.save_schedule_button.isEnabled() is False
-
-    panel.fold_scheme_combo.setCurrentText("folio")
-
-    assert panel.save_schedule_button.isEnabled() is True
-
 
 def test_the_schedule_button_explains_itself(qapp):
     from deckle.app.state import AppState
@@ -719,3 +669,82 @@ def test_the_panel_reports_schedule_outcomes_through_a_signal(qapp):
     panel.schedule_saved.emit("Saved binding schedule to book-schedule.txt")
 
     assert seen == ["Saved binding schedule to book-schedule.txt"]
+
+def test_the_tabs_are_the_mode_not_a_view_of_it(qapp):
+    """Selecting a tab chooses how the book is made.
+
+    There is no separate fold-scheme dropdown: one decision, one control.
+    The earlier design had both, with the unusable tab disabled -- which
+    meant a click on Signatures did nothing at all, and the dropdown could
+    disagree with the tab you were looking at.
+    """
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8, fold_scheme="none"))
+    panel = layout_panel.LayoutPanel(state)
+
+    assert not hasattr(panel, "fold_scheme_combo"), (
+        "the dropdown is gone; the tab is the mode"
+    )
+    assert [panel.tabs.tabText(i) for i in range(panel.tabs.count())] == [
+        "Single pages",
+        "Signatures",
+    ]
+
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+    assert state.project.layout.fold_scheme == "folio"
+
+    panel.tabs.setCurrentIndex(panel._single_tab_index)
+    assert state.project.layout.fold_scheme == "none"
+
+
+def test_both_tabs_are_always_reachable(qapp):
+    """The reported bug: clicking Signatures did nothing, because the tab
+    was disabled. A tab you cannot open cannot explain itself."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
+
+    for index in range(panel.tabs.count()):
+        assert panel.tabs.isTabEnabled(index), (
+            f"tab {panel.tabs.tabText(index)!r} is disabled and swallows clicks"
+        )
+
+
+def test_reopening_a_folio_project_lands_on_the_signatures_tab(qapp):
+    """The selected tab must reflect the saved scheme, or the panel would
+    claim to be in a mode the document is not in."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="folio")))
+
+    assert panel.tabs.currentIndex() == panel._signature_tab_index
+
+
+def test_selecting_the_current_mode_again_changes_nothing(qapp):
+    """Re-entrancy guard: syncing the tab must not write the scheme back
+    and push a redundant undo entry."""
+    from deckle.app.state import AppState
+
+    state = AppState(_project(8, fold_scheme="folio"))
+    panel = layout_panel.LayoutPanel(state)
+    before = state.project
+
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+
+    assert state.project is before, "a no-op tab selection mutated the project"
+
+
+def test_page_setup_is_shared_by_both_modes(qapp):
+    """Gutter and margins live above the tabs because a folded signature
+    needs them exactly as a single page does. Putting them inside one tab
+    would mean reaching into the other mode to set a margin."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="folio")))
+
+    for widget in (panel.gutter_spinbox, panel.slack_combo, panel.binding_edge_combo):
+        for index in range(panel.tabs.count()):
+            assert widget.parent() is not panel.tabs.widget(index), (
+                "a shared page-setup control is trapped inside a mode tab"
+            )
