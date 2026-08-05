@@ -11,6 +11,7 @@ rem    run.bat test -k layout  run a subset
 rem    run.bat deps            install/refresh dependencies
 rem    run.bat doctor          check the environment without launching
 rem    run.bat docs            build the HTML API reference
+rem    run.bat package         build the .exe bundle into dist\deckle
 rem ===================================================================
 
 rem Always work from the repo root, so a double-click resolves imports.
@@ -33,8 +34,36 @@ set "CMD=%~1"
 if /i "%CMD%"=="cli"    goto :cli
 if /i "%CMD%"=="test"   goto :test
 if /i "%CMD%"=="deps"   goto :deps
-if /i "%CMD%"=="doctor" goto :doctor
+if /i "%CMD%"=="doctor" goto :package
+echo [deckle] building executables...
+rem Build from .buildenv, NOT from the developer's interpreter. The first
+rem build ran against a global environment and produced a 1.6 GB bundle
+rem containing torch, paddle, cv2 -- and pymupdf, which is AGPL and would
+rem have made the artifact undistributable under MIT. PyInstaller bundles
+rem what it can reach, not what you declared, so the build environment is
+rem part of the licence surface.
+set "BUILDPY=.buildenv\Scripts\python.exe"
+if not exist "%BUILDPY%" (
+    echo [deckle] no clean build environment found. Creating .buildenv...
+    "%PY%" -m venv .buildenv
+    if errorlevel 1 goto :fail
+    "%BUILDPY%" -m pip install --upgrade pip
+    "%BUILDPY%" -m pip install -e .[package]
+    if errorlevel 1 goto :fail
+)
+"%BUILDPY%" -m PyInstaller --noconfirm --distpath dist --workpath build\pyinstaller packaging\deckle.spec
+if errorlevel 1 goto :fail
+echo [deckle] auditing the bundle...
+rem Licence and size gate. A dependency-level audit cannot see what the
+rem packager actually copied, so the artifact is checked directly.
+"%PY%" -m pytest tests	est_packaging_audit.py -q
+if errorlevel 1 goto :fail
+echo [deckle] wrote dist\deckle\deckle.exe and dist\deckle\deckle-cli.exe
+goto :done
+
+:doctor
 if /i "%CMD%"=="docs"   goto :docs
+if /i "%CMD%"=="package" goto :package
 if /i "%CMD%"=="-h"     goto :usage
 if /i "%CMD%"=="--help" goto :usage
 if /i "%CMD%"=="help"   goto :usage

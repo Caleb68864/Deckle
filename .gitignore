@@ -46,3 +46,6 @@ graphify-out/
 
 # Factory/audit tool exhaust -- git history already holds these
 *.audit-backup-*
+
+# Clean build environment for packaging -- recreate with run.bat package
+.buildenv/

@@ -30,6 +30,13 @@ dev = [
 docs = [
     "sphinx>=7",
 ]
+# Packaging tooling only. PyInstaller is GPLv2-or-later WITH an explicit
+# exception permitting distribution of programs under any licence, which
+# is what makes bundling this MIT app lawful. Build-time only; it never
+# enters the runtime closure test_license_audit.py walks.
+package = [
+    "pyinstaller>=6",
+]
 
 [tool.setuptools.packages.find]
 include = ["deckle*"]
