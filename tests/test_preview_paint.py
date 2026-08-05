@@ -293,3 +293,70 @@ def test_an_empty_plan_lands_on_zero_rather_than_minus_one():
 
     assert view.sheet_index == 0
     assert "no sheets" in view.sheet_count_label.text()
+
+
+# -- jumping to a specific sheet and face ---------------------------------
+
+
+def test_go_to_sheet_moves_the_spinbox_as_well_as_the_view():
+    """The spinbox is the readout for where the view is. Leaving it behind
+    is what made a jump look like it had not happened."""
+    view = _view(n_pages=12)
+
+    view.go_to_sheet(2)
+
+    assert view.sheet_index == 2
+    assert view.sheet_spinbox.value() == 2
+
+
+def test_go_to_sheet_can_select_the_face():
+    """Pages 1 and 2 are the front and back of the same leaf, so a jump
+    that only sets the sheet leaves half of all clicks showing the page
+    the user was already looking at."""
+    view = _view(n_pages=8)
+
+    view.go_to_sheet(1, "back")
+
+    assert view.sheet_index == 1
+    assert view.side == "back"
+
+
+def test_go_to_sheet_leaves_the_face_alone_when_not_asked():
+    view = _view(n_pages=8)
+    view._set_side("back")
+
+    view.go_to_sheet(1)
+
+    assert view.side == "back"
+
+
+def test_go_to_sheet_does_not_break_out_of_spread_mode():
+    """Spread already shows both faces; overriding the side would drop the
+    user out of the mode they chose."""
+    view = _view(n_pages=8)
+    view._set_spread(True)
+
+    view.go_to_sheet(1, "back")
+
+    assert view._spread is True
+
+
+def test_go_to_sheet_clamps_rather_than_landing_outside_the_document():
+    view = _view(n_pages=4)
+    last = len(view.plan.sheets) - 1
+
+    view.go_to_sheet(9999)
+    assert view.sheet_index == last
+
+    view.go_to_sheet(-5)
+    assert view.sheet_index == 0
+
+
+def test_go_to_sheet_on_an_empty_plan_stays_at_zero():
+    from deckle.core.layout import GutterShiftStrategy
+
+    view = _view(plan=GutterShiftStrategy().impose([], _settings()))
+
+    view.go_to_sheet(3)
+
+    assert view.sheet_index == 0

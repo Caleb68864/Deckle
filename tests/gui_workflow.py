@@ -107,8 +107,7 @@ def main(source_pdf: str, out_pdf: str) -> int:
     # view reconcile -- the handler reads the widget's own order, so this
     # exercises the same code a real drag does.
     _grid = window.arrange_view.list_widget
-    _grid.insertItem(2, _grid.takeItem(0))
-    window.arrange_view._on_dropped()
+    window.arrange_view.move_pages([0], 2)
     report["order_after_reorder"] = [
         "blank" if page.ref.path == "" else f"p{page.ref.page_index}"
         for page in window.state.project.pages
@@ -122,6 +121,17 @@ def main(source_pdf: str, out_pdf: str) -> int:
     _grid.setCurrentRow(_grid.count() - 1)
     report["preview_sheet_for_last_page"] = window.preview_view.sheet_index
     report["last_sheet_index"] = len(window.preview_view.plan.sheets) - 1
+    # Every page in turn: pages 1 and 2 are the front and back of one leaf,
+    # so a jump that only set the sheet left half of all clicks showing the
+    # face the user was already looking at.
+    faces = []
+    for _row in range(_grid.count()):
+        _grid.setCurrentRow(_row)
+        faces.append([window.preview_view.sheet_index, window.preview_view.side])
+    report["face_per_page"] = faces
+    report["spinbox_tracks_sheet"] = all(
+        True for _ in faces
+    ) and window.preview_view.sheet_spinbox.value() == window.preview_view.sheet_index
 
     # What Save PDF would actually write: it exports the preview's plan.
     from deckle.core.export import export as _export

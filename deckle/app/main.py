@@ -21,7 +21,7 @@ from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.print_dialog import PrintDialog
 from deckle.core.export import export
-from deckle.core.locate import sheet_index_for_page
+from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.project_io import (
@@ -511,11 +511,11 @@ class MainWindow:
         :returns: nothing. A page with no sheet of its own leaves the
             preview where it is.
         """
-        sheet_index = sheet_index_for_page(
+        location = locate_page(
             self.preview_view.plan, list(self.state.project.pages), page_index
         )
-        if sheet_index is not None:
-            self.preview_view.go_to_sheet(sheet_index)
+        if location is not None:
+            self.preview_view.go_to_sheet(location.sheet_index, location.side)
 
     def _refresh_status_message(self) -> None:
         """Say the most useful true thing about the current state.

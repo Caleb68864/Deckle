@@ -164,6 +164,65 @@ def blank_insert_choices(page_count: int) -> list[tuple[str, int]]:
     return choices
 
 
+def move_choices(page_count: int, moving: Sequence[int]) -> list[tuple[str, int]]:
+    """Every place the selected pages can go, as ``(label, target)``.
+
+    Labels number the pages that are *staying*, because that is what the
+    user will still see around the moved page once it lands. Positions
+    already occupied by the selection are left out: offering "between 2
+    and 3" to a page that is already there is offering to do nothing.
+
+    :param page_count: how many pages the document has.
+    :param moving: indices being moved.
+    :returns: labels paired with a target index in the ORIGINAL list, in
+        reading order. Empty when there is nowhere to go.
+    """
+    moving_set = set(moving)
+    staying = [i for i in range(page_count) if i not in moving_set]
+    if not staying:
+        return []
+
+    unmoved = list(range(page_count))
+    choices: list[tuple[str, int]] = []
+    for slot in range(len(staying) + 1):
+        target = staying[slot] if slot < len(staying) else page_count
+        # A target that would leave the pages exactly where they are is not
+        # a move; offering it is offering to do nothing.
+        if move_rows_to(page_count, moving, target) == unmoved:
+            continue
+        if slot == 0:
+            label = f"Before page {staying[0] + 1}"
+        elif slot == len(staying):
+            label = f"After page {staying[-1] + 1} (at the end)"
+        else:
+            label = f"Between pages {staying[slot - 1] + 1} and {staying[slot] + 1}"
+        choices.append((label, target))
+    return choices
+
+
+def move_rows_to(count: int, rows: Sequence[int], target: int) -> list[int]:
+    """The page order after moving ``rows`` to sit before index ``target``.
+
+    Pure, because the alternative is asking Qt what it did to its own
+    model and Qt's answer arrives too late: a ``QListWidget`` removes the
+    dragged row in ``startDrag``, AFTER ``dropEvent`` returns, so anything
+    that reads the view during the drop sees a half-applied move.
+
+    :param count: how many pages there are.
+    :param rows: the indices being moved. Their relative order is kept.
+    :param target: the index, in the original list, that the selection
+        should come to sit before. ``count`` means the end.
+    :returns: the new order as original indices.
+    """
+    moving = sorted(set(rows))
+    staying = [i for i in range(count) if i not in set(moving)]
+    # `target` counts positions in the original list, so the pages being
+    # lifted out from before it shift the insertion point back.
+    insert_at = target - sum(1 for row in moving if row < target)
+    insert_at = max(0, min(insert_at, len(staying)))
+    return staying[:insert_at] + moving + staying[insert_at:]
+
+
 def insert_blank_page(state: AppState, index: int) -> None:
     """Insert a blank page, through ``AppState.mutate``.
 
@@ -308,6 +367,12 @@ def _qt_move_action():
     return Qt.DropAction.MoveAction
 
 
+def _qt_custom_context_menu():
+    from PySide6.QtCore import Qt
+
+    return Qt.ContextMenuPolicy.CustomContextMenu
+
+
 def _page_index_role():
     """The item role carrying a page's index in the document.
 
@@ -327,22 +392,46 @@ def _reorderable_list_widget_class():
     Built lazily, like every other Qt type in this module, so importing it
     does not require Qt.
 
-    ``QListWidget`` does not emit ``rowsMoved`` for an internal move. The
-    drop inserts a copy through ``dropMimeData`` and the view then removes
-    the original, so a handler connected to ``rowsMoved`` never runs and
-    dragging appears to do nothing. Overriding ``dropEvent`` is the one
-    place that is guaranteed to see the drop, whatever signals Qt chose to
-    emit getting there.
+    ``QListWidget`` does not emit ``rowsMoved`` for an internal move, so
+    nothing reports the drop by signal. Worse, letting Qt perform the move
+    and then reading the result back does not work either: the source row
+    is removed in ``startDrag``, AFTER ``dropEvent`` returns, so anything
+    reading the view during the drop sees the inserted copy and the
+    original both present. That half-applied state is not a permutation, so
+    it was rejected and the view rebuilt -- and Qt then removed a row from
+    the rebuilt list, deleting whichever page happened to sit at the source
+    index. That is the page that "disappeared" (the project was never
+    wrong, which is why undo put it back).
+
+    So this does not let Qt move anything. It works out the target row,
+    refuses the drop so ``startDrag`` has nothing to clean up, and reports
+    the move for the view to apply in one piece.
     """
-    from PySide6.QtCore import Signal
-    from PySide6.QtWidgets import QListWidget
+    from PySide6.QtCore import Qt, Signal
+    from PySide6.QtWidgets import QAbstractItemView, QListWidget
 
     class ReorderableListWidget(QListWidget):
-        dropped = Signal()
+        # rows being moved, and the row they should come to sit before.
+        reorder_requested = Signal(list, int)
 
         def dropEvent(self, event) -> None:  # noqa: N802 (Qt override)
-            super().dropEvent(event)
-            self.dropped.emit()
+            rows = sorted({index.row() for index in self.selectedIndexes()})
+            index = self.indexAt(event.position().toPoint())
+            if index.isValid():
+                target = index.row()
+                below = QAbstractItemView.DropIndicatorPosition.BelowItem
+                if self.dropIndicatorPosition() == below:
+                    target += 1
+            else:
+                # Dropped past the last item, on empty space.
+                target = self.count()
+
+            # Refuse the move so Qt neither inserts a copy nor removes the
+            # source; the view is repopulated from the project instead.
+            event.setDropAction(Qt.DropAction.IgnoreAction)
+            event.accept()
+            if rows:
+                self.reorder_requested.emit(rows, target)
 
     return ReorderableListWidget
 
@@ -363,7 +452,14 @@ class ArrangeView:
 
     VIEWPORT_COUNT = 40
 
-    def __init__(self, state: AppState, parent=None, *, choose_blank_position=None) -> None:
+    def __init__(
+        self,
+        state: AppState,
+        parent=None,
+        *,
+        choose_blank_position=None,
+        choose_move_target=None,
+    ) -> None:
         """
         :param state: the app state to arrange.
         :param parent: Qt parent widget.
@@ -406,6 +502,9 @@ class ArrangeView:
         self._choose_blank_position = (
             choose_blank_position or self._default_choose_blank_position
         )
+        self._choose_move_target = (
+            choose_move_target or self._default_choose_move_target
+        )
         self.widget = QWidget(parent)
         outer = QVBoxLayout(self.widget)
 
@@ -429,6 +528,12 @@ class ArrangeView:
         # setting it after setDragDropMode() turns dragging back off --
         # downgrading InternalMove to DropOnly, which is worse than the bug
         # it was meant to fix.
+        # Several pages at once: a chapter dragged to the front, or moved
+        # together through "Move to...". Qt's default is SingleSelection,
+        # which made every multi-page path below unreachable.
+        self.list_widget.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.list_widget.setMovement(QListWidget.Movement.Static)
         self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.list_widget.setDragEnabled(True)
@@ -451,7 +556,9 @@ class ArrangeView:
         self.rotate_button.clicked.connect(self._on_rotate_clicked)
         self.skip_button.clicked.connect(self._on_skip_clicked)
         self.insert_blank_button.clicked.connect(self._on_insert_blank_clicked)
-        self.list_widget.dropped.connect(self._on_dropped)
+        self.list_widget.reorder_requested.connect(self.move_pages)
+        self.list_widget.setContextMenuPolicy(_qt_custom_context_menu())
+        self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         self.list_widget.currentRowChanged.connect(self._on_current_row_changed)
         self.list_widget.verticalScrollBar().valueChanged.connect(self._on_scrolled)
 
@@ -557,6 +664,89 @@ class ArrangeView:
         self.refresh()
         self.pages_changed.emit()
 
+    def _default_choose_move_target(self, choices):
+        """Ask where the selected pages should go.
+
+        :param choices: ``(label, target)`` pairs from
+            :func:`move_choices`.
+        :returns: the chosen target index, or ``None`` if cancelled.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        label, ok = QInputDialog.getItem(
+            self.widget,
+            "Move page",
+            "Where should it go?",
+            [text for text, _target in choices],
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        return next(target for text, target in choices if text == label)
+
+    def _selected_indices(self) -> list[int]:
+        """Every selected row, in document order."""
+        return sorted(index.row() for index in self.list_widget.selectedIndexes())
+
+    def _on_context_menu(self, point) -> None:
+        """Offer the actions for the page under the cursor.
+
+        Dragging is fine for nudging a page a few places and hopeless
+        across a long document -- reaching page 200 from page 3 means
+        dragging against an auto-scroll. "Move to..." names the destination
+        instead.
+
+        :param point: the click position, in viewport coordinates.
+        :returns: nothing.
+        """
+        from PySide6.QtWidgets import QMenu
+
+        row = self.list_widget.indexAt(point).row()
+        if row < 0:
+            return
+        # A right-click outside the selection acts on what was clicked,
+        # which is what every file manager does.
+        if row not in self._selected_indices():
+            self.list_widget.setCurrentRow(row)
+        rows = self._selected_indices() or [row]
+
+        menu = QMenu(self.widget)
+        move_action = menu.addAction(
+            "Move to..." if len(rows) == 1 else f"Move {len(rows)} pages to..."
+        )
+        menu.addSeparator()
+        rotate_action = menu.addAction("Rotate 90°")
+        skip_action = menu.addAction("Skip / unskip")
+        blank_action = menu.addAction("Insert blank...")
+
+        chosen = menu.exec(self.list_widget.viewport().mapToGlobal(point))
+        if chosen is None:
+            return
+        if chosen is move_action:
+            self._move_selection_via_dialog(rows)
+        elif chosen is rotate_action:
+            self._on_rotate_clicked()
+        elif chosen is skip_action:
+            self._on_skip_clicked()
+        elif chosen is blank_action:
+            self._on_insert_blank_clicked()
+
+    def _move_selection_via_dialog(self, rows: Sequence[int]) -> None:
+        """Ask where ``rows`` should go, then move them there.
+
+        :param rows: the pages to move.
+        :returns: nothing. A document with nowhere to move to -- every page
+            selected -- offers no choices and does nothing.
+        """
+        choices = move_choices(len(self.state.project.pages), rows)
+        if not choices:
+            return
+        target = self._choose_move_target(choices)
+        if target is None:
+            return
+        self.move_pages(rows, target)
+
     def _default_choose_blank_position(self, choices):
         """Ask where the blank goes, defaulting to the current selection.
 
@@ -598,32 +788,54 @@ class ArrangeView:
         self.refresh()
         self.pages_changed.emit()
 
-    def _on_dropped(self) -> None:
-        """Apply a completed drag-reorder, then say the pages changed.
+    def move_pages(self, rows: Sequence[int], target: int) -> None:
+        """Move ``rows`` so they sit before ``target``, then re-impose.
 
-        Reads the order Qt was left holding rather than reconstructing a
-        ``(from, to)`` move from signals. The drop has already rearranged
-        the view's own items; this makes the document agree with what the
-        user is looking at.
+        The one path every reorder goes through -- a drag, or "Move to..."
+        from the context menu -- so both are a single step of undo and both
+        announce themselves.
 
-        :returns: nothing. A drop that leaves anything other than a clean
-            permutation -- a copy rather than a move, an item from another
-            widget -- is ignored and the view is rebuilt from the project,
-            because acting on it would duplicate or drop pages.
+        :param rows: indices to move, in the current order.
+        :param target: the index they should come to sit before;
+            ``len(pages)`` means the end.
+        :returns: nothing. A move that would change nothing is dropped
+            rather than pushed onto the undo stack.
         """
-        role = _page_index_role()
-        order = [
-            self.list_widget.item(row).data(role)
-            for row in range(self.list_widget.count())
-        ]
-        if sorted(o for o in order if o is not None) != list(
-            range(len(self.state.project.pages))
-        ):
+        count = len(self.state.project.pages)
+        rows = [row for row in rows if 0 <= row < count]
+        if not rows:
+            return
+        order = move_rows_to(count, rows, target)
+        if order == list(range(count)):
             self.refresh()
             return
         reorder_to(self.state, order)
         self.refresh()
+        # Keep hold of the pages that moved. `refresh` rebuilds every item,
+        # which drops the selection -- so without this the moved page is
+        # deselected the instant it lands, the preview stops following it,
+        # and dragging it again means finding and re-clicking it first.
+        self._select_rows([order.index(row) for row in rows])
         self.pages_changed.emit()
+
+    def _select_rows(self, rows: Sequence[int]) -> None:
+        """Select exactly ``rows``, and show the first of them.
+
+        :param rows: rows to select, in the rebuilt list.
+        :returns: nothing.
+        """
+        if not rows:
+            return
+        self.list_widget.clearSelection()
+        # setCurrentRow FIRST: it selects that row alone, discarding
+        # anything selected before it, so calling it after the loop would
+        # throw away every row but this one.
+        self.list_widget.setCurrentRow(rows[0])
+        for row in rows[1:]:
+            item = self.list_widget.item(row)
+            if item is not None:
+                item.setSelected(True)
+        self.list_widget.scrollToItem(self.list_widget.item(rows[0]))
 
     def _on_current_row_changed(self, row: int) -> None:
         """Announce which page the user is looking at.

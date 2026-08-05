@@ -23,9 +23,24 @@ with the imposer, the imposer is right.
 
 from __future__ import annotations
 
+from typing import Literal, NamedTuple
+
 from deckle.core.models import SheetPlan, SourcePage, is_blank_page
 
-__all__ = ["content_positions", "sheet_index_for_page"]
+__all__ = ["PageLocation", "content_positions", "locate_page", "sheet_index_for_page"]
+
+
+class PageLocation(NamedTuple):
+    """Where a document page ended up on the paper.
+
+    The side matters as much as the sheet. The preview shows one face at a
+    time, so pages 1 and 2 of a flat-sheet document are the front and back
+    of the same leaf -- reporting only the sheet makes half of all jumps
+    look like they did nothing.
+    """
+
+    sheet_index: int
+    side: Literal["front", "back"]
 
 
 def content_positions(pages: list[SourcePage]) -> list[int]:
@@ -48,6 +63,18 @@ def sheet_index_for_page(
 ) -> int | None:
     """Which sheet carries the document page at ``page_index``.
 
+    :returns: the ``Sheet.index``, or ``None``. See :func:`locate_page` for
+        the side as well.
+    """
+    location = locate_page(plan, pages, page_index)
+    return None if location is None else location.sheet_index
+
+
+def locate_page(
+    plan: SheetPlan, pages: list[SourcePage], page_index: int
+) -> PageLocation | None:
+    """Which sheet and face carry the document page at ``page_index``.
+
     A page with no content of its own -- skipped, or an inserted blank --
     has no slot to point at, so this falls back to the nearest preceding
     page that does. Jumping to roughly the right place beats refusing to
@@ -57,8 +84,8 @@ def sheet_index_for_page(
     :param pages: the project's pages, in document order. Needed because
         the plan does not record which document page a slot came from.
     :param page_index: the document page, 0-based.
-    :returns: the ``Sheet.index`` carrying it, or ``None`` when the plan
-        is empty or the document has no content at all.
+    :returns: where it landed, or ``None`` when the plan is empty or the
+        document has no content at all.
     """
     if not plan.sheets or not pages or not 0 <= page_index < len(pages):
         return None
@@ -88,13 +115,13 @@ def sheet_index_for_page(
 
     seen = 0
     for sheet in plan.sheets:
-        for side in (sheet.front, sheet.back):
+        for name, side in (("front", sheet.front), ("back", sheet.back)):
             if side is None:
                 continue
             for output_page in side.pages:
                 if output_page.is_filler or output_page.source_ref != target_ref:
                     continue
                 if seen == occurrence:
-                    return sheet.index
+                    return PageLocation(sheet.index, name)
                 seen += 1
     return None

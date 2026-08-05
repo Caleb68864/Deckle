@@ -123,15 +123,23 @@ def test_setting_movement_after_drop_mode_would_disable_dragging():
     )
 
 
-def test_a_drop_is_reported_even_though_rows_moved_is_not():
-    """The signal the old handler waited on never arrives."""
+def test_a_drop_reports_the_move_and_refuses_to_let_qt_apply_it():
+    """The heart of the second bug.
+
+    Qt removes the dragged row in ``startDrag``, after ``dropEvent``
+    returns. Anything that lets Qt do the move and then reads the result
+    sees the inserted copy and the original both present -- a half-applied
+    state that is not a permutation. So the drop is refused outright and
+    reported instead, leaving Qt with nothing to clean up.
+    """
     from PySide6.QtCore import Qt, QPointF
     from PySide6.QtGui import QDropEvent
 
     _, view = _view()
     lw = view.list_widget
-    fired = []
-    lw.dropped.connect(lambda: fired.append(1))
+    seen = []
+    lw.reorder_requested.connect(lambda rows, target: seen.append((rows, target)))
+    lw.setCurrentRow(0)
 
     # QDropEvent does NOT take ownership of the mime data, and Qt keeps
     # using the pointer after this call. Letting Python collect either
@@ -145,23 +153,28 @@ def test_a_drop_is_reported_even_though_rows_moved_is_not():
     )
     lw.dropEvent(event)
 
-    assert fired, "dropEvent did not report the drop"
-    assert mime is not None and event is not None  # keep both alive
+    assert seen, "the drop was not reported"
+    assert seen[0][0] == [0], "the dragged row was misidentified"
+    assert event.dropAction() == Qt.DropAction.IgnoreAction, (
+        "Qt was left to move the row itself, which it finishes after this "
+        "returns -- the state read here would be half-applied"
+    )
+    assert lw.count() == 4, "the drop inserted a copy"
+    assert mime is not None  # keep alive
 
 
 # -- reconciling the document with what the drop left behind --------------
 
 
 def _simulate_drop(view, from_row: int, to_row: int) -> None:
-    """Rearrange the widget as a completed drop leaves it, then reconcile.
+    """The move a drop reports, applied the way the view applies it.
 
-    This is what Qt does to the items; ``_on_dropped`` is what we do about
-    it. It is deliberately not a call to ``reorder`` -- the point is that
-    the handler reads the view's own state.
+    ``to_row`` is a destination among the pages as they are now, so
+    dropping page 0 "at row 3" means it comes to sit before the page
+    currently at 3 -- hence the +1 for a forward move, which is what the
+    drop indicator shows on screen.
     """
-    item = view.list_widget.takeItem(from_row)
-    view.list_widget.insertItem(to_row, item)
-    view._on_dropped()
+    view.move_pages([from_row], to_row + 1 if to_row > from_row else to_row)
 
 
 def test_dragging_a_page_moves_it_in_the_document():
@@ -211,19 +224,183 @@ def test_a_drop_is_one_step_of_undo():
     assert _order(state) == [0, 1, 2, 3], "one drag took more than one undo"
 
 
-def test_a_drop_that_is_not_a_permutation_is_refused(monkeypatch):
-    """A copy rather than a move, or an item dragged in from elsewhere,
-    would otherwise duplicate or drop pages silently."""
+def test_a_move_that_changes_nothing_is_not_an_undo_step():
+    """Dropping a page back where it started must not leave the user
+    pressing Ctrl+Z for a move that never happened."""
     state, view = _view()
-    lw = view.list_widget
-    before = _order(state)
 
-    # A copy: the item is duplicated rather than moved.
-    lw.insertItem(1, lw.item(0).clone())
-    view._on_dropped()
+    view.move_pages([1], 1)
 
-    assert _order(state) == before, "a malformed drop was applied"
-    assert lw.count() == len(before), "the view was not rebuilt from the project"
+    assert _order(state) == [0, 1, 2, 3]
+    assert not state.can_undo, "a no-op move was pushed onto the history"
+
+
+def test_a_row_outside_the_document_is_ignored():
+    """A stale selection, or a drop reported against a document that has
+    since shrunk. Indexing straight into the page list would raise inside
+    a Qt event handler, where the traceback goes to the console and the
+    user sees nothing."""
+    state, view = _view()
+
+    view.move_pages([99], 0)
+
+    assert _order(state) == [0, 1, 2, 3]
+
+
+# -- the move arithmetic --------------------------------------------------
+
+
+def test_move_rows_to_is_always_a_permutation():
+    """Exhaustive over every small document, every selection, and targets
+    past both ends. A move that loses or clones a page is the one failure
+    mode that cannot be undone by dragging it back."""
+    import itertools
+
+    from deckle.app.views.arrange_view import move_rows_to
+
+    for n in range(7):
+        for size in range(1, n + 1):
+            for rows in itertools.combinations(range(n), size):
+                for target in range(-2, n + 3):
+                    order = move_rows_to(n, list(rows), target)
+                    assert sorted(order) == list(range(n)), (rows, target, order)
+                    moved = [i for i in order if i in set(rows)]
+                    assert moved == sorted(rows), "the selection lost its order"
+                    stayed = [i for i in order if i not in set(rows)]
+                    assert stayed == sorted(stayed), "the other pages were shuffled"
+
+
+def test_move_rows_to_tolerates_duplicate_and_unsorted_rows():
+    """Qt reports selections in click order, not document order."""
+    from deckle.app.views.arrange_view import move_rows_to
+
+    assert move_rows_to(4, [3, 0], 2) == move_rows_to(4, [0, 3], 2)
+    assert sorted(move_rows_to(4, [1, 1, 1], 3)) == [0, 1, 2, 3]
+
+
+def test_every_offered_destination_actually_moves_something():
+    """A menu entry that does nothing when picked is worse than no entry."""
+    import itertools
+
+    from deckle.app.views.arrange_view import move_choices, move_rows_to
+
+    for n in range(7):
+        for size in range(1, n + 1):
+            for rows in itertools.combinations(range(n), size):
+                choices = move_choices(n, list(rows))
+                labels = [label for label, _ in choices]
+                assert len(set(labels)) == len(labels), f"duplicate label: {labels}"
+                for label, target in choices:
+                    assert move_rows_to(n, list(rows), target) != list(range(n)), (
+                        f"{label!r} is a no-op"
+                    )
+
+
+def test_every_reachable_arrangement_is_offered():
+    """The converse: a destination that cannot be picked cannot be reached
+    without dragging, which is the thing this menu exists to avoid."""
+    import itertools
+
+    from deckle.app.views.arrange_view import move_choices, move_rows_to
+
+    for n in range(1, 7):
+        for size in range(1, n + 1):
+            for rows in itertools.combinations(range(n), size):
+                reachable = {
+                    tuple(move_rows_to(n, list(rows), t)) for t in range(n + 1)
+                }
+                reachable.discard(tuple(range(n)))
+                offered = {
+                    tuple(move_rows_to(n, list(rows), t))
+                    for _, t in move_choices(n, list(rows))
+                }
+                assert offered == reachable, (n, rows)
+
+
+def test_moving_every_page_offers_nowhere_to_go():
+    from deckle.app.views.arrange_view import move_choices
+
+    assert move_choices(3, [0, 1, 2]) == []
+    assert move_choices(0, []) == []
+
+
+def test_the_labels_name_the_pages_that_stay():
+    """They are the numbers still on screen around the gap."""
+    from deckle.app.views.arrange_view import move_choices
+
+    labels = [label for label, _ in move_choices(5, [2])]
+
+    assert labels[0] == "Before page 1"
+    assert labels[-1] == "After page 5 (at the end)"
+    assert "Between pages 2 and 4" not in labels, "that is where it already is"
+
+
+# -- several pages at once ------------------------------------------------
+
+
+def test_the_grid_allows_selecting_more_than_one_page():
+    """Qt's default is SingleSelection, which made every multi-page path
+    unreachable."""
+    from PySide6.QtWidgets import QAbstractItemView
+
+    _, view = _view()
+
+    assert (
+        view.list_widget.selectionMode()
+        == QAbstractItemView.SelectionMode.ExtendedSelection
+    )
+
+
+def test_moving_several_pages_keeps_them_together_and_in_order():
+    state, view = _view(5)
+
+    view.move_pages([0, 1], 5)
+
+    assert _order(state) == [2, 3, 4, 0, 1]
+
+
+def test_moving_several_pages_is_one_step_of_undo():
+    state, view = _view(5)
+
+    view.move_pages([0, 1], 5)
+    state.undo()
+
+    assert _order(state) == [0, 1, 2, 3, 4]
+
+
+# -- the moved pages stay selected ----------------------------------------
+
+
+def test_the_moved_page_is_still_selected_where_it_landed():
+    """`refresh` rebuilds every item, which drops the selection. Without
+    restoring it the page is deselected the moment it lands, the preview
+    stops following it, and dragging it again means finding it first."""
+    state, view = _view(5)
+
+    view.move_pages([0], 5)
+
+    assert view.list_widget.currentRow() == 4
+
+
+def test_a_multi_page_move_keeps_the_whole_selection():
+    """setCurrentRow selects one row and discards the rest, so it has to
+    come before the others are added, not after."""
+    state, view = _view(5)
+
+    view.move_pages([0, 1], 5)
+
+    selected = sorted(index.row() for index in view.list_widget.selectedIndexes())
+    assert selected == [3, 4]
+
+
+def test_the_landing_page_is_announced_so_the_preview_follows_it():
+    state, view = _view(5)
+    seen = []
+    view.page_selected.connect(seen.append)
+
+    view.move_pages([0], 5)
+
+    assert seen and seen[-1] == 4
 
 
 # -- clicking a page follows it into the preview --------------------------
@@ -250,3 +427,69 @@ def test_clearing_the_selection_announces_nothing():
     view.list_widget.setCurrentRow(-1)
 
     assert seen == []
+
+
+# -- the context menu -----------------------------------------------------
+
+
+def test_move_to_moves_the_page_the_user_picked():
+    """Dragging is fine for nudging a page a few places and hopeless
+    across a long document: reaching page 200 from page 3 means dragging
+    against an auto-scroll."""
+    from deckle.app.views.arrange_view import ArrangeView
+    from deckle.app.state import AppState
+
+    state = AppState(
+        Project(
+            pages=_pages(5),
+            layout=LayoutSettings(paper=LETTER, gutter_pt=18.0, binding_edge="left"),
+            printer=None,
+        )
+    )
+    # Always pick the last offered destination: the end of the document.
+    view = ArrangeView(state, choose_move_target=lambda choices: choices[-1][1])
+
+    view._move_selection_via_dialog([0])
+
+    assert _order(state) == [1, 2, 3, 4, 0]
+
+
+def test_cancelling_the_move_dialog_changes_nothing():
+    from deckle.app.views.arrange_view import ArrangeView
+    from deckle.app.state import AppState
+
+    state = AppState(
+        Project(
+            pages=_pages(4),
+            layout=LayoutSettings(paper=LETTER, gutter_pt=18.0, binding_edge="left"),
+            printer=None,
+        )
+    )
+    view = ArrangeView(state, choose_move_target=lambda choices: None)
+
+    view._move_selection_via_dialog([0])
+
+    assert _order(state) == [0, 1, 2, 3]
+    assert not state.can_undo
+
+
+def test_a_right_click_on_empty_space_opens_nothing():
+    """indexAt returns -1 there, and indexing the page list with it would
+    silently act on the last page."""
+    from PySide6.QtCore import QPoint
+
+    state, view = _view()
+
+    view._on_context_menu(QPoint(9999, 9999))  # must not raise or act
+
+    assert _order(state) == [0, 1, 2, 3]
+
+
+def test_the_grid_offers_a_context_menu_at_all():
+    from PySide6.QtCore import Qt
+
+    _, view = _view()
+
+    assert (
+        view.list_widget.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+    )

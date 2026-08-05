@@ -207,3 +207,29 @@ def test_reopening_a_project_restores_the_pages_and_the_view(report):
     assert report["reopened_tab"] == "Signatures"
     assert report["reopened_orientation"] == "Landscape"
     assert report["reopened_preview_sheets"] >= 1
+
+
+def test_clicking_alternates_front_and_back_across_the_book(report):
+    """The reported symptom: clicking previewed "sometimes but not all the
+    time". Pages 1 and 2 are two faces of one leaf, so a jump that set only
+    the sheet left every second click showing the face already on screen.
+
+    Asserted over the content pages only. This document opens with the
+    blank inserted earlier in the workflow, and a blank holds no slot of
+    its own -- it correctly resolves to the nearest content page, which is
+    the one after it.
+    """
+    faces = report["face_per_page"]
+    kinds = report["order_after_reorder"]
+    assert len(faces) == len(kinds)
+
+    content = [tuple(face) for face, kind in zip(faces, kinds) if kind != "blank"]
+    assert len(content) >= 2, "not enough content pages to tell faces apart"
+    assert len(set(content)) == len(content), (
+        f"two content pages resolved to the same face: {content}"
+    )
+    assert {side for _sheet, side in content} == {"front", "back"} or len(content) < 2
+
+    assert report["spinbox_tracks_sheet"] is True, (
+        "the sheet readout did not follow the jump"
+    )

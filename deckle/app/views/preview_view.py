@@ -673,16 +673,32 @@ class PreviewView:
         """
         self.sheet_spinbox.setValue(max(0, len(self.plan.sheets) - 1))
 
-    def go_to_sheet(self, sheet_index: int) -> None:
-        """Show a specific sheet.
+    def go_to_sheet(self, sheet_index: int, side=None) -> None:
+        """Show a specific sheet, optionally a specific face of it.
 
         :param sheet_index: which sheet. Clamped to the plan, so a caller
             working from a stale page count cannot land the view outside
             the document.
-        :returns: nothing.
+        :param side: ``"front"``, ``"back"``, or ``None`` to leave the
+            current face alone. Ignored in spread mode, which already shows
+            both. Without it, jumping to page 2 of a flat-sheet document
+            appears to do nothing: it is the back of the same leaf as page
+            1, so the sheet does not change and the front stays on screen.
+        :returns: nothing. Renders once, however much changed.
         """
         last = max(0, len(self.plan.sheets) - 1)
-        self.sheet_spinbox.setValue(max(0, min(sheet_index, last)))
+        target = max(0, min(sheet_index, last))
+        if side is not None and not self._spread:
+            self.side = side
+        # Move the spinbox without letting it fire: it is the readout for
+        # where the view is, and leaving it behind is what made a jump look
+        # like it had not happened. The single refresh comes after.
+        self.sheet_spinbox.blockSignals(True)
+        try:
+            self.sheet_spinbox.setValue(target)
+        finally:
+            self.sheet_spinbox.blockSignals(False)
+        self._set_sheet_index(target)
 
     def _refresh_sheet_counter(self) -> None:
         """Keep the "sheet N of M" readout and the end buttons honest.
