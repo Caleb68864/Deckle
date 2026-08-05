@@ -16,6 +16,7 @@ import importlib.metadata
 import os
 import re
 import sys
+import warnings
 from typing import Sequence
 
 from deckle import __version__ as _DECKLE_VERSION
@@ -26,7 +27,13 @@ from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.schedule import build_schedule, format_schedule_text
-from deckle.core.project_io import SourceChangedWarning, save_project
+from deckle.core.project_io import (
+    PathOutsideRootsAdvisory,
+    SourceChangedWarning,
+    SourceMissingError,
+    load_project,
+    save_project,
+)
 
 # A-6: `deckle --version` prints the app version plus the resolved versions
 # of its key third-party dependencies -- the first thing anyone asks for in
@@ -120,6 +127,133 @@ def _load_source(path: str) -> list[SourcePage]:
     if os.path.isdir(path):
         return load_image_dir(path)
     return load_pdf(path)
+
+
+PROJECT_SUFFIX = ".deckle"
+
+
+def _is_project_file(path: str) -> bool:
+    """Whether ``path`` names a saved project rather than a source document.
+
+    :param path: the path the user gave.
+    :returns: ``True`` for a ``.deckle`` file.
+
+    Decided by suffix, not by sniffing content: a project file is something
+    Deckle wrote and the user named, and guessing would make
+    ``book.pdf.deckle`` ambiguous for no benefit.
+    """
+    return path.lower().endswith(PROJECT_SUFFIX)
+
+
+def _load_project_or_report(path: str) -> Project | None:
+    """Open a ``.deckle``, or print an actionable error and return ``None``.
+
+    :param path: the project file.
+    :returns: the project, or ``None`` when it could not be opened.
+
+    A project stores *references* to its sources, not their content, so it
+    can outlive them. Both ways that goes wrong are reported plainly rather
+    than as a traceback: the source has moved, or the source is still there
+    but has been edited since the project was saved. The second is the
+    dangerous one -- the imposition would be computed against content the
+    user has not seen.
+    """
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            # The directory the user is working in counts as chosen. Without
+            # it, the ordinary case -- a project saved beside its output,
+            # sources in Downloads -- advises on every single load, and Python
+            # renders a bare warning with a file and line number that points
+            # at Deckle rather than at anything the user did.
+            project = load_project(path, allowed_roots=(os.getcwd(),))
+        for warning in caught:
+            if issubclass(warning.category, PathOutsideRootsAdvisory):
+                print(f"note: {warning.message}", file=sys.stderr)
+        return project
+    except SourceMissingError as exc:
+        print(
+            f"error: cannot open {path}: a source file is missing -- "
+            f"{exc.expected_path}. Restore it, or re-import from its new "
+            "location.",
+            file=sys.stderr,
+        )
+        log_exception("project_source_missing", exc, path=path)
+        return None
+    except SourceChangedWarning as exc:
+        print(
+            f"error: cannot open {path}: {exc.path} has changed since the "
+            "project was saved. Imposing it would use content you have not "
+            "reviewed. Re-import the file to accept the new version.",
+            file=sys.stderr,
+        )
+        log_exception("project_source_changed", exc, path=path)
+        return None
+    except (OSError, ValueError, KeyError) as exc:
+        print(f"error: cannot open {path}: {exc}", file=sys.stderr)
+        log_exception("project_open_failed", exc, path=path)
+        return None
+
+
+def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
+    """Which layout options the user actually typed, as flag names.
+
+    :param args: the parsed arguments.
+    :param parser: the parser they came from, for its defaults.
+    :returns: the flags whose value differs from the default.
+
+    Used to warn rather than silently ignore. Comparing against defaults is
+    approximate -- typing the default value looks like not typing it -- but
+    it errs toward silence, which is the right direction for a warning.
+    """
+    sub = None
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            sub = action.choices.get(getattr(args, "_command", ""))
+            break
+    if sub is None:
+        return []
+    given = []
+    for action in sub._actions:
+        if not action.option_strings or action.dest in ("output", "help", "source"):
+            continue
+        if getattr(args, action.dest, action.default) != action.default:
+            given.append(action.option_strings[0])
+    return sorted(given)
+
+
+def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | None:
+    """Turn ``args.source`` into pages plus the layout to impose them with.
+
+    :param args: parsed arguments carrying ``source`` and the layout flags.
+    :returns: ``(pages, settings)``, or ``None`` when the input could not
+        be read -- the error has already been reported.
+
+    A ``.deckle`` carries its own layout, and that layout wins. It is the
+    one the user set up, previewed and saved; silently overriding it from
+    flag defaults would mean ``deckle export project.deckle`` produced a
+    different book from the one the project describes. Flags typed
+    alongside a project are reported as ignored rather than quietly
+    dropped -- and rather than applied, which would be worse.
+    """
+    if _is_project_file(args.source):
+        project = _load_project_or_report(args.source)
+        if project is None:
+            return None
+        ignored = _layout_flags_given(args, build_parser())
+        if ignored:
+            print(
+                "note: "
+                + ", ".join(ignored)
+                + f" ignored -- {args.source} carries its own layout.",
+                file=sys.stderr,
+            )
+        return list(project.pages), project.layout
+
+    pages = _load_source_or_report(args.source)
+    if pages is None:
+        return None
+    return pages, _build_layout_settings(args)
 
 
 def _load_source_or_report(path: str) -> list[SourcePage] | None:
@@ -246,10 +380,13 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_info(args: argparse.Namespace) -> int:
-    pages = _load_source_or_report(args.source)
-    if pages is None:
+    resolved = _resolve_input(args)
+    if resolved is None:
         return 1
+    pages, settings = resolved
 
+    if _is_project_file(args.source):
+        print(f"project: {args.source}")
     print(f"page count: {len(pages)}")
     sizes = sorted({(p.ref.width_pt, p.ref.height_pt) for p in pages})
     print("detected page sizes (pt):")
@@ -257,7 +394,6 @@ def _cmd_info(args: argparse.Namespace) -> int:
         print(f"  {w:.2f} x {h:.2f}")
 
     import_warnings = list(getattr(pages, "warnings", []))
-    settings = _build_layout_settings(args)
     plan = _strategy_for(settings).impose(pages, settings)
 
     # Signature breakdown -- always printed, even under the MVP
@@ -302,11 +438,11 @@ def _emit_warnings(pages, plan) -> None:
 def _cmd_export(args: argparse.Namespace) -> int:
     if _report_output_problem(args.output, args.source):
         return 1
-    pages = _load_source_or_report(args.source)
-    if pages is None:
+    resolved = _resolve_input(args)
+    if resolved is None:
         return 1
+    pages, settings = resolved
 
-    settings = _build_layout_settings(args)
     plan = _strategy_for(settings).impose(pages, settings)
     _emit_warnings(pages, plan)
     try:
@@ -321,11 +457,11 @@ def _cmd_export(args: argparse.Namespace) -> int:
 def _cmd_impose(args: argparse.Namespace) -> int:
     if _report_output_problem(args.output, args.source):
         return 1
-    pages = _load_source_or_report(args.source)
-    if pages is None:
+    resolved = _resolve_input(args)
+    if resolved is None:
         return 1
+    pages, settings = resolved
 
-    settings = _build_layout_settings(args)
     _emit_warnings(pages, _strategy_for(settings).impose(pages, settings))
     project = Project(pages=list(pages), layout=settings, printer=args.printer)
     try:
@@ -350,14 +486,14 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     writes a file. Layout warnings still go to stderr, so a redirected
     schedule stays clean while the warnings remain visible in the terminal.
     """
-    pages = _load_source_or_report(args.source)
-    if pages is None:
+    resolved = _resolve_input(args)
+    if resolved is None:
         return 1
+    pages, settings = resolved
 
     if args.output is not None and _report_output_problem(args.output, args.source):
         return 1
 
-    settings = _build_layout_settings(args)
     plan = _strategy_for(settings).impose(pages, settings)
     _emit_warnings(pages, plan)
 
@@ -406,18 +542,18 @@ def build_parser() -> argparse.ArgumentParser:
     impose_parser.add_argument("-o", "--output", required=True, help="path to write the .deckle project")
     impose_parser.add_argument("--printer", default=None, help="printer name to record in the project")
     _add_layout_args(impose_parser)
-    impose_parser.set_defaults(func=_cmd_impose)
+    impose_parser.set_defaults(func=_cmd_impose, _command="impose")
 
     export_parser = subparsers.add_parser("export", help="impose and export a source directly to PDF")
     export_parser.add_argument("source", help="a PDF file or a directory of images")
     export_parser.add_argument("-o", "--output", required=True, help="path to write the exported PDF")
     _add_layout_args(export_parser)
-    export_parser.set_defaults(func=_cmd_export)
+    export_parser.set_defaults(func=_cmd_export, _command="export")
 
     info_parser = subparsers.add_parser("info", help="print page count, sizes, and layout warnings")
     info_parser.add_argument("source", help="a PDF file or a directory of images")
     _add_layout_args(info_parser)
-    info_parser.set_defaults(func=_cmd_info)
+    info_parser.set_defaults(func=_cmd_info, _command="info")
 
     schedule_parser = subparsers.add_parser(
         "schedule",
@@ -431,7 +567,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="write the schedule to a file instead of stdout",
     )
     _add_layout_args(schedule_parser)
-    schedule_parser.set_defaults(func=_cmd_schedule)
+    schedule_parser.set_defaults(func=_cmd_schedule, _command="schedule")
 
     return parser
 
