@@ -193,5 +193,9 @@ def test_run_bat_warns_that_packaging_takes_a_while():
     Without a warning, that reads as a hang -- and was reported as one."""
     raw = (REPO_ROOT / "run.bat").read_text(encoding="utf-8")
 
-    package_target = raw.split(":package", 1)[1].split("goto :done", 1)[0]
+    # Anchor on the LABEL (start of line), not the first ":package" -- that
+    # one is the `goto :package` dispatch line, and splitting there lands in
+    # the default GUI block instead. Matching a goto when you meant a label
+    # is precisely the mistake that scrambled run.bat in the first place.
+    package_target = raw.split("\n:package", 1)[1].split("goto :done", 1)[0]
     assert "minutes" in package_target.lower()

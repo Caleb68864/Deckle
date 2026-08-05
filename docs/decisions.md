@@ -269,3 +269,10 @@
 - Surfaces: Any file generated from a Python string that contains a Windows path. Unknown escapes are left alone, which is why dist-backslash-deckle and build-backslash-pyinstaller survived intact and only the t was destroyed -- the corruption is selective and therefore easy to miss.
 - Watch: The guard test itself was written through a shell heredoc and acquired the identical bug, searching run.bat for a tab instead of for the path. That is the fourth occurrence of this trap in one session. Use the editor, or a raw string, for anything containing backslashes -- never a heredoc. Separately: the build is near-silent for two minutes during the PySide6 hooks, which reads as a hang. It now says so before starting.
 - Commit: (this commit)
+
+## 2026-08-05 - A generated edit spliced the packaging block into the dispatch table
+- Symptom: A bare run.bat spent three minutes building executables and then closed. The dev launcher had become the packager.
+- Fix: The Python that inserted the :package block used s.replace(':doctor', target, 1), which matched the first occurrence -- the goto :doctor DISPATCH line, not the label. It deleted the docs/help dispatch and the whole default GUI block, rewired doctor to :package, and left the package body inlined with no label. Rebuilt the dispatch table and added tests/test_run_bat.py.
+- Surfaces: Anything edited by matching a name that appears both as a jump target and as a definition -- labels, anchors, headings. The first match is almost never the one you mean.
+- Watch: Nothing tested run.bat, so 572 tests stayed green while the launcher was unusable. It now has structural tests: labels unique, every subcommand dispatching to its OWN label, every branch terminating, and a bare invocation reaching the GUI without reaching PyInstaller. Verified by mutation. One of those new tests then hit the identical goto-versus-label confusion in its own splitting logic.
+- Commit: (this commit)

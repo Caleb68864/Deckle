@@ -34,7 +34,23 @@ set "CMD=%~1"
 if /i "%CMD%"=="cli"    goto :cli
 if /i "%CMD%"=="test"   goto :test
 if /i "%CMD%"=="deps"   goto :deps
-if /i "%CMD%"=="doctor" goto :package
+if /i "%CMD%"=="doctor" goto :doctor
+if /i "%CMD%"=="docs"   goto :docs
+if /i "%CMD%"=="package" goto :package
+if /i "%CMD%"=="-h"     goto :usage
+if /i "%CMD%"=="--help" goto :usage
+if /i "%CMD%"=="help"   goto :usage
+if not "%CMD%"=="" goto :usage
+
+rem ---------- default: launch the GUI ----------
+rem No build, no packaging: this runs the working tree directly, which is
+rem what development wants. Only `run.bat package` builds anything.
+echo [deckle] launching GUI...
+"%PY%" -m deckle
+if errorlevel 1 goto :fail
+goto :done
+
+:package
 echo [deckle] building executables...
 echo          This takes about two minutes. PyInstaller goes quiet
 echo          while it processes the PySide6 hooks - that is normal.
@@ -61,20 +77,6 @@ rem packager actually copied, so the artifact is checked directly.
 "%PY%" -m pytest tests\test_packaging_audit.py -q
 if errorlevel 1 goto :fail
 echo [deckle] wrote dist\deckle\deckle.exe and dist\deckle\deckle-cli.exe
-goto :done
-
-:doctor
-if /i "%CMD%"=="docs"   goto :docs
-if /i "%CMD%"=="package" goto :package
-if /i "%CMD%"=="-h"     goto :usage
-if /i "%CMD%"=="--help" goto :usage
-if /i "%CMD%"=="help"   goto :usage
-if not "%CMD%"=="" goto :usage
-
-rem ---------- default: launch the GUI ----------
-echo [deckle] launching GUI...
-"%PY%" -m deckle
-if errorlevel 1 goto :fail
 goto :done
 
 :cli
