@@ -20,7 +20,12 @@ from typing import Literal
 
 from deckle.app.state import AppState
 from deckle.core.layout import GutterShiftStrategy, SaddleStitchStrategy
+import os
+
+from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import Project, SheetPlan
+from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.core.schedule import build_schedule, format_schedule_text
 
 BINDING_EDGES: tuple[str, ...] = ("left", "right")
 
@@ -384,9 +389,11 @@ class LayoutPanel:
 
         class _Signals(QObject):
             layout_changed = Signal(object)  # SheetPlan
+            schedule_saved = Signal(str)  # a user-facing outcome message
 
         self._signals = _Signals()
         self.layout_changed = self._signals.layout_changed
+        self.schedule_saved = self._signals.schedule_saved
 
         self.state = state
         self.widget = QWidget(parent)
@@ -632,6 +639,22 @@ class LayoutPanel:
         )
         signature_form.addRow("Binding:", self.binding_readout_label)
         self.binding_readout_label.setText(binding_readout_str(recompute_plan(state.project)))
+
+        # The schedule lives here rather than beside Save PDF because it is
+        # a signature artifact: under gutter shift there is nothing to
+        # gather, so the button would be permanently inert next to the
+        # export actions.
+        self.save_schedule_button = QPushButton("Save schedule...", signature_tab)
+        self.save_schedule_button.setToolTip(
+            "Write the binding schedule to a text file: which sheets gather "
+            "into each signature, which way round they nest, where the "
+            "blanks fall, and where to pierce for sewing.\n\n"
+            "Print it and keep it at the bench -- the imposed PDF says "
+            "nothing about what to do with the paper."
+        )
+        signature_form.addRow("", self.save_schedule_button)
+        self.save_schedule_button.clicked.connect(self._on_save_schedule_clicked)
+
         self._sync_signature_tab()
 
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
@@ -653,6 +676,61 @@ class LayoutPanel:
         self.sewing_stations_spinbox.valueChanged.connect(self._on_sewing_stations_changed)
         self.paper_thickness_spinbox.valueChanged.connect(self._on_paper_thickness_changed)
 
+    def set_document_loaded(self, loaded: bool) -> None:
+        """Enable the document-dependent actions on this panel.
+
+        :param loaded: whether a document is open.
+        :returns: nothing.
+
+        Called by the window rather than watched from here, so there is one
+        place that decides what "a document exists" enables.
+        """
+        self._document_loaded = loaded
+        self._sync_signature_tab()
+
+    def _on_save_schedule_clicked(self) -> None:
+        """Write the binding schedule beside wherever the source came from.
+
+        :returns: nothing. Failures are reported through the same wording
+            the CLI uses -- see :mod:`deckle.core.outputs`.
+        """
+        from PySide6.QtWidgets import QFileDialog
+
+        pages = self.state.project.pages
+        if not pages:
+            return
+
+        source = pages[0].ref.path
+        suggested = os.path.join(
+            os.path.dirname(source) or os.getcwd(),
+            os.path.splitext(os.path.basename(source))[0] + "-schedule.txt",
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self.widget, "Save binding schedule", suggested, "Text files (*.txt)"
+        )
+        if not path:
+            return
+
+        problem = output_path_problem(path, source)
+        if problem is not None:
+            log_event("schedule_path_rejected", path=path, detail=problem)
+            self.schedule_saved.emit(problem)
+            return
+
+        settings = self.state.project.layout
+        text = format_schedule_text(
+            build_schedule(recompute_plan(self.state.project), settings),
+            os.path.basename(source),
+        )
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError as exc:
+            log_exception("schedule_write_failed", exc, path=path)
+            self.schedule_saved.emit(describe_write_failure(path, exc))
+            return
+        self.schedule_saved.emit(f"Saved binding schedule to {path}")
+
     def _sync_signature_tab(self) -> None:
         """Enable the Signatures tab only when the fold scheme uses it.
 
@@ -663,6 +741,10 @@ class LayoutPanel:
         says which setting would turn it on.
         """
         folio = self.state.project.layout.fold_scheme == "folio"
+        loaded = getattr(self, "_document_loaded", bool(self.state.project.pages))
+        # A schedule for nothing is an empty schedule, so the button
+        # needs both a fold scheme that gathers AND something to gather.
+        self.save_schedule_button.setEnabled(folio and loaded)
         self.tabs.setTabEnabled(self._signature_tab_index, folio)
         if folio:
             self.signature_hint_label.setText(

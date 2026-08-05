@@ -255,3 +255,10 @@
 - Surfaces: The tempting design is for the schedule to compute its own sheet order from the page count. That would be a SECOND implementation of the imposition, free to disagree with the PDF in the user's hand -- and the paper would be wrong while both halves looked internally consistent. It reads `plan.signatures` and `side.pages` and reports what it finds.
 - Watch: The ordering test is written out BY HAND from the standard 16-page arrangement (outermost 16|1 and 2|15, innermost 10|7 and 8|9), not generated from `saddle_order`. A test that derives its expectation from the code it checks proves only self-consistency. There is also a permutation property across several signature sizes -- every page exactly once -- because a duplicated or dropped page is a misbound book and is easy to lose in a refactor.
 - Commit: (this commit)
+
+## 2026-08-04 - The schedule button lives on the Signatures tab, not beside Save PDF
+- Symptom: Where does "Save schedule" belong? Next to Save PDF and Print looks natural -- they are all outputs.
+- Fix: Put it on the Signatures tab instead. Under gutter shift there is nothing to gather, so beside the export actions it would sit permanently inert next to two buttons that always work, which reads as broken rather than inapplicable. On the Signatures tab its availability matches the tab's own.
+- Surfaces: It is gated on BOTH a folio fold scheme and a loaded document -- either alone produces an empty schedule. The panel reports the outcome through a `schedule_saved` signal rather than reaching for a status bar it does not own; the window connects it.
+- Watch: The schedule uses the same `deckle.core.outputs` wording as Save PDF and the CLI, so a locked file or a bad drive letter reads the same in all three. A third front end with its own phrasing for the same failure was exactly what the outputs module was extracted to prevent.
+- Commit: (this commit)

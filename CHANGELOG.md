@@ -41,6 +41,12 @@ see the README. The calibration wizard is not built.
   per-signature printing. Marked experimental because the page *ordering* is
   hand-written arithmetic whose only real check is folding a physical dummy,
   which has not been done. The default gutter-shift path is unaffected.
+- **Binding schedules** — `deckle schedule`, and Save schedule on the
+  Signatures tab. A printable work order derived from the imposed plan:
+  gathering order per signature, which pages land on each sheet side, where
+  padding blanks fall, sewing-station guidance, and a fore-edge creep
+  estimate. It reads the plan the exporter used and never recomputes the
+  imposition, so it cannot disagree with the PDF in your hands.
 - **Diagnostic log** — `deckle.core.diagnostics`: rotating JSON Lines under
   the OS data dir, following the existing session-log conventions. Every
   path that degrades instead of failing now records why. The module is

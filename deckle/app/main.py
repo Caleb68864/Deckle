@@ -371,6 +371,7 @@ class MainWindow:
 
         self.import_view.imported.connect(self._on_imported)
         self.layout_panel.layout_changed.connect(self._on_layout_changed)
+        self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
         self.print_button.clicked.connect(self._on_print_clicked)
         self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
 
@@ -394,6 +395,7 @@ class MainWindow:
         has_pages = bool(self.state.project.pages)
         self.save_pdf_button.setEnabled(has_pages)
         self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
+        self.layout_panel.set_document_loaded(has_pages)
 
     def _on_layout_changed(self, plan) -> None:
         # Hand the preview the settings too, so its content-box guide

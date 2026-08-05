@@ -653,3 +653,69 @@ def test_the_preview_is_not_stacked_below_the_controls_in_one_column():
             assert f"{column}.addWidget(self.{panel}" not in source, (
                 f"{panel} is back in the {column} column"
             )
+
+
+# -- the binding schedule on the Signatures tab -------------------------
+
+
+def test_the_schedule_button_needs_both_folio_and_a_document(qapp):
+    """A schedule for nothing is an empty schedule.
+
+    It needs a fold scheme that actually gathers sheets AND pages to
+    gather, so the button is gated on both rather than on either.
+    """
+    from deckle.app.state import AppState
+
+    # folio, but no document
+    panel = layout_panel.LayoutPanel(AppState(_project(0, fold_scheme="folio")))
+    panel.set_document_loaded(False)
+    assert panel.save_schedule_button.isEnabled() is False
+
+    # a document, but gutter shift -- nothing to gather
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
+    panel.set_document_loaded(True)
+    assert panel.save_schedule_button.isEnabled() is False
+
+    # both
+    panel = layout_panel.LayoutPanel(
+        AppState(_project(8, paper=LETTER_LANDSCAPE, gutter_pt=0.0, fold_scheme="folio"))
+    )
+    panel.set_document_loaded(True)
+    assert panel.save_schedule_button.isEnabled() is True
+
+
+def test_switching_to_folio_enables_the_schedule_button(qapp):
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(
+        AppState(_project(8, paper=LETTER_LANDSCAPE, gutter_pt=0.0, fold_scheme="none"))
+    )
+    panel.set_document_loaded(True)
+    assert panel.save_schedule_button.isEnabled() is False
+
+    panel.fold_scheme_combo.setCurrentText("folio")
+
+    assert panel.save_schedule_button.isEnabled() is True
+
+
+def test_the_schedule_button_explains_itself(qapp):
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="folio")))
+    tip = panel.save_schedule_button.toolTip()
+
+    assert "gather" in tip.lower()
+    assert "sew" in tip.lower()
+
+
+def test_the_panel_reports_schedule_outcomes_through_a_signal(qapp):
+    """The panel does not own a status bar; the window does."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="folio")))
+    seen = []
+    panel.schedule_saved.connect(seen.append)
+
+    panel.schedule_saved.emit("Saved binding schedule to book-schedule.txt")
+
+    assert seen == ["Saved binding schedule to book-schedule.txt"]

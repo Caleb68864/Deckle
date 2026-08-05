@@ -56,6 +56,10 @@ why they cannot express "reprint sheet 7".
 - A headless CLI: `impose`, `export`, `info`
 - **Experimental:** saddle-stitch signature imposition (`--fold-scheme folio`),
   with fold lines, sewing-station marks and per-signature printing
+- **Binding schedules** (`deckle schedule`, or Save schedule on the Signatures
+  tab) — a printable work order for the bench: which sheets gather into each
+  signature and in what nesting order, which pages land on each side, where
+  the blanks fall, where to pierce for sewing, and a fore-edge creep estimate
 
 ## Experimental: folio (saddle stitch)
 
@@ -73,6 +77,11 @@ software cannot tell you which way the paper folds.
 
 So: print folio onto scrap, fold it, and read it before committing a real book.
 If it reads correctly, the arithmetic is right and it will stay right.
+
+`deckle schedule` makes that check easier than folding. It prints the page
+ordering in plain terms — for a 16-page signature, the outermost sheet should
+read `16 1` on its front and `2 15` on its back, and the innermost `10 7` and
+`8 9`. Any bookbinding manual has that table, and comparing it takes a moment.
 
 By contrast the default (`--fold-scheme none`, gutter shift) is verified
 placement-identical against the pre-refactor implementation across six setting
