@@ -283,3 +283,10 @@
 - Surfaces: Gutter, margins, slack, binding edge and landscape policy moved ABOVE the tabs, because both ways of making a book need them -- a folded signature has a gutter exactly as a single page does. Only genuinely mode-specific settings live in a tab, which is why the Single pages tab holds a description rather than controls: that mode has no extra settings, and saying so is more honest than inventing some.
 - Watch: Tab selection is guarded against re-entry. setCurrentIndex fires currentChanged, so syncing the tab to a reopened project would write the scheme straight back and push a redundant undo entry. There is a test asserting a no-op tab selection leaves project identity untouched.
 - Commit: (this commit)
+
+## 2026-08-05 - "Single pages" named the mode after a page count that is wrong
+- Symptom: The tab reading "Single pages" implied one page per sheet. Each sheet carries two, one per side -- what the mode lacks is the FOLD, not the second page.
+- Fix: Renamed to "Flat sheets", which contrasts correctly with "Signatures": unfolded versus folded. Both tabs also gained a standing description of what physically happens to the paper, so a mode says what it does before asking to be configured.
+- Surfaces: The experimental caveat moved onto the Signatures description, where folio is actually configured, rather than living only in the README.
+- Watch: Naming a mode after an incidental property invites exactly the confusion the mode selector exists to remove. Name it after what distinguishes it -- here, whether the paper gets folded.
+- Commit: (this commit)

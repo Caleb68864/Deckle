@@ -687,7 +687,7 @@ def test_the_tabs_are_the_mode_not_a_view_of_it(qapp):
         "the dropdown is gone; the tab is the mode"
     )
     assert [panel.tabs.tabText(i) for i in range(panel.tabs.count())] == [
-        "Single pages",
+        "Flat sheets",
         "Signatures",
     ]
 
@@ -748,3 +748,40 @@ def test_page_setup_is_shared_by_both_modes(qapp):
             assert widget.parent() is not panel.tabs.widget(index), (
                 "a shared page-setup control is trapped inside a mode tab"
             )
+
+
+def test_each_mode_tab_describes_itself_before_asking_for_settings(qapp):
+    """A mode should say what it does. Both tabs carry a standing
+    description, not just controls."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
+
+    flat = panel.single_hint_label.text()
+    signatures = panel.signature_hint_label.text()
+
+    for text in (flat, signatures):
+        assert len(text) > 100, "a mode tab has no real description"
+
+    # Each says what physically happens to the paper.
+    assert "never folded" in flat
+    assert "folded" in signatures and "nested" in signatures
+    # Both point at the shared page setup rather than implying it is absent.
+    assert "Page setup" in flat
+    assert "Page setup" in signatures
+    # The experimental caveat belongs where folio is configured.
+    assert "xperimental" in signatures
+    assert "xperimental" not in flat
+
+
+def test_the_flat_sheets_tab_is_not_called_single_pages(qapp):
+    """Each sheet carries TWO pages, one per side. Naming the mode for a
+    page count that is wrong invites the confusion the tabs exist to
+    remove -- what this mode lacks is the fold, not the second page."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
+    titles = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+
+    assert "Single pages" not in titles
+    assert "Flat sheets" in titles

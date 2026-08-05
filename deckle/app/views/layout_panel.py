@@ -436,15 +436,21 @@ class LayoutPanel:
         single_tab = QWidget(self.widget)
         single_form = QFormLayout(single_tab)
         single_form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
-        self.tabs.addTab(single_tab, "Single pages")
+        # "Flat sheets", not "Single pages": each sheet still carries two
+        # pages, one per side. What this mode lacks is the FOLD, and naming
+        # it for a page count that is wrong invites exactly the confusion
+        # the tabs exist to remove.
+        self.tabs.addTab(single_tab, "Flat sheets")
         self._single_tab_index = self.tabs.indexOf(single_tab)
 
         self.single_hint_label = QLabel(
-            "One page per sheet side, with the gutter alternating so it "
-            "always falls on the bound edge.\n\n"
+            "Sheets are printed but never folded. Each one carries two pages, "
+            "one per side, and the gutter alternates so it always falls on "
+            "the bound edge.\n\n"
             "Print all fronts, reload the stack, print all backs, then bind "
-            "the sheets however you like -- there is nothing to fold.\n\n"
-            "Everything this mode needs is in Page setup above.",
+            "the stack however you like -- glued, punched, or side-sewn.\n\n"
+            "This is the proven path, and it needs no settings beyond Page "
+            "setup above.",
             single_tab,
         )
         self.single_hint_label.setWordWrap(True)
@@ -586,13 +592,23 @@ class LayoutPanel:
         )
         form.addRow("Landscape policy:", self.landscape_policy_combo)
 
-        # -- signature/binding controls (folio only) --------------------
-        # Everything below lands on the Signatures tab. Under
-        # fold_scheme="none" these values are read by nothing, so the tab is
-        # disabled rather than left looking editable -- a control that
-        # accepts input and changes nothing is worse than one that is
-        # visibly unavailable.
-        self.signature_hint_label = QLabel("", signature_tab)
+        # -- signature/binding controls ---------------------------------
+        # Everything below lands on the Signatures tab, and is reachable
+        # only while that tab is selected -- which is also what sets
+        # fold_scheme="folio". The description mirrors the Flat sheets one:
+        # a mode should say what it does before it asks you to configure it.
+        self.signature_hint_label = QLabel(
+            "Sheets are imposed two-up, folded in half, and nested inside "
+            "one another to make gatherings that get sewn through the "
+            "fold.\n\n"
+            "Page setup above still applies -- a folded signature has a "
+            "gutter and margins exactly as a flat sheet does. The settings "
+            "here control only how the sheets are grouped and folded.\n\n"
+            "Experimental: the page ordering is hand-written arithmetic. "
+            "Save the schedule, print onto scrap, fold it, and check it "
+            "reads correctly before committing a real book.",
+            signature_tab,
+        )
         self.signature_hint_label.setWordWrap(True)
         signature_form.addRow(self.signature_hint_label)
 
