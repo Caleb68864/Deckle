@@ -156,6 +156,36 @@ def main(source_pdf: str, out_pdf: str) -> int:
     report["exported"] = os.path.exists(out_pdf)
     report["export_bytes"] = os.path.getsize(out_pdf) if report["exported"] else 0
 
+    # -- save the project, then open it into a fresh window -------------
+    # A project is a description of a job. The test that matters is whether
+    # reopening it reproduces the job, not whether the file was written.
+    from deckle.core.project_io import save_project
+
+    project_path = out_pdf + ".deckle"
+    panel.orientation_combo.setCurrentText("Landscape")
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+    panel.sewing_stations_spinbox.setValue(5)
+    save_project(window.state.project, project_path)
+    report["project_saved"] = os.path.exists(project_path)
+    report["project_bytes"] = os.path.getsize(project_path)
+
+    saved_layout = window.state.project.layout
+    reopened = app_main.MainWindow()
+    report["reopened"] = reopened.open_project(project_path)
+    restored = reopened.state.project.layout
+    report["layout_survived_round_trip"] = (
+        list(restored.paper) == list(saved_layout.paper)
+        and restored.fold_scheme == saved_layout.fold_scheme
+        and restored.gutter_pt == saved_layout.gutter_pt
+        and restored.sewing_stations == saved_layout.sewing_stations
+    )
+    report["reopened_pages"] = len(reopened.state.project.pages)
+    report["reopened_tab"] = reopened.layout_panel.tabs.tabText(
+        reopened.layout_panel.tabs.currentIndex()
+    )
+    report["reopened_orientation"] = reopened.layout_panel.orientation_combo.currentText()
+    report["reopened_preview_sheets"] = len(reopened.preview_view.plan.sheets)
+
     # -- the preview shows the artifact ---------------------------------
     report["preview_sheets"] = len(window.preview_view.plan.sheets)
 

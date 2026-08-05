@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import warnings
 
 from deckle.app.state import AppState
 from deckle.core.diagnostics import log_event, log_exception
@@ -22,6 +23,13 @@ from deckle.app.views.print_dialog import PrintDialog
 from deckle.core.export import export
 from deckle.core.models import LayoutSettings, Project
 from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.core.project_io import (
+    PathOutsideRootsAdvisory,
+    SourceChangedWarning,
+    SourceMissingError,
+    load_project,
+    save_project,
+)
 from deckle.core.profiles import BUILTIN_PRESETS
 
 LETTER_PT = (612.0, 792.0)
@@ -35,6 +43,14 @@ Previously the only first-run message was :data:`NO_PRINTERS_MESSAGE`, so an
 empty Deckle led with a complaint about hardware the user does not need yet.
 The first message should name the first step.
 """
+
+NOTHING_TO_SAVE_MESSAGE = "Nothing to save yet -- import a PDF or images first."
+
+SAVE_PROJECT_TOOLTIP = (
+    "Save this job as a .deckle project so you can come back to it.\n\n"
+    "Saves the page order, rotations, skips, blanks and every layout "
+    "setting -- not the PDF. Use Save PDF for the imposed document."
+)
 
 NOTHING_TO_EXPORT_MESSAGE = "Nothing to export yet -- import a PDF or images first."
 """Why Save PDF is unavailable. Shown as the button's tooltip.
@@ -312,6 +328,23 @@ class MainWindow:
         # previewed -- and it needs no printer, so it stays enabled when
         # Print is disabled. They sit at the bottom of the controls column
         # because they are the end of the workflow, not part of it.
+        # Opening and saving the project itself, above the two ways OUT of
+        # the app. A project is the job you are working on; a PDF and a
+        # print run are what you produce from it.
+        self.open_project_button = QPushButton("Open project...", controls)
+        self.open_project_button.setToolTip(
+            "Open a .deckle project: the pages you imported, the order you "
+            "put them in, and every layout setting.\n\n"
+            "A project records where its sources live rather than copying "
+            "them, so it stays small -- and Deckle checks they have not "
+            "changed since you saved."
+        )
+        controls_layout.addWidget(self.open_project_button)
+
+        self.save_project_button = QPushButton("Save project...", controls)
+        self.save_project_button.setToolTip(SAVE_PROJECT_TOOLTIP)
+        controls_layout.addWidget(self.save_project_button)
+
         self.save_pdf_button = QPushButton("Save PDF...", controls)
         controls_layout.addWidget(self.save_pdf_button)
 
@@ -375,6 +408,8 @@ class MainWindow:
         self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
         self.print_button.clicked.connect(self._on_print_clicked)
         self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
+        self.open_project_button.clicked.connect(self._on_open_project_clicked)
+        self.save_project_button.clicked.connect(self._on_save_project_clicked)
 
         # Known-empty until the background query returns, so nothing reads
         # an undefined attribute if the user clicks Print immediately.
@@ -400,6 +435,11 @@ class MainWindow:
         """
         has_pages = bool(self.state.project.pages)
         self.save_pdf_button.setEnabled(has_pages)
+        # Opening is always available; saving needs something to save.
+        self.save_project_button.setEnabled(has_pages)
+        self.save_project_button.setToolTip(
+            SAVE_PROJECT_TOOLTIP if has_pages else NOTHING_TO_SAVE_MESSAGE
+        )
         self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
         self.layout_panel.set_document_loaded(has_pages)
 
@@ -561,6 +601,125 @@ class MainWindow:
             return "deckle-output.pdf"
         stem = os.path.splitext(os.path.basename(pages[0].ref.path))[0]
         return f"{stem}-deckle.pdf"
+
+    def _on_open_project_clicked(self) -> None:
+        """Open a saved project, replacing whatever is loaded.
+
+        :returns: nothing. Every failure is reported in the status bar; a
+            project that cannot be opened leaves the current one alone
+            rather than half-replacing it.
+        """
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self.window, "Open project", "", "Deckle projects (*.deckle)"
+        )
+        if not path:
+            return
+        self.open_project(path)
+
+    def open_project(self, path: str) -> bool:
+        """Load ``path`` into the window.
+
+        :param path: the ``.deckle`` to open.
+        :returns: whether it opened.
+
+        Separated from the dialog so the whole flow is drivable without a
+        modal -- the same seam ``PrintDialog`` uses.
+
+        The two ways a project outlives its sources are reported
+        differently on purpose. A missing file is obvious once named. A
+        source that still exists but has CHANGED is the dangerous one:
+        nothing looks wrong, and imposing it would use content the user has
+        never reviewed.
+        """
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                # Sources normally live somewhere other than the project --
+                # Downloads, a scanner folder. Without swallowing the
+                # advisory, Python prints a bare warning naming a line
+                # inside Deckle, which tells the user nothing they can act
+                # on. The containment check still runs; only its rendering
+                # changes.
+                project = load_project(path, allowed_roots=(os.path.dirname(path),))
+            for warning in caught:
+                if issubclass(warning.category, PathOutsideRootsAdvisory):
+                    log_event("project_source_outside_roots", path=path,
+                              detail=str(warning.message))
+        except SourceMissingError as exc:
+            self.status_bar.showMessage(
+                f"Cannot open {os.path.basename(path)}: a source file is "
+                f"missing -- {exc.expected_path}."
+            )
+            log_exception("project_source_missing", exc, path=path)
+            return False
+        except SourceChangedWarning as exc:
+            self.status_bar.showMessage(
+                f"Cannot open {os.path.basename(path)}: {os.path.basename(exc.path)} "
+                "has changed since the project was saved. Re-import it to "
+                "accept the new version."
+            )
+            log_exception("project_source_changed", exc, path=path)
+            return False
+        except Exception as exc:  # noqa: BLE001 -- reported, never a crash
+            self.status_bar.showMessage(f"Cannot open {os.path.basename(path)}: {exc}")
+            log_exception("project_open_failed", exc, path=path)
+            return False
+
+        self.state = AppState(project, project_path=path)
+        self.import_view.state = self.state
+        self.arrange_view.state = self.state
+        self.layout_panel.state = self.state
+        self.arrange_view.refresh()
+        self.layout_panel.refresh_from_project()
+        self._on_pages_changed()
+        self.status_bar.showMessage(
+            f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s)."
+        )
+        log_event("project_opened", path=path, pages=len(project.pages))
+        return True
+
+    def _on_save_project_clicked(self) -> None:
+        """Save the current job as a ``.deckle``.
+
+        :returns: nothing. Uses the same wording as the CLI for a
+            destination it cannot write -- see :mod:`deckle.core.outputs`.
+        """
+        from PySide6.QtWidgets import QFileDialog
+
+        if not self.state.project.pages:
+            self.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
+            return
+
+        source = self.state.project.pages[0].ref.path
+        suggested = os.path.join(
+            os.path.dirname(source) or os.getcwd(),
+            os.path.splitext(os.path.basename(source))[0] + ".deckle",
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "Save project", suggested, "Deckle projects (*.deckle)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".deckle"):
+            path += ".deckle"
+
+        problem = output_path_problem(path)
+        if problem is not None:
+            self.status_bar.showMessage(problem)
+            log_event("project_path_rejected", path=path, detail=problem)
+            return
+
+        try:
+            save_project(self.state.project, path)
+        except OSError as exc:
+            self.status_bar.showMessage(describe_write_failure(path, exc))
+            log_exception("project_write_failed", exc, path=path)
+            return
+        self.state.project_path = path
+        self.status_bar.showMessage(f"Saved project to {path}")
+        log_event("project_saved", path=path, pages=len(self.state.project.pages))
 
     def _on_save_pdf_clicked(self) -> None:
         from PySide6.QtWidgets import QFileDialog

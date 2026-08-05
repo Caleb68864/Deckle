@@ -28,7 +28,7 @@ import dataclasses
 from dataclasses import asdict
 from typing import Any, Callable
 
-from deckle.core.models import LayoutSettings, Project, SourcePage, SourceRef
+from deckle.core.models import is_blank_page, LayoutSettings, Project, SourcePage, SourceRef
 
 FORMAT_VERSION = 1
 
@@ -311,6 +311,13 @@ def load_project(
     checked: set[str] = set()
     for page in pages:
         ref = page.ref
+        if is_blank_page(page):
+            # A blank the user inserted references no file. Both checks
+            # below are about a source on disk, and a blank has none: the
+            # containment check advised on an empty path, and the existence
+            # check then raised SourceMissingError for it -- so a project
+            # containing a single blank could be saved and never reopened.
+            continue
         if ref.path in checked:
             continue
         checked.add(ref.path)

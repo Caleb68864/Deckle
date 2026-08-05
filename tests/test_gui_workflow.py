@@ -149,3 +149,32 @@ def test_the_edited_document_is_what_gets_exported(report):
     placements = report["edited_export_placements"]
     assert len(placements) >= 3, "the exported PDF is missing the inserted page"
     assert 0 in placements, "the blank page is absent from the exported PDF"
+
+
+# -- saving and reopening a project --------------------------------------
+
+
+def test_a_project_can_be_saved(report):
+    assert report["project_saved"] is True
+    assert report["project_bytes"] > 0
+    assert report["project_bytes"] < 8192, (
+        "a project describes a job; it must not archive the sources"
+    )
+
+
+def test_reopening_a_project_restores_the_layout(report):
+    """The test that matters. Writing the file proves nothing -- the
+    question is whether reopening reproduces the job."""
+    assert report["reopened"] is True
+    assert report["layout_survived_round_trip"] is True, (
+        "paper, fold scheme, gutter or sewing stations were lost"
+    )
+
+
+def test_reopening_a_project_restores_the_pages_and_the_view(report):
+    """The controls must follow the document. A panel showing the previous
+    job's settings over a different book is worse than showing nothing."""
+    assert report["reopened_pages"] >= 1
+    assert report["reopened_tab"] == "Signatures"
+    assert report["reopened_orientation"] == "Landscape"
+    assert report["reopened_preview_sheets"] >= 1

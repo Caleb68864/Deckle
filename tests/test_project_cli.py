@@ -183,3 +183,82 @@ def test_a_pdf_is_still_treated_as_a_source_not_a_project():
 
     assert result.returncode == 0
     assert "project:" not in result.stdout
+
+
+# -- blanks are not sources ----------------------------------------------
+
+
+def test_a_project_containing_a_blank_can_be_reopened(tmp_path):
+    """A blank the user inserted references no file.
+
+    Source validation treated its empty path as a missing source, so a
+    project with a single blank in it could be saved and never opened
+    again -- and the error named no file, because there was none.
+    """
+    from deckle.app.state import insert_blank
+    from deckle.core.loader import load_pdf
+    from deckle.core.models import LayoutSettings, Project, is_blank_page
+    from deckle.core.project_io import load_project, save_project
+
+    pages = load_pdf(FIXTURE)
+    project = Project(
+        pages=list(pages),
+        layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=18.0, binding_edge="left"),
+        printer=None,
+    )
+    project = insert_blank(project, 1)
+
+    path = tmp_path / "with-blank.deckle"
+    save_project(project, str(path))
+    reopened = load_project(str(path), allowed_roots=(os.path.dirname(FIXTURE),))
+
+    assert len(reopened.pages) == 3
+    assert is_blank_page(reopened.pages[1])
+    assert not is_blank_page(reopened.pages[0])
+
+
+def test_a_real_missing_source_is_still_caught_with_a_blank_present(tmp_path):
+    """Skipping blanks must not skip the check that matters."""
+    import shutil
+
+    from deckle.app.state import insert_blank
+    from deckle.core.loader import load_pdf
+    from deckle.core.models import LayoutSettings, Project
+    from deckle.core.project_io import SourceMissingError, load_project, save_project
+
+    source = tmp_path / "src.pdf"
+    shutil.copy(FIXTURE, source)
+    project = Project(
+        pages=list(load_pdf(str(source))),
+        layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0, binding_edge="left"),
+        printer=None,
+    )
+    path = tmp_path / "p.deckle"
+    save_project(insert_blank(project, 0), str(path))
+
+    source.unlink()
+
+    with pytest.raises(SourceMissingError):
+        load_project(str(path))
+
+
+def test_importing_a_pdf_does_not_lock_the_file(tmp_path):
+    """Import is metadata-only, and the handle must not outlive it.
+
+    ``load_pdf`` opened a pdfium document and never closed it, so on
+    Windows every imported source stayed locked for the life of the app:
+    move, rename or delete it and the OS refused, naming no reason a user
+    could act on.
+    """
+    import shutil
+
+    from deckle.core.loader import load_pdf
+
+    source = tmp_path / "movable.pdf"
+    shutil.copy(FIXTURE, source)
+
+    pages = load_pdf(str(source))
+    assert len(pages) == 2
+
+    source.unlink()  # must not raise PermissionError
+    assert not source.exists()

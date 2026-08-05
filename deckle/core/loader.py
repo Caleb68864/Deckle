@@ -354,30 +354,44 @@ def load_pdf(path: str) -> list[SourcePage]:
     except pdfium.PdfiumError as exc:
         raise _classify_pdf_open_failure(path, exc) from exc
 
-    if len(doc) == 0:
-        # Reachable independently of the open failure above: some zero-page
-        # files open cleanly and only reveal themselves on len().
-        raise EmptyPdfError(
-            path,
-            f"cannot use {path}: the PDF has no pages, so there is nothing "
-            "to impose. Check that the export that produced it actually "
-            "wrote its pages.",
-        )
+    # The document is closed before returning. Import is metadata-only --
+    # nothing downstream holds a pdfium handle, and every later read reopens
+    # the file. Leaving it open kept the source LOCKED on Windows for the
+    # life of the app: import a PDF and you could not move, rename or delete
+    # it until Deckle exited, with no indication of what held it.
+    try:
+        if len(doc) == 0:
+            # Reachable independently of the open failure above: some
+            # zero-page files open cleanly and only reveal themselves on
+            # len().
+            raise EmptyPdfError(
+                path,
+                f"cannot use {path}: the PDF has no pages, so there is "
+                "nothing to impose. Check that the export that produced it "
+                "actually wrote its pages.",
+            )
 
-    sha256 = _sha256_file(path)
-    pages: list[SourcePage] = []
-    for index in range(len(doc)):
-        page = doc[index]
-        width_pt, height_pt = page.get_size()
-        ref = SourceRef(
-            path=path,
-            page_index=index,
-            sha256=sha256,
-            width_pt=float(width_pt),
-            height_pt=float(height_pt),
-        )
-        pages.append(SourcePage(ref=ref, rotate_deg=0, skipped=False))
-    return pages
+        sha256 = _sha256_file(path)
+        pages: list[SourcePage] = []
+        for index in range(len(doc)):
+            page = doc[index]
+            try:
+                width_pt, height_pt = page.get_size()
+            finally:
+                # Children before the parent, or their finalizers assert
+                # against a closed document -- see render.rasterize_page.
+                page.close()
+            ref = SourceRef(
+                path=path,
+                page_index=index,
+                sha256=sha256,
+                width_pt=float(width_pt),
+                height_pt=float(height_pt),
+            )
+            pages.append(SourcePage(ref=ref, rotate_deg=0, skipped=False))
+        return pages
+    finally:
+        doc.close()
 
 
 def _scan_image_dir(dir_path: str) -> tuple[list[str], list[str]]:

@@ -871,6 +871,69 @@ class LayoutPanel:
         self.sewing_stations_spinbox.valueChanged.connect(self._on_sewing_stations_changed)
         self.paper_thickness_spinbox.valueChanged.connect(self._on_paper_thickness_changed)
 
+    def refresh_from_project(self) -> None:
+        """Re-read every control from the current project.
+
+        :returns: nothing.
+
+        Needed when the project is REPLACED rather than edited -- opening a
+        saved one. Without it the controls keep showing the previous job's
+        settings while the document underneath is a different book, which
+        is worse than showing nothing: the panel would be confidently wrong.
+
+        Signals are blocked throughout. Setting a widget's value fires its
+        handler, and those handlers write back to the project -- so an
+        unguarded refresh would overwrite the freshly loaded layout with
+        whatever the widgets happened to hold, one control at a time.
+        """
+        layout = self.state.project.layout
+        widgets = [
+            self.unit_combo, self.paper_combo, self.orientation_combo,
+            self.grain_combo, self.paper_thickness_spinbox, self.gutter_spinbox,
+            self.slack_combo, self.link_margins_check, self.binding_edge_combo,
+            self.landscape_policy_combo, self.sheets_per_signature_spinbox,
+            self.blank_mode_combo, self.sewing_stations_spinbox, self.tabs,
+            *self.margin_spinboxes.values(),
+        ]
+        for widget in widgets:
+            widget.blockSignals(True)
+        try:
+            preset = preset_name_for(layout.paper)
+            if preset is not None and preset in self._paper_names:
+                self.paper_combo.setCurrentIndex(self._paper_names.index(preset))
+            self.orientation_combo.setCurrentText(
+                "Landscape" if paper_is_landscape(layout.paper) else "Portrait"
+            )
+            grain = getattr(layout, "grain", "unknown")
+            if grain in self._grain_keys:
+                self.grain_combo.setCurrentIndex(self._grain_keys.index(grain))
+            self.paper_thickness_spinbox.setValue(
+                from_points(layout.paper_thickness_pt, self._unit)
+            )
+            self.gutter_spinbox.setValue(from_points(layout.gutter_pt, self._unit))
+            if layout.slack_to in self._slack_keys:
+                self.slack_combo.setCurrentIndex(self._slack_keys.index(layout.slack_to))
+            self.link_margins_check.setChecked(layout.margins_linked)
+            for field, box in self.margin_spinboxes.items():
+                box.setValue(from_points(getattr(layout, field), self._unit))
+            self.binding_edge_combo.setCurrentText(layout.binding_edge)
+            self.landscape_policy_combo.setCurrentText(layout.landscape_policy)
+            self.sheets_per_signature_spinbox.setValue(layout.sheets_per_signature)
+            self.blank_mode_combo.setCurrentText(layout.blank_mode)
+            self.sewing_stations_spinbox.setValue(layout.sewing_stations)
+            self.tabs.setCurrentIndex(
+                self._signature_tab_index
+                if layout.fold_scheme == "folio"
+                else self._single_tab_index
+            )
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
+
+        self._sync_margin_enabled()
+        self._sync_signature_tab()
+        self._refresh_binding_readout(recompute_plan(self.state.project))
+
     def set_document_loaded(self, loaded: bool) -> None:
         """Enable the document-dependent actions on this panel.
 
