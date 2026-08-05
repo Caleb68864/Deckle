@@ -607,12 +607,17 @@ class SaddleStitchStrategy:
 
         sheets: list[Sheet] = []
         signatures: list[Signature] = []
+        # The source slice each signature actually imposed, recorded as it is
+        # taken so the concatenation invariant below checks what was used,
+        # not a re-derivation of it.
+        signature_slices: list[list[SourcePage | None]] = []
         sig_count = len(groups)
 
         for sig_index, group in enumerate(groups):
             page_offset = group[0] * 4
             page_count = 4 * len(group)
             sig_slots = slots[page_offset : page_offset + page_count]
+            signature_slices.append(sig_slots)
             sig_blank_count = sum(1 for s in sig_slots if s is None)
 
             order = saddle_order(page_count)
@@ -713,9 +718,16 @@ class SaddleStitchStrategy:
             "signature sheet_indices must be contiguous, gapless, and cover "
             "every sheet exactly once, in binding order"
         )
-        assert all(len(sig.sheet_indices) % 1 == 0 for sig in signatures)
-        assert sum(len(sig.sheet_indices) for sig in signatures) * 4 == len(slots), (
+        assert all(len(sig_slice) % 4 == 0 for sig_slice in signature_slices), (
+            "every signature's slot count must be a multiple of 4"
+        )
+        assert sum(len(sig_slice) for sig_slice in signature_slices) == len(slots), (
             "signature slot counts must sum to the padded page count"
+        )
+        concatenated = [slot for sig_slice in signature_slices for slot in sig_slice]
+        assert concatenated == slots, (
+            "concatenating the signatures' source slices must reproduce the "
+            "padded page list in order"
         )
 
         return SheetPlan(
