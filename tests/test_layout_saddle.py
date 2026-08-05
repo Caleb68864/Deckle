@@ -200,18 +200,86 @@ def test_front_left_cell_inner_margin_is_on_its_right_edge():
 
 
 def test_back_side_spine_also_faces_the_fold():
-    plan = impose(make_pages(8), settings())
+    """The back's gutters must land at the fold too, and match the front's.
+
+    This previously asserted only ``>= 0.0``, which every possible placement
+    satisfies -- including one that put the back's gutters on the outer
+    edges, which is precisely the defect the test is named for. A sheet
+    whose front hinges at the fold and whose back hinges at the trimmed
+    edges produces a book that will not open.
+    """
+    plan = impose(make_pages(8), settings(margin_outer_pt=10.0))
     sheet0 = plan.sheets[0]
     left_cell, right_cell = cell_geometry(LETTER_LANDSCAPE)
     left_op, right_op = sheet0.back.pages
+
     left_margins = actual_margins_pt(
         left_op, LETTER_LANDSCAPE, spine_side="right", cell=left_cell, binding_edge="left"
     )
     right_margins = actual_margins_pt(
         right_op, LETTER_LANDSCAPE, spine_side="left", cell=right_cell, binding_edge="left"
     )
-    assert left_margins[0] >= 0.0
-    assert right_margins[0] >= 0.0
+
+    assert left_margins[0] == pytest.approx(18.0, abs=1e-6)
+    assert right_margins[0] == pytest.approx(18.0, abs=1e-6)
+
+
+@pytest.mark.parametrize("gutter_pt", [0.0, 18.0, 54.0])
+def test_both_leaves_sit_the_same_distance_from_the_fold(gutter_pt):
+    """The gutter of a folded signature is in the MIDDLE of the sheet.
+
+    The spine is the fold, so both leaves' inner margins are measured
+    outward from the centre line -- not from the sheet's outer edges, which
+    is where a flat-sheet gutter lives. Asserted here in absolute sheet
+    coordinates rather than through ``actual_margins_pt``, so it would catch
+    a cell-geometry error that the per-cell helper and the placement code
+    happened to agree on.
+
+    Asymmetry here means one leaf's text creeps toward the fold while the
+    other drifts away, and it shows up as visibly uneven inner margins the
+    moment the signature is opened flat.
+    """
+    plan = impose(
+        make_pages(8),
+        settings(gutter_pt=gutter_pt, margin_outer_pt=10.0),
+    )
+    fold_x = LETTER_LANDSCAPE[0] / 2.0
+
+    for side in (plan.sheets[0].front, plan.sheets[0].back):
+        left_op, right_op = side.pages
+        left_ref, right_ref = left_op.source_ref, right_op.source_ref
+
+        left_edge = left_op.placement.tx + left_ref.width_pt * left_op.placement.scale_x
+        right_edge = right_op.placement.tx
+
+        gap_left = fold_x - left_edge
+        gap_right = right_edge - fold_x
+
+        assert gap_left == pytest.approx(gap_right, abs=1e-6), (
+            f"leaves are not symmetric about the fold: {gap_left:.2f} vs "
+            f"{gap_right:.2f} at gutter={gutter_pt}"
+        )
+        # And the gap is a real one on the fold side, never negative --
+        # content crossing the fold would be printed across the spine.
+        assert gap_left >= gutter_pt - 1e-6
+
+
+def test_a_larger_gutter_widens_the_blank_band_at_the_fold():
+    """Increasing the gutter must move both leaves AWAY from the centre.
+
+    If a sign were flipped, a bigger gutter would push the leaves together
+    and eventually overlap the fold -- which still produces a valid PDF, so
+    nothing else would complain.
+    """
+    fold_x = LETTER_LANDSCAPE[0] / 2.0
+
+    def gap_at(gutter_pt: float) -> float:
+        plan = impose(make_pages(8), settings(gutter_pt=gutter_pt, margin_outer_pt=10.0))
+        left_op = plan.sheets[0].front.pages[0]
+        edge = left_op.placement.tx + left_op.source_ref.width_pt * left_op.placement.scale_x
+        return fold_x - edge
+
+    assert gap_at(54.0) > gap_at(18.0) > gap_at(0.0)
 
 
 def test_binding_edge_right_mirrors_which_cell_a_slot_lands_in():

@@ -297,3 +297,10 @@
 - Surfaces: Orientation is stored as the paper tuple itself, not a separate flag, so nothing downstream needs to know about it. Changing the SIZE preserves the chosen orientation -- picking A4 while in landscape must not silently flip back to portrait.
 - Watch: A custom size (from --paper 500x700pt, or an older project) is offered verbatim in the dropdown rather than snapped to the nearest preset. Rounding a user's paper on open would be a silent data change, which is worse than an odd-looking entry. Deckle still WARNS about portrait paper under folio rather than rotating it -- advise, do not refuse, and do not quietly rearrange someone's settings.
 - Commit: (this commit)
+
+## 2026-08-05 - Verified the folio gutter sits at the fold, and strengthened a near-vacuous test
+- Symptom: Asked whether signature gutters land in the MIDDLE of the sheet (at the fold) rather than at its outer edges. The behaviour was already correct, but one of the two tests guarding it asserted only  -- which every possible placement satisfies, including the exact defect the test was named for.
+- Fix: Measured it empirically first (fold at x=396 on a 792pt landscape sheet; gaps of 15.3 / 32.6 / 67.2pt each side at gutters of 0 / 0.25in / 0.75in -- symmetric at every value). Then rewrote  to assert the actual gutter, and added a symmetry test in absolute sheet coordinates plus a monotonicity test.
+- Surfaces: A sheet whose front hinges at the fold and whose back hinges at the trimmed edges produces a book that will not open. Nothing else would complain -- the PDF is valid either way.
+- Watch: The new symmetry test measures raw placements rather than going through , deliberately: a per-cell helper and the placement code can agree with each other and both be wrong about where the fold is. Verified by mutation -- flipping both spine sides to face outward fails five tests, only two of which existed before.
+- Commit: (this commit)
