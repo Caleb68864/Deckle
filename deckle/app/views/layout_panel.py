@@ -565,18 +565,12 @@ class LayoutPanel:
         for name, _dimensions in PAPER_PRESETS:
             self.paper_combo.addItem(name)
         self._paper_names = [name for name, _ in PAPER_PRESETS]
-        current_preset = preset_name_for(state.project.layout.paper)
-        if current_preset is None:
-            # A custom size from the CLI or an older project. Offer it as an
-            # option rather than snapping it to the nearest preset.
-            width, height = sorted(state.project.layout.paper)
-            self._custom_paper_label = f"Custom ({width:.0f} x {height:.0f}pt)"
-            self.paper_combo.addItem(self._custom_paper_label)
-            self._paper_names.append(self._custom_paper_label)
-            current_preset = self._custom_paper_label
-        else:
-            self._custom_paper_label = None
-        self.paper_combo.setCurrentIndex(self._paper_names.index(current_preset))
+        self._custom_paper_label = None
+        self.paper_combo.setCurrentIndex(
+            self._paper_names.index(
+                self._sync_paper_choices(state.project.layout.paper)
+            )
+        )
         self.paper_combo.setToolTip(
             "The size of the paper you are printing on -- not the size of a "
             "page in the book.\n\n"
@@ -912,9 +906,9 @@ class LayoutPanel:
         for widget in widgets:
             widget.blockSignals(True)
         try:
-            preset = preset_name_for(layout.paper)
-            if preset is not None and preset in self._paper_names:
-                self.paper_combo.setCurrentIndex(self._paper_names.index(preset))
+            self.paper_combo.setCurrentIndex(
+                self._paper_names.index(self._sync_paper_choices(layout.paper))
+            )
             self.orientation_combo.setCurrentText(
                 "Landscape" if paper_is_landscape(layout.paper) else "Portrait"
             )
@@ -1144,6 +1138,46 @@ class LayoutPanel:
             self.state, lambda project: set_grain(project, self._grain_keys[index])
         )
         self.layout_changed.emit(plan)
+
+    def _sync_paper_choices(self, paper: tuple[float, float]) -> str:
+        """Make sure the combo can name ``paper``, and say what to select.
+
+        A custom size -- from the CLI's ``--paper``, or an older project --
+        matches no preset, so it gets an entry of its own naming its
+        dimensions. Offering it beats snapping it to the nearest preset,
+        which would silently resize the user's book.
+
+        This was worked out once, in the constructor, and never again.
+        ``refresh_from_project`` therefore left the combo showing the
+        PREVIOUS job's paper when the newly opened one was custom: the
+        panel said "A4" over a 500x700 sheet. The document itself stayed
+        correct -- changing orientation still swapped the real dimensions
+        -- so nothing broke, it just stated something untrue, which is the
+        exact failure that method exists to prevent.
+
+        :param paper: the dimensions to name.
+        :returns: the combo entry that describes ``paper``.
+        """
+        preset = preset_name_for(paper)
+        wanted = None
+        if preset is None:
+            width, height = sorted(paper)
+            wanted = f"Custom ({width:.0f} x {height:.0f}pt)"
+
+        # Drop a custom entry that no longer describes anything, so a
+        # project opened after it does not inherit a stale size.
+        if self._custom_paper_label is not None and self._custom_paper_label != wanted:
+            index = self._paper_names.index(self._custom_paper_label)
+            self.paper_combo.removeItem(index)
+            self._paper_names.pop(index)
+            self._custom_paper_label = None
+
+        if wanted is not None and self._custom_paper_label is None:
+            self.paper_combo.addItem(wanted)
+            self._paper_names.append(wanted)
+            self._custom_paper_label = wanted
+
+        return wanted if wanted is not None else preset
 
     def _current_paper_pt(self) -> tuple[float, float]:
         """The paper dimensions the combos currently describe."""
