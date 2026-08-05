@@ -123,6 +123,20 @@ def toggle_skip(project: Project, index: int) -> Project:
     return replace(project, pages=pages)
 
 
+def is_blank_page(page: SourcePage) -> bool:
+    """Whether ``page`` is an inserted blank rather than an imported page.
+
+    :param page: the page to test.
+    :returns: ``True`` for a blank.
+
+    Blanks carry no file: ``ref.path`` is :data:`BLANK_SOURCE_PATH` and
+    ``page_index`` is ``-1``. Checking the path alone is enough and is what
+    the rest of the app does; this exists so callers stop open-coding the
+    comparison and so the marker can move without a search-and-replace.
+    """
+    return page.ref.path == BLANK_SOURCE_PATH
+
+
 def insert_blank(project: Project, index: int) -> Project:
     """Insert a blank page at ``index``, sized to the project's paper.
 

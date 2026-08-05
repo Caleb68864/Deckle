@@ -26,7 +26,15 @@ from __future__ import annotations
 import threading
 from typing import Sequence
 
-from deckle.app.state import AppState, insert_blank, reorder_pages, set_rotation, toggle_skip
+from deckle.core.diagnostics import log_exception
+from deckle.app.state import (
+    AppState,
+    insert_blank,
+    is_blank_page,
+    reorder_pages,
+    set_rotation,
+    toggle_skip,
+)
 from deckle.core.models import SourcePage
 from deckle.core.render import RenderedPage, thumbnails
 
@@ -118,6 +126,29 @@ def skip(state: AppState, index: int) -> None:
     state.mutate(lambda project: toggle_skip(project, index))
 
 
+def blank_insert_choices(page_count: int) -> list[tuple[str, int]]:
+    """Every place a blank can go, as ``(label, index)`` in reading order.
+
+    :param page_count: how many pages the document currently has.
+    :returns: labels a person can pick from, paired with the insert index.
+
+    Positions are described by the pages they fall *between*, because that
+    is how someone looking at a stack thinks about it -- "after the title
+    page", not "at index 1". The ends are named rather than numbered for
+    the same reason.
+
+    An empty document still offers one position, so the control never
+    presents an empty list.
+    """
+    if page_count <= 0:
+        return [("As the only page", 0)]
+    choices = [("Before page 1", 0)]
+    for index in range(1, page_count):
+        choices.append((f"Between pages {index} and {index + 1}", index))
+    choices.append((f"After page {page_count} (at the end)", page_count))
+    return choices
+
+
 def insert_blank_page(state: AppState, index: int) -> None:
     """Insert a blank page, through ``AppState.mutate``.
 
@@ -148,6 +179,9 @@ class ThumbnailWorker:
         self.viewport_count = viewport_count
         self.start = 0
         self.rendered: list[RenderedPage] = []
+        #: Set when the fetch raised. Distinct from an empty ``rendered``,
+        #: which is also what a cancelled or genuinely blank window leaves.
+        self.failed = False
         # Set when a newer scroll position supersedes this fetch.
         self.cancel = threading.Event()
 
@@ -160,9 +194,28 @@ class ThumbnailWorker:
         """
         if self.cancel.is_set():
             return
-        start, rendered = request_visible_thumbnails(
-            self.pages, self.scroll_index, self.viewport_count
-        )
+        try:
+            start, rendered = request_visible_thumbnails(
+                self.pages, self.scroll_index, self.viewport_count
+            )
+        except Exception as exc:  # noqa: BLE001 -- a thread, not the UI
+            # An unreadable source must not raise inside a QThread. Qt has
+            # nowhere to deliver the exception, so it prints a traceback the
+            # user cannot act on and the grid simply stays empty -- the same
+            # picture as thumbnails that are merely slow.
+            #
+            # The commonest cause is mundane: a project reopened after its
+            # source PDF was moved or renamed. Degrade to placeholders,
+            # which is what the grid already shows before a fetch returns,
+            # and record why.
+            log_exception(
+                "thumbnail_render_failed",
+                exc,
+                start=self.scroll_index,
+                count=self.viewport_count,
+            )
+            self.failed = True
+            return
         if self.cancel.is_set():
             return
         self.start, self.rendered = start, rendered
@@ -215,7 +268,15 @@ class ArrangeView:
 
     VIEWPORT_COUNT = 40
 
-    def __init__(self, state: AppState, parent=None) -> None:
+    def __init__(self, state: AppState, parent=None, *, choose_blank_position=None) -> None:
+        """
+        :param state: the app state to arrange.
+        :param parent: Qt parent widget.
+        :param choose_blank_position: called with the list from
+            :func:`blank_insert_choices` and returning the chosen index, or
+            ``None`` to cancel. Injectable so the flow can be driven
+            headlessly -- the default opens a modal, which a test cannot.
+        """
         QObject, QThread, Signal = _qt_core()
         (
             QAbstractItemView,
@@ -228,6 +289,9 @@ class ArrangeView:
         ) = _qt_widgets()
 
         self.state = state
+        self._choose_blank_position = (
+            choose_blank_position or self._default_choose_blank_position
+        )
         self.widget = QWidget(parent)
         outer = QVBoxLayout(self.widget)
 
@@ -272,7 +336,14 @@ class ArrangeView:
         try:
             self.list_widget.clear()
             for i, page in enumerate(self.state.project.pages):
-                label = f"page {i + 1}" + (" (skipped)" if page.skipped else "")
+                label = f"page {i + 1}"
+                if is_blank_page(page):
+                    # Named, not just empty-looking: a blank thumbnail and
+                    # a missing thumbnail look identical while one is still
+                    # rendering, and only one of them is deliberate.
+                    label += " _blank"
+                if page.skipped:
+                    label += " (skipped)"
                 self.list_widget.addItem(QListWidgetItem(label))
         finally:
             self.list_widget.blockSignals(False)
@@ -336,9 +407,43 @@ class ArrangeView:
         skip(self.state, index)
         self.refresh()
 
+    def _default_choose_blank_position(self, choices):
+        """Ask where the blank goes, defaulting to the current selection.
+
+        :param choices: ``(label, index)`` pairs from
+            :func:`blank_insert_choices`.
+        :returns: the chosen insert index, or ``None`` if cancelled.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        selected = self._selected_index()
+        default_index = selected if selected is not None else len(choices) - 1
+        default_row = next(
+            (row for row, (_label, index) in enumerate(choices) if index == default_index),
+            len(choices) - 1,
+        )
+        label, ok = QInputDialog.getItem(
+            self.widget,
+            "Insert blank page",
+            "Where should the blank go?",
+            [text for text, _index in choices],
+            default_row,
+            False,
+        )
+        if not ok:
+            return None
+        return next(index for text, index in choices if text == label)
+
     def _on_insert_blank_clicked(self) -> None:
-        index = self._selected_index()
-        target = index if index is not None else len(self.state.project.pages)
+        """Ask where the blank belongs, then insert it there.
+
+        :returns: nothing. Cancelling inserts nothing at all -- an
+            accidental blank in a 266-page document is tedious to find.
+        """
+        choices = blank_insert_choices(len(self.state.project.pages))
+        target = self._choose_blank_position(choices)
+        if target is None:
+            return
         insert_blank_page(self.state, target)
         self.refresh()
 
