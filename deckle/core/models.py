@@ -56,12 +56,43 @@ class OutputPage:
 
 
 @dataclass(frozen=True)
+class Mark:
+    """A single line-segment mark drawn on a sheet, in sheet points.
+
+    Origin is bottom-left, matching PDF page-coordinate conventions. Every
+    mark is a line segment regardless of ``kind`` -- no colour, no width, no
+    fill. Stroke styling is entirely the renderer's concern.
+    """
+
+    kind: Literal["sewing_station","signature_order","fold_line"]
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+
+@dataclass(frozen=True)
+class Side:
+    """One printable face of a sheet: its output pages plus any marks."""
+
+    pages: tuple[OutputPage, ...]
+    marks: tuple[Mark, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.pages:
+            raise ValueError(
+                "Side.pages must not be empty -- an absent side is None, "
+                "never Side(pages=())"
+            )
+
+
+@dataclass(frozen=True)
 class Sheet:
     """One physical piece of paper with an optional front and back."""
 
     index: int
-    front: OutputPage | None
-    back: OutputPage | None
+    front: Side | None
+    back: Side | None
 
 
 @dataclass(frozen=True)
@@ -74,8 +105,21 @@ class LayoutWarning:
         "clipped_by_imageable_area",
         "mixed_orientation",
         "mixed_dpi",
+        "sheet_orientation",
+        "signature_padding",
+        "creep_advisory",
+        "landscape_imageable_unverified",
     ]
     detail: str
+
+
+@dataclass(frozen=True)
+class Signature:
+    """A group of sheets folded and nested together as one signature."""
+
+    index: int
+    sheet_indices: tuple[int, ...]
+    blank_count: int
 
 
 @dataclass(frozen=True)
@@ -85,6 +129,7 @@ class SheetPlan:
     sheets: list[Sheet]
     paper_pt: tuple[float, float]
     warnings: list[LayoutWarning]
+    signatures: tuple[Signature, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -151,6 +196,12 @@ class LayoutSettings:
     not just the numbers. Purely presentational -- the imposer always reads
     the three fields independently.
     """
+
+    fold_scheme: Literal["none","folio"] = "none"
+    sheets_per_signature: int = 4
+    paper_thickness_pt: float = 0.0
+    sewing_stations: int = 3
+    blank_mode: Literal["end","balanced"] = "end"
 
 
 @dataclass(frozen=True)

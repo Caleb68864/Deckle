@@ -7,11 +7,14 @@ import pytest
 from deckle.core.models import (
     LayoutSettings,
     LayoutWarning,
+    Mark,
     OutputPage,
     Placement,
     Project,
     Sheet,
     SheetPlan,
+    Side,
+    Signature,
     SourcePage,
     SourceRef,
 )
@@ -74,6 +77,45 @@ def test_sheet_fields_allow_none_front_and_back():
     assert sheet.back is None
 
 
+def test_side_fields_and_defaults():
+    placement = Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
+    page = OutputPage(source_ref=None, placement=placement, is_filler=True)
+    side = Side(pages=(page,))
+    assert side.pages == (page,)
+    assert side.marks == ()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        side.pages = ()  # type: ignore[misc]
+
+
+def test_side_rejects_empty_pages():
+    with pytest.raises(ValueError):
+        Side(pages=())
+
+
+def test_sheet_accepts_side_for_front_and_back():
+    placement = Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
+    page = OutputPage(source_ref=None, placement=placement, is_filler=True)
+    side = Side(pages=(page,))
+    sheet = Sheet(index=0, front=side, back=None)
+    assert sheet.front is side
+    assert sheet.back is None
+
+
+def test_mark_fields():
+    mark = Mark(kind="fold_line", x0=0.0, y0=1.0, x1=2.0, y1=3.0)
+    assert mark.kind == "fold_line"
+    assert (mark.x0, mark.y0, mark.x1, mark.y1) == (0.0, 1.0, 2.0, 3.0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        mark.x0 = 5.0  # type: ignore[misc]
+
+
+def test_signature_fields():
+    signature = Signature(index=0, sheet_indices=(0, 1, 2), blank_count=1)
+    assert signature.index == 0
+    assert signature.sheet_indices == (0, 1, 2)
+    assert signature.blank_count == 1
+
+
 def test_layout_warning_fields():
     warning = LayoutWarning(
         sheet_index=2,
@@ -90,6 +132,18 @@ def test_sheet_plan_fields():
     assert plan.sheets == []
     assert plan.paper_pt == (612.0, 792.0)
     assert plan.warnings == []
+    assert plan.signatures == ()
+
+
+def test_sheet_plan_signatures_field():
+    signature = Signature(index=0, sheet_indices=(0,), blank_count=0)
+    plan = SheetPlan(
+        sheets=[],
+        paper_pt=(612.0, 792.0),
+        warnings=[],
+        signatures=(signature,),
+    )
+    assert plan.signatures == (signature,)
 
 
 def test_layout_settings_defaults():
@@ -105,6 +159,22 @@ def test_layout_settings_defaults():
     assert settings.margin_outer_pt == 0.0
     assert settings.margins_linked is True
     assert settings.landscape_policy == "rotate"
+    assert settings.fold_scheme == "none"
+    assert settings.sheets_per_signature == 4
+    assert settings.paper_thickness_pt == 0.0
+    assert settings.sewing_stations == 3
+    assert settings.blank_mode == "end"
+
+
+def test_layout_warning_new_kinds():
+    for kind in (
+        "sheet_orientation",
+        "signature_padding",
+        "creep_advisory",
+        "landscape_imageable_unverified",
+    ):
+        warning = LayoutWarning(sheet_index=0, kind=kind, detail="x")
+        assert warning.kind == kind
 
 
 def test_layout_settings_top_binding_edge_not_supported():
