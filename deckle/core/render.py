@@ -67,6 +67,50 @@ class RenderedPage:
     rgba: bytes
 
 
+def rasterize_page(doc, page_index: int, *, scale: float, rotation: int = 0):
+    """Render one page to a PIL image, closing pdfium's children eagerly.
+
+    :param doc: an open ``pdfium.PdfDocument``.
+    :param page_index: which page.
+    :param scale: render scale, i.e. ``dpi / 72``.
+    :param rotation: quarter turns clockwise.
+    :returns: a PIL image, owned by the caller and outliving the page.
+
+    pdfium's Python bindings attach a finalizer to every child object that
+    asserts its parent is still open. Rendering with the obvious shape --
+
+        page = doc[i]
+        bitmap = page.render(...)
+        ...
+        doc.close()
+
+    -- leaves ``page`` and ``bitmap`` referenced by locals when the document
+    closes. Whenever the garbage collector gets to them afterwards, their
+    finalizers fire against a closed parent and pdfium raises
+    ``AssertionError`` from ``_close_template``. Python swallows it
+    ("Exception ignored in: <finalize object...>"), so nothing crashes and
+    the console fills with tracebacks that point at a weakref rather than at
+    us.
+
+    It is timing-dependent, which is worse than deterministic: a short
+    script drops its references in a friendly order and looks fine, while a
+    GUI holding objects across a worker thread reproduces it readily. This
+    closes the children in the order pdfium expects, so the caller is free
+    to close the document whenever it likes.
+    """
+    page = doc[page_index]
+    try:
+        bitmap = page.render(scale=scale, rotation=rotation)
+        try:
+            # to_pil() copies the pixels out, so the result does not alias
+            # the bitmap's buffer and stays valid after it closes.
+            return bitmap.to_pil()
+        finally:
+            bitmap.close()
+    finally:
+        page.close()
+
+
 def _pil_to_rendered_page(pil_image) -> RenderedPage:
     rgba_image = pil_image.convert("RGBA")
     width, height = rgba_image.size
@@ -145,9 +189,9 @@ def render_sheet(
                 return _empty_rendered_page()
             if cancel is not None and cancel.is_set():
                 return _empty_rendered_page()
-            page = pdf[page_index]
-            bitmap = page.render(scale=dpi / 72)
-            return _pil_to_rendered_page(bitmap.to_pil())
+            return _pil_to_rendered_page(
+                rasterize_page(pdf, page_index, scale=dpi / 72)
+            )
         finally:
             pdf.close()
     finally:
@@ -203,9 +247,16 @@ def thumbnails(
             if doc is None:
                 doc = pdfium.PdfDocument(ref.path)
                 open_docs[ref.path] = doc
-            page = doc[ref.page_index]
-            bitmap = page.render(scale=dpi / 72, rotation=_rotation_quarter_turns(source_page.rotate_deg))
-            result.append(_pil_to_rendered_page(bitmap.to_pil()))
+            result.append(
+                _pil_to_rendered_page(
+                    rasterize_page(
+                        doc,
+                        ref.page_index,
+                        scale=dpi / 72,
+                        rotation=_rotation_quarter_turns(source_page.rotate_deg),
+                    )
+                )
+            )
     finally:
         for doc in open_docs.values():
             doc.close()
@@ -229,9 +280,7 @@ def _rasterize_for_bbox(ref: SourceRef, dpi: int):
     """
     doc = pdfium.PdfDocument(ref.path)
     try:
-        page = doc[ref.page_index]
-        bitmap = page.render(scale=dpi / 72)
-        return bitmap.to_pil().convert("RGB")
+        return rasterize_page(doc, ref.page_index, scale=dpi / 72).convert("RGB")
     finally:
         doc.close()
 

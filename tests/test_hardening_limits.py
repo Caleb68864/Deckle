@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
+from unittest import mock
 
 import pikepdf
 import pytest
@@ -30,6 +31,8 @@ from deckle.core.models import (
     SourcePage,
     SourceRef,
 )
+
+FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.pdf")
 
 LETTER = (612.0, 792.0)
 
@@ -526,3 +529,124 @@ def test_ink_bbox_recent_use_survives_eviction(tmp_path, monkeypatch):
 
     assert refs[0] in render._ink_bbox_cache
     assert refs[1] not in render._ink_bbox_cache
+
+
+# -- pdfium object lifetimes ---------------------------------------------
+
+
+def test_rasterize_page_closes_the_page_and_bitmap_before_returning():
+    """pdfium children must not outlive their document.
+
+    Every child object pdfium hands out carries a finalizer asserting its
+    parent is still open. Render with the obvious shape --
+
+        page = doc[i]; bitmap = page.render(...); doc.close()
+
+    -- and both are still referenced by locals when the document closes.
+    Whenever the collector reaches them afterwards, the assertion fires and
+    Python prints "Exception ignored in: <finalize object at ...>" with a
+    traceback pointing at weakref.py rather than at us. Reported from the
+    GUI while dragging a page to reorder it.
+    """
+    import pypdfium2 as pdfium
+
+    from deckle.core.render import rasterize_page
+
+    doc = pdfium.PdfDocument(FIXTURE)
+    closed = {"page": False, "bitmap": False}
+
+    real_getitem = type(doc).__getitem__
+
+    def tracking_getitem(self, index):
+        page = real_getitem(self, index)
+        real_page_close = page.close
+        real_render = page.render
+
+        def watched_page_close(*a, **kw):
+            closed["page"] = True
+            return real_page_close(*a, **kw)
+
+        def watched_render(*a, **kw):
+            bitmap = real_render(*a, **kw)
+            real_bitmap_close = bitmap.close
+
+            def watched_bitmap_close(*ba, **bkw):
+                closed["bitmap"] = True
+                return real_bitmap_close(*ba, **bkw)
+
+            bitmap.close = watched_bitmap_close
+            return bitmap
+
+        page.close = watched_page_close
+        page.render = watched_render
+        return page
+
+    try:
+        with mock.patch.object(type(doc), "__getitem__", tracking_getitem):
+            image = rasterize_page(doc, 0, scale=0.25)
+        assert image is not None, "a page must still come back"
+        assert closed["bitmap"], "the bitmap was left for the garbage collector"
+        assert closed["page"], "the page was left for the garbage collector"
+    finally:
+        doc.close()
+
+
+def test_rasterized_image_survives_closing_the_document():
+    """``to_pil`` must copy, not alias.
+
+    Closing the page and bitmap eagerly is only safe if the image does not
+    point into the bitmap's buffer -- otherwise the fix would trade a noisy
+    finalizer for silent garbage pixels, which is far worse.
+    """
+    import pypdfium2 as pdfium
+
+    from deckle.core.render import rasterize_page
+
+    doc = pdfium.PdfDocument(FIXTURE)
+    image = rasterize_page(doc, 0, scale=0.25)
+    doc.close()
+
+    # Touching the pixels after everything upstream is closed must work.
+    assert image.size[0] > 0 and image.size[1] > 0
+    assert image.convert("RGB").getpixel((0, 0)) is not None
+
+
+def test_no_render_path_leaves_pdfium_children_to_the_collector():
+    """Structural: every pdfium page render goes through the helper.
+
+    Asked with an AST walk rather than a string search, because the helper's
+    own docstring quotes the wrong shape as the thing not to do -- a grep
+    matches its own counter-example and reports a failure that is really a
+    citation.
+    """
+    import ast
+    from pathlib import Path
+
+    import deckle.app.backend as backend_module
+    import deckle.core.render as render_module
+
+    for module in (render_module, backend_module):
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        helper = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "rasterize_page"
+            ),
+            None,
+        )
+        inside_helper = set()
+        if helper is not None:
+            inside_helper = {id(n) for n in ast.walk(helper)}
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "render"):
+                continue
+            if isinstance(func.value, ast.Name) and func.value.id == "page":
+                assert id(node) in inside_helper, (
+                    f"{module.__name__} line {node.lineno} renders a pdfium page "
+                    "outside rasterize_page, so its children outlive the document"
+                )
