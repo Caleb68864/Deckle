@@ -370,6 +370,7 @@ class MainWindow:
         self.window.setStatusBar(self.status_bar)
 
         self.import_view.imported.connect(self._on_imported)
+        self.arrange_view.pages_changed.connect(self._on_pages_changed)
         self.layout_panel.layout_changed.connect(self._on_layout_changed)
         self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
         self.print_button.clicked.connect(self._on_print_clicked)
@@ -416,6 +417,23 @@ class MainWindow:
         # already carried out.
         self._refresh_status_message()
         self.preview_view.on_layout_changed(recompute_plan(self.state.project))
+
+    def _on_pages_changed(self) -> None:
+        """Re-impose after the document itself changed.
+
+        :returns: nothing.
+
+        Reordering, rotating, skipping or inserting a blank all change
+        which pages land on which sheets. Without this the preview kept
+        showing the plan from before the edit, and because Save PDF exports
+        *the preview's* plan -- deliberately, so that what you save is what
+        you saw -- the edit reached neither the screen nor the paper.
+        """
+        self.preview_view.on_layout_changed(
+            recompute_plan(self.state.project), self.state.project.layout
+        )
+        self._sync_document_actions()
+        self._refresh_status_message()
 
     def _refresh_status_message(self) -> None:
         """Say the most useful true thing about the current state.

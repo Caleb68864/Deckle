@@ -313,6 +313,17 @@ class ArrangeView:
             headlessly -- the default opens a modal, which a test cannot.
         """
         QObject, QThread, Signal = _qt_core()
+
+        class _Signals(QObject):
+            # Reorder, rotate, skip and insert-blank all change the
+            # DOCUMENT, which changes the sheets. Nothing announced that, so
+            # the preview kept showing the plan from before the edit -- and
+            # Save PDF exports the preview's plan, so an inserted blank
+            # reached neither the screen nor the paper.
+            pages_changed = Signal()
+
+        self._signals = _Signals()
+        self.pages_changed = self._signals.pages_changed
         (
             QAbstractItemView,
             QHBoxLayout,
@@ -446,6 +457,7 @@ class ArrangeView:
         current = self.state.project.pages[index].rotate_deg
         rotate(self.state, index, current + 90)
         self.refresh()
+        self.pages_changed.emit()
 
     def _on_skip_clicked(self) -> None:
         index = self._selected_index()
@@ -453,6 +465,7 @@ class ArrangeView:
             return
         skip(self.state, index)
         self.refresh()
+        self.pages_changed.emit()
 
     def _default_choose_blank_position(self, choices):
         """Ask where the blank goes, defaulting to the current selection.
@@ -493,10 +506,22 @@ class ArrangeView:
             return
         insert_blank_page(self.state, target)
         self.refresh()
+        self.pages_changed.emit()
 
     def _on_rows_moved(self, parent, start, end, destination, row) -> None:
+        """Apply a drag-reorder to the project, then say the pages changed.
+
+        :returns: nothing.
+
+        Qt has already moved the row in its own model by the time this
+        runs, so the list does not need rebuilding -- but the labels carry
+        page numbers that are now wrong, and the sheets have changed
+        underneath the preview.
+        """
         new_index = row if row < start else row - 1
         reorder(self.state, start, new_index)
+        self.refresh()
+        self.pages_changed.emit()
 
     def _on_scrolled(self, value: int) -> None:
         self.request_visible_thumbnails(max(0, value))

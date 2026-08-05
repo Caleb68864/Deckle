@@ -122,3 +122,30 @@ def test_the_workflow_ends_in_a_real_pdf(report):
     assert report["exported"] is True
     assert report["export_bytes"] > 0
     assert report["preview_sheets"] >= 1
+
+
+# -- editing the document must reach the preview and the paper ----------
+
+
+def test_inserting_a_blank_reaches_the_preview(report):
+    """Nothing announced that the document had changed, so the preview kept
+    showing the plan from before the edit."""
+    assert report["pages_after_insert"] == 3
+    assert report["preview_sheets_after_insert"] > report["preview_sheets_before_edit"], (
+        "the preview did not re-impose after a blank was inserted"
+    )
+
+
+def test_dragging_a_page_reorders_the_document(report):
+    """Reorder mutated the project and told nobody, which read as
+    drag-and-drop simply not working."""
+    assert report["order_after_reorder"][0] == "blank"
+    assert report["preview_sheets_after_reorder"] >= 2
+
+
+def test_the_edited_document_is_what_gets_exported(report):
+    """Save PDF exports the preview's plan -- deliberately, so what you save
+    is what you saw. That only holds if the preview is never stale."""
+    placements = report["edited_export_placements"]
+    assert len(placements) >= 3, "the exported PDF is missing the inserted page"
+    assert 0 in placements, "the blank page is absent from the exported PDF"

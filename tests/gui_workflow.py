@@ -40,7 +40,6 @@ def main(source_pdf: str, out_pdf: str) -> int:
     _app = QApplication.instance() or QApplication([])  # noqa: F841
 
     import deckle.app.main as app_main
-    from deckle.app.state import insert_blank
     from deckle.app.views.arrange_view import ThumbnailWorker
     from deckle.app.views.layout_panel import recompute_plan
     from deckle.core.loader import load_pdf
@@ -72,13 +71,17 @@ def main(source_pdf: str, out_pdf: str) -> int:
     report["after_import_save_enabled"] = window.save_pdf_button.isEnabled()
     report["after_import_status"] = window.status_bar.currentMessage()
 
-    # -- insert a blank, and check it is named --------------------------
-    window.state.mutate(lambda project: insert_blank(project, 1))
-    window.arrange_view.refresh()
+    # -- insert a blank through the button the user actually presses ----
+    report["preview_sheets_before_edit"] = len(window.preview_view.plan.sheets)
+    window.arrange_view._choose_blank_position = lambda choices: 1
+    window.arrange_view._on_insert_blank_clicked()
+
     report["labels"] = [
         window.arrange_view.list_widget.item(i).text()
         for i in range(min(4, window.arrange_view.list_widget.count()))
     ]
+    report["pages_after_insert"] = len(window.state.project.pages)
+    report["preview_sheets_after_insert"] = len(window.preview_view.plan.sheets)
 
     # -- thumbnails must reach the screen -------------------------------
     # The bug this whole file exists for: renders landed in item data and
@@ -95,6 +98,37 @@ def main(source_pdf: str, out_pdf: str) -> int:
         if not window.arrange_view.list_widget.item(i).icon().isNull()
     )
     report["icon_px"] = window.arrange_view.list_widget.iconSize().width()
+
+    # -- editing the document must reach the preview AND the export -----
+    # Every arrange action changes which pages land on which sheets, and
+    # Save PDF exports the preview's plan. When nothing announced the
+    # change, an inserted blank reached neither the screen nor the paper.
+    window.arrange_view._on_rows_moved(None, 0, 0, None, 3)
+    report["order_after_reorder"] = [
+        "blank" if page.ref.path == "" else f"p{page.ref.page_index}"
+        for page in window.state.project.pages
+    ]
+    report["preview_sheets_after_reorder"] = len(window.preview_view.plan.sheets)
+
+    # What Save PDF would actually write: it exports the preview's plan.
+    from deckle.core.export import export as _export
+
+    edited_pdf = out_pdf + ".edited.pdf"
+    _export(window.preview_view.plan, edited_pdf)
+    import pikepdf
+
+    placements = []
+    with pikepdf.open(edited_pdf) as pdf:
+        for page in pdf.pages:
+            raw = page.get("/Contents")
+            if raw is None:
+                data = b""
+            elif isinstance(raw, pikepdf.Array):
+                data = b"".join(bytes(s.read_bytes()) for s in raw)
+            else:
+                data = bytes(raw.read_bytes())
+            placements.append(data.count(b" Do"))
+    report["edited_export_placements"] = placements
 
     # -- layout: paper, orientation, and the mode tabs ------------------
     panel = window.layout_panel
