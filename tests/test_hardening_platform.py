@@ -186,3 +186,75 @@ def test_an_unavailable_drive_letter_is_named(tmp_path):
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
     assert "Q:" in result.stderr
+
+
+# -- adversarial sweep (pass 10) ----------------------------------------
+
+
+def test_exporting_onto_the_source_is_refused_and_says_why(tmp_path):
+    """Refused before, but for the wrong stated reason.
+
+    The write already failed -- the source is held open for reading, so the
+    original survived -- but the message blamed a PDF viewer holding the
+    file. That sends the user closing applications that were never
+    involved. Being right about the cause matters as much as stopping.
+    """
+    import shutil
+
+    src = tmp_path / "book.pdf"
+    shutil.copy(FIXTURE, src)
+    before = src.read_bytes()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "deckle.cli", "export", str(src), "-o", str(src)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 1
+    assert "the file being imposed" in result.stderr
+    assert "PDF viewer" not in result.stderr, "the old, wrong explanation"
+    assert src.read_bytes() == before, "the source must be untouched"
+
+
+def test_exporting_onto_the_source_via_a_roundabout_path_is_still_refused(tmp_path):
+    """String comparison is not enough; ``..`` segments name the same file."""
+    import shutil
+
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    src = nested / "book.pdf"
+    shutil.copy(FIXTURE, src)
+    roundabout = str(nested / ".." / "sub" / "book.pdf")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "deckle.cli", "export", str(src), "-o", roundabout],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 1
+    assert "the file being imposed" in result.stderr
+
+
+def test_a_normal_export_is_unaffected_by_the_collision_check(tmp_path):
+    import shutil
+
+    src = tmp_path / "book.pdf"
+    shutil.copy(FIXTURE, src)
+    out = tmp_path / "booklet.pdf"
+
+    result = subprocess.run(
+        [sys.executable, "-m", "deckle.cli", "export", str(src), "-o", str(out)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert out.exists()

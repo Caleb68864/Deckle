@@ -182,9 +182,43 @@ def _output_path_problem(out_path: str) -> str | None:
     return None
 
 
-def _report_output_problem(out_path: str) -> bool:
-    """Print the problem with ``out_path``, if any. ``True`` means stop."""
-    problem = _output_path_problem(out_path)
+def _same_file(a: str, b: str) -> bool:
+    """Whether two paths name the same file, tolerating an absent target.
+
+    ``os.path.samefile`` is the only check that sees through symlinks,
+    junctions, and ``..`` segments -- string comparison does not -- but it
+    raises if either path is missing, which is the normal case for an
+    output that has not been written yet.
+    """
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.abspath(a) == os.path.abspath(b)
+
+
+def _report_output_problem(out_path: str, source: str | None = None) -> bool:
+    """Print the problem with ``out_path``, if any. ``True`` means stop.
+
+    :param out_path: the destination the user asked for.
+    :param source: the input being imposed, when known. Passing it catches
+        the case where output and source are the same file.
+    :returns: ``True`` if the caller should stop.
+
+    Exporting onto the source is refused explicitly rather than being left
+    to fail at the final rename. It *does* fail there -- the source is held
+    open for reading, so the source survives -- but the resulting message
+    blames a PDF viewer holding the file, which is wrong and sends the user
+    off closing applications that were never involved. Being right about
+    the cause matters as much as stopping the write.
+    """
+    if source is not None and _same_file(out_path, source):
+        problem = (
+            f"cannot write to {out_path}: that is the file being imposed. "
+            "Exporting onto the source would destroy the original. Choose a "
+            "different output name."
+        )
+    else:
+        problem = _output_path_problem(out_path)
     if problem is None:
         return False
     print(f"error: {problem}", file=sys.stderr)
@@ -322,7 +356,7 @@ def _emit_warnings(pages, plan) -> None:
 
 
 def _cmd_export(args: argparse.Namespace) -> int:
-    if _report_output_problem(args.output):
+    if _report_output_problem(args.output, args.source):
         return 1
     pages = _load_source_or_report(args.source)
     if pages is None:
@@ -341,7 +375,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_impose(args: argparse.Namespace) -> int:
-    if _report_output_problem(args.output):
+    if _report_output_problem(args.output, args.source):
         return 1
     pages = _load_source_or_report(args.source)
     if pages is None:

@@ -199,3 +199,10 @@
 - Surfaces: Windows only, but ordinary rather than exotic -- the console defaults to a legacy code page (cp1252 here) and an accented character in someone's name is enough. Every hardening error message added in passes 4-5 was equally exposed, since they all print paths.
 - Watch: Chose `errors="replace"` over forcing UTF-8. The console's encoding is the user's business and overriding it can mangle piped output; replacing unencodable characters degrades only the DISPLAY of a path. Also worth remembering that the worst failure shape is not a crash but a crash that follows success -- it looks like the work was lost when it was not.
 - Commit: (this commit)
+
+## 2026-08-04 - Adversarial sweep: right outcome, wrong explanation
+- Symptom: `deckle export book.pdf -o book.pdf` was already refused and the source already survived -- the exporter holds it open for reading, so the write failed at the rename. But the message said "permission denied -- is the file already open in a PDF viewer? Close it and try again", which is simply not what happened.
+- Fix: An explicit source/output collision check, via `os.path.samefile` so it sees through symlinks, junctions and `..` segments rather than comparing strings. The message now says the output IS the file being imposed.
+- Surfaces: Any hardening that stops the bad thing but misattributes the cause. The user follows the advice given -- closing PDF viewers that were never involved -- and the real problem stays invisible.
+- Watch: This is what pass 10 is for. Nine passes of adding correct behaviour still left a message that was confidently wrong, and no test caught it because every test asserted the refusal, not the reason. When auditing error handling, read what the message CLAIMS and check that claim independently -- a passing test proves the guard fired, not that it told the truth.
+- Commit: (this commit)
