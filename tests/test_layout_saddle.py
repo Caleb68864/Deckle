@@ -1,0 +1,415 @@
+"""Tests for ``deckle.core.layout.SaddleStitchStrategy`` -- folio 2-up imposition.
+
+Organised around the same measured-margin discipline as ``test_layout.py``
+(``actual_margins_pt``, never raw ``tx``), plus one property no other
+strategy needs: **the fold-simulator round trip**. ``fold_reading_order`` is
+derived independently of ``saddle_order`` (see ``deckle/core/signatures.py``)
+by simulating the physical fold. Scattering ``impose``'s physical print-slot
+output through ``fold_reading_order``'s reading positions must reconstruct
+the exact source page sequence -- for every page count, sheets-per-signature
+and binding edge this suite exercises. That is the single highest-value
+check in this file: two independently-derived permutations that disagree
+would mean a printed, sewn book comes out of order.
+"""
+
+from __future__ import annotations
+
+import ast
+import inspect
+
+import pytest
+
+from deckle.core.layout import (
+    GutterShiftStrategy,
+    LayoutStrategy,
+    SaddleStitchStrategy,
+    _signature_sheet_groups,
+    actual_margins_pt,
+    cell_geometry,
+)
+from deckle.core.models import LayoutSettings, OutputPage, SourcePage, SourceRef
+from deckle.core.signatures import fold_reading_order
+
+LETTER_LANDSCAPE = (792.0, 612.0)
+LETTER_PORTRAIT = (612.0, 792.0)
+
+
+def make_pages(n: int, w: float = 396.0, h: float = 612.0) -> list[SourcePage]:
+    pages = []
+    for i in range(n):
+        ref = SourceRef(
+            path="book.pdf", page_index=i, sha256="a" * 64, width_pt=w, height_pt=h
+        )
+        pages.append(SourcePage(ref=ref, rotate_deg=0, skipped=False))
+    return pages
+
+
+def settings(**overrides) -> LayoutSettings:
+    kwargs = dict(
+        paper=LETTER_LANDSCAPE,
+        gutter_pt=18.0,
+        binding_edge="left",
+        fold_scheme="folio",
+        sheets_per_signature=4,
+    )
+    kwargs.update(overrides)
+    return LayoutSettings(**kwargs)
+
+
+def impose(pages, s):
+    return SaddleStitchStrategy().impose(pages, s)
+
+
+def flat_sides(plan):
+    """Every ``Side`` in the plan, in physical sheet order (front, back)."""
+    sides = []
+    for sheet in plan.sheets:
+        for side in (sheet.front, sheet.back):
+            if side is not None:
+                sides.append(side)
+    return sides
+
+
+def flat_pages(plan) -> list[OutputPage]:
+    """Every ``OutputPage`` in the plan, in physical print-slot order."""
+    pages = []
+    for side in flat_sides(plan):
+        pages.extend(side.pages)
+    return pages
+
+
+def reconstruct_reading_order(plan) -> list[OutputPage | None]:
+    """The fold-simulator round trip: scatter print-slot pages by reading position."""
+    order = fold_reading_order(plan)
+    flat = flat_pages(plan)
+    assert len(order) == len(flat)
+    result: list[OutputPage | None] = [None] * len(order)
+    for reading_pos, output_page in zip(order, flat):
+        result[reading_pos] = output_page
+    return result
+
+
+def assert_round_trip(pages, s):
+    plan = impose(pages, s)
+    active = [p for p in pages if not p.skipped]
+    reconstructed = reconstruct_reading_order(plan)
+    for i, p in enumerate(active):
+        op = reconstructed[i]
+        assert op is not None and not op.is_filler, f"page {i} missing or filler"
+        assert op.source_ref == p.ref, f"page {i} out of order"
+    for i in range(len(active), len(reconstructed)):
+        op = reconstructed[i]
+        assert op is not None and op.is_filler, f"slot {i} should be a blank filler"
+
+
+# ------------------------------------------------------------- protocol
+
+
+def test_protocol_signature_unchanged():
+    assert isinstance(SaddleStitchStrategy(), LayoutStrategy)
+    assert inspect.signature(SaddleStitchStrategy.impose) == inspect.signature(
+        GutterShiftStrategy.impose
+    )
+
+
+# ------------------------------------------------------------- the fixture
+
+
+def test_266_page_fixture_signature_counts():
+    plan = impose(make_pages(266), settings(sheets_per_signature=4))
+    assert len(plan.signatures) == 17
+    assert len(plan.sheets) == 67
+    fillers = [op for op in flat_pages(plan) if op.is_filler]
+    assert len(fillers) == 2
+    # both fillers land in the final signature
+    final_sheet_indices = set(plan.signatures[-1].sheet_indices)
+    filler_sheet_indices = set()
+    for sheet in plan.sheets:
+        for side in (sheet.front, sheet.back):
+            if side and any(op.is_filler for op in side.pages):
+                filler_sheet_indices.add(sheet.index)
+    assert filler_sheet_indices <= final_sheet_indices
+
+
+def test_every_side_has_two_pages_and_absent_side_is_none():
+    plan = impose(make_pages(266), settings())
+    for sheet in plan.sheets:
+        assert sheet.front is not None
+        assert len(sheet.front.pages) == 2
+        # folio always fills 4 pages per sheet, so back is never None here
+        assert sheet.back is not None
+        assert len(sheet.back.pages) == 2
+
+
+def test_signature_sheet_indices_contiguous_gapless_covering():
+    plan = impose(make_pages(266), settings())
+    covered = [i for sig in plan.signatures for i in sig.sheet_indices]
+    assert covered == list(range(len(plan.sheets)))
+
+
+def test_one_distinct_scale_across_the_fixture():
+    plan = impose(make_pages(266), settings())
+    scales = {op.placement.scale_x for op in flat_pages(plan) if not op.is_filler}
+    assert len(scales) == 1
+
+
+def test_filler_pages_carry_neutral_scale():
+    plan = impose(make_pages(7), settings())
+    fillers = [op for op in flat_pages(plan) if op.is_filler]
+    assert fillers
+    assert all(op.placement.scale_x == 1.0 for op in fillers)
+
+
+# ------------------------------------------------------------- padding
+
+
+@pytest.mark.parametrize("n", [7, 17])
+def test_padding_runs_once_with_exactly_one_warning(n):
+    plan = impose(make_pages(n), settings())
+    padding_warnings = [w for w in plan.warnings if w.kind == "signature_padding"]
+    assert len(padding_warnings) == 1
+    expected_blanks = -(-n // 4) * 4 - n
+    assert str(expected_blanks) in padding_warnings[0].detail
+    fillers = [op for op in flat_pages(plan) if op.is_filler]
+    assert len(fillers) == expected_blanks
+
+
+def test_no_padding_warning_when_already_a_multiple_of_four():
+    plan = impose(make_pages(8), settings())
+    assert not any(w.kind == "signature_padding" for w in plan.warnings)
+
+
+# ------------------------------------------------------------- spine / margins
+
+
+def test_front_left_cell_inner_margin_is_on_its_right_edge():
+    plan = impose(make_pages(8), settings(margin_outer_pt=10.0, margin_top_pt=5.0, margin_bottom_pt=5.0))
+    sheet0 = plan.sheets[0]
+    left_op, right_op = sheet0.front.pages
+    left_cell, right_cell = cell_geometry(LETTER_LANDSCAPE)
+
+    left_margins = actual_margins_pt(
+        left_op, LETTER_LANDSCAPE, spine_side="right", cell=left_cell, binding_edge="left"
+    )
+    right_margins = actual_margins_pt(
+        right_op, LETTER_LANDSCAPE, spine_side="left", cell=right_cell, binding_edge="left"
+    )
+    # inner margin (index 0) measured against the fold on both leaves
+    assert left_margins[0] == pytest.approx(18.0, abs=1e-6)
+    assert right_margins[0] == pytest.approx(18.0, abs=1e-6)
+
+
+def test_back_side_spine_also_faces_the_fold():
+    plan = impose(make_pages(8), settings())
+    sheet0 = plan.sheets[0]
+    left_cell, right_cell = cell_geometry(LETTER_LANDSCAPE)
+    left_op, right_op = sheet0.back.pages
+    left_margins = actual_margins_pt(
+        left_op, LETTER_LANDSCAPE, spine_side="right", cell=left_cell, binding_edge="left"
+    )
+    right_margins = actual_margins_pt(
+        right_op, LETTER_LANDSCAPE, spine_side="left", cell=right_cell, binding_edge="left"
+    )
+    assert left_margins[0] >= 0.0
+    assert right_margins[0] >= 0.0
+
+
+def test_binding_edge_right_mirrors_which_cell_a_slot_lands_in():
+    left_plan = impose(make_pages(8), settings(binding_edge="left"))
+    right_plan = impose(make_pages(8), settings(binding_edge="right"))
+
+    left_cell, right_cell = cell_geometry(LETTER_LANDSCAPE)
+
+    def cell_of(op):
+        return "left" if op.placement.tx < left_cell[2] else "right"
+
+    left_front = left_plan.sheets[0].front.pages
+    right_front = right_plan.sheets[0].front.pages
+
+    # the slot that landed in the left cell under "left" now lands in the
+    # right cell under "right", and vice versa.
+    left_slot_ref = left_front[0].source_ref if cell_of(left_front[0]) == "left" else left_front[1].source_ref
+    assert left_slot_ref is not None
+    matching = [op for op in right_front if op.source_ref == left_slot_ref]
+    assert matching
+    assert cell_of(matching[0]) == "right"
+
+
+# ------------------------------------------------------------- blank_mode
+
+
+def test_balanced_blank_mode_keeps_signatures_within_one_sheet():
+    plan = impose(make_pages(250), settings(blank_mode="balanced"))
+    sizes = [len(sig.sheet_indices) for sig in plan.signatures]
+    assert max(sizes) - min(sizes) <= 1
+
+
+def test_end_blank_mode_puts_shortfall_in_final_signature():
+    plan_end = impose(make_pages(250), settings(blank_mode="end"))
+    sizes = [len(sig.sheet_indices) for sig in plan_end.signatures]
+    assert sizes[-1] <= sizes[0]
+    assert all(s == sizes[0] for s in sizes[:-1])
+
+
+def test_signature_sheet_groups_balanced_shaves_the_tail():
+    end_sizes = [len(g) for g in _signature_sheet_groups(70, 8, "end")]
+    balanced_sizes = [len(g) for g in _signature_sheet_groups(70, 8, "balanced")]
+    assert sum(end_sizes) == sum(balanced_sizes) == 70
+    assert max(balanced_sizes) - min(balanced_sizes) <= 1
+    assert max(end_sizes) - min(end_sizes) > max(balanced_sizes) - min(balanced_sizes)
+
+
+# ------------------------------------------------------------- sheet orientation
+
+
+def test_portrait_paper_warns_once_and_does_not_swap_paper_pt():
+    plan = impose(make_pages(8), settings(paper=LETTER_PORTRAIT))
+    orientation_warnings = [w for w in plan.warnings if w.kind == "sheet_orientation"]
+    assert len(orientation_warnings) == 1
+    assert plan.paper_pt == LETTER_PORTRAIT
+    assert len(plan.sheets) > 0
+
+
+# ------------------------------------------------------------- creep
+
+
+def test_creep_advisory_names_trim_and_remedy():
+    plan = impose(make_pages(32), settings(paper_thickness_pt=0.27, sheets_per_signature=8))
+    creep = [w for w in plan.warnings if w.kind == "creep_advisory"]
+    assert len(creep) == 1
+    assert "2.16" in creep[0].detail
+    assert "sheets per signature" in creep[0].detail
+
+
+def test_zero_paper_thickness_emits_no_creep_advisory():
+    plan = impose(make_pages(32), settings(paper_thickness_pt=0.0))
+    assert not any(w.kind == "creep_advisory" for w in plan.warnings)
+
+
+def test_creep_never_affects_placement_geometry():
+    s0 = settings(paper_thickness_pt=0.0)
+    s2 = settings(paper_thickness_pt=2.0)
+    plan0 = impose(make_pages(32), s0)
+    plan2 = impose(make_pages(32), s2)
+    placements0 = [op.placement for op in flat_pages(plan0)]
+    placements2 = [op.placement for op in flat_pages(plan2)]
+    assert placements0 == placements2
+
+
+def test_creep_references_are_isolated_to_creep_advisory():
+    """AST test: every ``paper_thickness_pt`` reference lives inside ``_creep_advisory``."""
+    import deckle.core.layout as layout_module
+
+    source = inspect.getsource(layout_module)
+    tree = ast.parse(source)
+
+    creep_fn = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "_creep_advisory":
+            creep_fn = node
+            break
+    assert creep_fn is not None
+
+    creep_fn_lines = set(range(creep_fn.lineno, creep_fn.end_lineno + 1))
+
+    bad_lines = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "paper_thickness_pt":
+            if node.lineno not in creep_fn_lines:
+                bad_lines.append(node.lineno)
+        if isinstance(node, ast.Name) and node.id == "paper_thickness_pt":
+            if node.lineno not in creep_fn_lines:
+                bad_lines.append(node.lineno)
+    assert not bad_lines, f"paper_thickness_pt referenced outside _creep_advisory at lines {bad_lines}"
+
+
+# ------------------------------------------------------------- clipping
+
+
+def test_clipped_by_page_measured_against_the_cell():
+    from deckle.core.layout import _place_page, document_scale
+
+    s = settings(gutter_pt=0.0, margin_outer_pt=0.0, margin_top_pt=0.0, margin_bottom_pt=0.0)
+    ref = SourceRef(path="wide.pdf", page_index=0, sha256="b" * 64, width_pt=600.0, height_pt=612.0)
+    page = SourcePage(ref=ref, rotate_deg=0, skipped=False)
+
+    scale = document_scale([page], s)  # fits the FULL sheet, not the half-cell
+    cell = cell_geometry(s.paper)[0]
+
+    cell_warnings: list = []
+    _place_page(page, 0, s, 0, cell_warnings, scale, cell=cell, spine_side="right")
+    assert any(w.kind == "clipped_by_page" for w in cell_warnings)
+
+    sheet_warnings: list = []
+    _place_page(page, 0, s, 0, sheet_warnings, scale)
+    assert not any(w.kind == "clipped_by_page" for w in sheet_warnings)
+
+
+# ------------------------------------------------------------- marks
+
+
+def test_every_side_carries_a_fold_line():
+    plan = impose(make_pages(16), settings(sheets_per_signature=2))
+    for side in flat_sides(plan):
+        assert any(m.kind == "fold_line" for m in side.marks)
+
+
+def test_innermost_sheet_inner_side_carries_sewing_stations():
+    plan = impose(make_pages(16), settings(sheets_per_signature=2, sewing_stations=3))
+    for sig in plan.signatures:
+        innermost_sheet_index = sig.sheet_indices[-1]
+        sheet = plan.sheets[innermost_sheet_index]
+        station_marks = [m for m in sheet.back.marks if m.kind == "sewing_station"]
+        assert len(station_marks) == 3
+        # no other sheet in the signature carries station marks
+        for idx in sig.sheet_indices[:-1]:
+            other = plan.sheets[idx]
+            assert not any(m.kind == "sewing_station" for m in other.front.marks)
+            assert not any(m.kind == "sewing_station" for m in other.back.marks)
+
+
+def test_outermost_sheet_carries_exactly_one_signature_order_mark():
+    plan = impose(make_pages(16), settings(sheets_per_signature=2))
+    for sig in plan.signatures:
+        outermost_sheet_index = sig.sheet_indices[0]
+        sheet = plan.sheets[outermost_sheet_index]
+        order_marks = [m for m in sheet.front.marks if m.kind == "signature_order"]
+        assert len(order_marks) == 1
+        assert not any(m.kind == "signature_order" for m in sheet.back.marks)
+
+
+def test_sewing_stations_zero_yields_no_station_marks_but_keeps_fold_lines():
+    plan = impose(make_pages(16), settings(sheets_per_signature=2, sewing_stations=0))
+    all_marks = [m for side in flat_sides(plan) for m in side.marks]
+    assert not any(m.kind == "sewing_station" for m in all_marks)
+    assert any(m.kind == "fold_line" for m in all_marks)
+
+
+# ------------------------------------------------------------- the round trip
+
+
+def test_fold_simulator_round_trip_small_matrix():
+    for n in list(range(1, 41)):
+        for sps in range(1, 9):
+            for binding_edge in ("left", "right"):
+                assert_round_trip(make_pages(n), settings(sheets_per_signature=sps, binding_edge=binding_edge))
+
+
+def test_fold_simulator_round_trip_larger_documents():
+    for n in (100, 266):
+        for sps in range(1, 9):
+            for binding_edge in ("left", "right"):
+                assert_round_trip(make_pages(n), settings(sheets_per_signature=sps, binding_edge=binding_edge))
+
+
+# ------------------------------------------------------------- invariants
+
+
+def test_invariants_hold_across_many_shapes():
+    for n in (1, 4, 5, 8, 17, 33, 100):
+        for sps in (1, 3, 5):
+            plan = impose(make_pages(n), settings(sheets_per_signature=sps))
+            covered = [i for sig in plan.signatures for i in sig.sheet_indices]
+            assert covered == list(range(len(plan.sheets)))
+            total_padded_pages = sum(len(sig.sheet_indices) for sig in plan.signatures) * 4
+            assert total_padded_pages == len(flat_pages(plan))

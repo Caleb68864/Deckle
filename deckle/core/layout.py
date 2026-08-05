@@ -10,8 +10,9 @@ implementation shipped in the MVP, and every configuration knob arrives via
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Literal, Protocol, Sequence, runtime_checkable
 
+from deckle.core.marks import fold_line, sewing_stations, signature_order_mark
 from deckle.core.models import (
     LayoutSettings,
     LayoutWarning,
@@ -19,8 +20,23 @@ from deckle.core.models import (
     Placement,
     Sheet,
     SheetPlan,
+    Side,
+    Signature,
     SourcePage,
 )
+from deckle.core.signatures import saddle_order, split_signatures
+
+Cell = tuple[float, float, float, float]
+"""A cell within a sheet: ``(x0, y0, x1, y1)`` in sheet points.
+
+``GutterShiftStrategy`` passes the full sheet as its cell (the default,
+``None``, means exactly that). ``SaddleStitchStrategy`` splits the sheet
+into two cells at the fold -- see ``cell_geometry``.
+"""
+
+
+def _full_sheet_cell(paper: tuple[float, float]) -> Cell:
+    return (0.0, 0.0, paper[0], paper[1])
 
 
 @runtime_checkable
@@ -78,18 +94,27 @@ def _source_dims(page: SourcePage) -> tuple[float, float]:
     return width, height
 
 
-def content_box_size(settings: LayoutSettings) -> tuple[float, float]:
+def content_box_size(
+    settings: LayoutSettings, cell: Cell | None = None
+) -> tuple[float, float]:
     """The content box's ``(width, height)`` in points, after all four margins.
 
-    Falls back to the bare sheet when the margins would consume it entirely;
+    Falls back to the bare cell when the margins would consume it entirely;
     ``_place_page`` warns about that case, this function stays silent so it
     can be called from the scale pass without duplicating warnings.
+
+    ``cell`` defaults to the whole sheet -- ``GutterShiftStrategy``'s only
+    cell. ``SaddleStitchStrategy`` passes one of the two folio cells.
     """
-    paper_w, paper_h = settings.paper
-    box_w = paper_w - max(0.0, settings.gutter_pt) - max(0.0, settings.margin_outer_pt)
-    box_h = paper_h - max(0.0, settings.margin_top_pt) - max(0.0, settings.margin_bottom_pt)
+    if cell is None:
+        cell = _full_sheet_cell(settings.paper)
+    cx0, cy0, cx1, cy1 = cell
+    cell_w = cx1 - cx0
+    cell_h = cy1 - cy0
+    box_w = cell_w - max(0.0, settings.gutter_pt) - max(0.0, settings.margin_outer_pt)
+    box_h = cell_h - max(0.0, settings.margin_top_pt) - max(0.0, settings.margin_bottom_pt)
     if box_w <= 0.0 or box_h <= 0.0:
-        return (paper_w, paper_h)
+        return (cell_w, cell_h)
     return (box_w, box_h)
 
 
@@ -106,7 +131,9 @@ def _fitted_dims(slot: SourcePage, settings: LayoutSettings) -> tuple[float, flo
     return src_w, src_h
 
 
-def document_scale(pages: Sequence[SourcePage], settings: LayoutSettings) -> float:
+def document_scale(
+    pages: Sequence[SourcePage], settings: LayoutSettings, cell: Cell | None = None
+) -> float:
     """One scale for the WHOLE document -- the largest that fits every page.
 
     Scaling each page independently would let every page fill its own box,
@@ -124,7 +151,7 @@ def document_scale(pages: Sequence[SourcePage], settings: LayoutSettings) -> flo
     page 0's *aspect ratio* to every page's geometry. Per-page geometry is
     correct; per-page scale is not.
     """
-    box_w, box_h = content_box_size(settings)
+    box_w, box_h = content_box_size(settings, cell)
     scales = []
     for slot in pages:
         if slot is None or slot.skipped:
@@ -143,23 +170,39 @@ def _place_page(
     sheet_index: int,
     warnings: list[LayoutWarning],
     scale: float,
+    *,
+    cell: Cell | None = None,
+    spine_side: Literal["left", "right"] | None = None,
 ) -> OutputPage:
-    paper_w, paper_h = settings.paper
-    is_recto = _is_recto(output_index)
+    """Place one leaf's content within ``cell`` (default: the whole sheet).
+
+    ``spine_side`` -- when given -- names which edge of ``cell`` carries the
+    spine directly, bypassing output-page parity entirely. This is the
+    folio path: under ``fold_scheme="folio"`` the spine is a function of
+    which cell a leaf sits in, never of recto/verso parity, and
+    ``_gutter_side_is_left`` must not be reachable from that path.
+    """
+    if cell is None:
+        cell = _full_sheet_cell(settings.paper)
+    cx0, cy0, cx1, cy1 = cell
+    cell_w = cx1 - cx0
+    cell_h = cy1 - cy0
 
     if slot is None:
-        placement = Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
+        placement = Placement(scale_x=1.0, scale_y=1.0, tx=cx0, ty=cy0, rotate_deg=0)
         return OutputPage(source_ref=None, placement=placement, is_filler=True)
 
     src_w, src_h = _source_dims(slot)
     rotate_deg = 0
 
-    # Landscape content inside a portrait document (or vice versa) under
-    # the "rotate" policy: rotate the content to match document orientation
-    # and warn, rather than silently clipping or shrinking it.
-    paper_is_portrait = paper_h >= paper_w
+    # Landscape content inside a portrait cell (or vice versa) under the
+    # "rotate" policy: rotate the content to match the cell's orientation
+    # and warn, rather than silently clipping or shrinking it. Under folio
+    # each cell is portrait-shaped even though the sheet itself is
+    # landscape, so this must be judged against the cell, not the sheet.
+    cell_is_portrait = cell_h >= cell_w
     page_is_landscape = src_w > src_h
-    if settings.landscape_policy == "rotate" and paper_is_portrait and page_is_landscape:
+    if settings.landscape_policy == "rotate" and cell_is_portrait and page_is_landscape:
         rotate_deg = 90
         src_w, src_h = src_h, src_w
         warnings.append(
@@ -182,12 +225,12 @@ def _place_page(
     top = max(0.0, settings.margin_top_pt)
     bottom = max(0.0, settings.margin_bottom_pt)
 
-    box_w = paper_w - gutter - outer
-    box_h = paper_h - top - bottom
+    box_w = cell_w - gutter - outer
+    box_h = cell_h - top - bottom
 
     if box_w <= 0.0 or box_h <= 0.0:
-        # Margins consume the whole sheet. Warn and fall back to the bare
-        # paper rather than producing a negative-size box and nonsense scale.
+        # Margins consume the whole cell. Warn and fall back to the bare
+        # cell rather than producing a negative-size box and nonsense scale.
         warnings.append(
             LayoutWarning(
                 sheet_index=sheet_index,
@@ -199,7 +242,7 @@ def _place_page(
             )
         )
         gutter = outer = top = bottom = 0.0
-        box_w, box_h = paper_w, paper_h
+        box_w, box_h = cell_w, cell_h
 
     # `scale` is computed ONCE for the whole document by `document_scale` --
     # the largest that fits every page -- so body text is reproduced at
@@ -226,6 +269,23 @@ def _place_page(
     slack_w = max(0.0, box_w - scaled_w)
     slack_h = max(0.0, box_h - scaled_h)
 
+    # Content that overflows the box after scaling is clipped by whichever
+    # edge it overflows -- worth a warning measured against the cell (the
+    # box the content was actually fitted into), not the sheet. Under
+    # folio the cell is half the sheet, so this can fire even when the
+    # same content would fit comfortably on a full, unsplit sheet.
+    if scaled_w > box_w + 1e-9 or scaled_h > box_h + 1e-9:
+        warnings.append(
+            LayoutWarning(
+                sheet_index=sheet_index,
+                kind="clipped_by_page",
+                detail=(
+                    f"page {slot.ref.page_index} of {slot.ref.path!r} "
+                    "content exceeds its cell after scaling"
+                ),
+            )
+        )
+
     # `slack_to` decides which horizontal margin absorbs the difference when
     # source pages vary in width -- i.e. which stays constant through the
     # book and which varies. See LayoutSettings.slack_to.
@@ -240,9 +300,12 @@ def _place_page(
         inner_actual = gutter + slack_w          # fore-edge exact; spine varies
     bottom_actual = bottom + slack_h / 2.0
 
-    gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)
-    tx = inner_actual if gutter_on_left else paper_w - inner_actual - scaled_w
-    ty = bottom_actual
+    if spine_side is not None:
+        gutter_on_left = spine_side == "left"
+    else:
+        gutter_on_left = _gutter_side_is_left(_is_recto(output_index), settings.binding_edge)
+    tx = cx0 + (inner_actual if gutter_on_left else cell_w - inner_actual - scaled_w)
+    ty = cy0 + bottom_actual
 
     placement = Placement(
         scale_x=scale,
@@ -255,7 +318,11 @@ def _place_page(
 
 
 def content_box_rect_pt(
-    settings: LayoutSettings, *, is_recto: bool
+    settings: LayoutSettings,
+    *,
+    is_recto: bool | None = None,
+    spine_side: Literal["left", "right"] | None = None,
+    cell: Cell | None = None,
 ) -> tuple[float, float, float, float]:
     """The content box as ``(x0, y0, x1, y1)`` in PDF (bottom-left origin) points.
 
@@ -265,27 +332,42 @@ def content_box_rect_pt(
     happens to equal the printer's inset. Drawing both is what makes the
     relationship legible: content aligns with this box on whichever axis
     binds, and sits inset from it on the other by the aspect-ratio slack.
+
+    ``cell`` defaults to the whole sheet, matching every existing call site.
+    Under folio, margins are measured **inside the cell**, not from the
+    sheet edge -- pass the cell explicitly and give ``spine_side`` rather
+    than ``is_recto``, since the folio spine is a function of cell position,
+    not output-page parity.
     """
-    paper_w, paper_h = settings.paper
+    if cell is None:
+        cell = _full_sheet_cell(settings.paper)
+    cx0, cy0, cx1, cy1 = cell
+    cell_w = cx1 - cx0
+    cell_h = cy1 - cy0
     gutter = max(0.0, settings.gutter_pt)
     outer = max(0.0, settings.margin_outer_pt)
     top = max(0.0, settings.margin_top_pt)
     bottom = max(0.0, settings.margin_bottom_pt)
 
-    if paper_w - gutter - outer <= 0.0 or paper_h - top - bottom <= 0.0:
-        return (0.0, 0.0, paper_w, paper_h)
+    if cell_w - gutter - outer <= 0.0 or cell_h - top - bottom <= 0.0:
+        return (cx0, cy0, cx1, cy1)
 
-    gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)
+    if spine_side is not None:
+        gutter_on_left = spine_side == "left"
+    else:
+        gutter_on_left = _gutter_side_is_left(is_recto, settings.binding_edge)
     left, right = (gutter, outer) if gutter_on_left else (outer, gutter)
-    return (left, bottom, paper_w - right, paper_h - top)
+    return (cx0 + left, cy0 + bottom, cx1 - right, cy1 - top)
 
 
 def actual_margins_pt(
     output_page: OutputPage,
     paper: tuple[float, float],
     *,
-    is_recto: bool,
+    is_recto: bool | None = None,
     binding_edge: str,
+    spine_side: Literal["left", "right"] | None = None,
+    cell: Cell | None = None,
 ) -> tuple[float, float, float, float]:
     """The margins a placed page actually ends up with: ``(inner, outer, top, bottom)``.
 
@@ -294,8 +376,16 @@ def actual_margins_pt(
     overflows that edge. Pure geometry over the emitted ``Placement``, so
     tests and the UI measure the same numbers the exporter will use rather
     than re-deriving them from settings.
+
+    ``cell`` defaults to the whole sheet, so margins are measured relative
+    to sheet edges as before. Under folio, pass the leaf's cell so a
+    right-hand-cell leaf's margins are measured against ``x0 = 396``, not
+    ``0`` -- and pass ``spine_side`` instead of ``is_recto``, since the
+    folio spine is a function of cell position, not page parity.
     """
-    paper_w, paper_h = paper
+    if cell is None:
+        cell = _full_sheet_cell(paper)
+    cx0, cy0, cx1, cy1 = cell
     p = output_page.placement
     ref = output_page.source_ref
     if ref is None:
@@ -307,12 +397,15 @@ def actual_margins_pt(
     scaled_w = src_w * p.scale_x
     scaled_h = src_h * p.scale_y
 
-    left = p.tx
-    right = paper_w - p.tx - scaled_w
-    bottom = p.ty
-    top = paper_h - p.ty - scaled_h
+    left = p.tx - cx0
+    right = cx1 - p.tx - scaled_w
+    bottom = p.ty - cy0
+    top = cy1 - p.ty - scaled_h
 
-    gutter_on_left = _gutter_side_is_left(is_recto, binding_edge)
+    if spine_side is not None:
+        gutter_on_left = spine_side == "left"
+    else:
+        gutter_on_left = _gutter_side_is_left(is_recto, binding_edge)
     inner, outer = (left, right) if gutter_on_left else (right, left)
     return (inner, outer, top, bottom)
 
@@ -353,3 +446,281 @@ class GutterShiftStrategy:
             sheets.append(Sheet(index=sheet_index // 2, front=front, back=back))
 
         return SheetPlan(sheets=sheets, paper_pt=settings.paper, warnings=warnings)
+
+
+# ======================================================================
+# Folio saddle-stitch imposition
+# ======================================================================
+
+
+def cell_geometry(paper: tuple[float, float]) -> tuple[Cell, Cell]:
+    """Split a sheet at its vertical centreline into the two folio cells.
+
+    For letter landscape (792 x 612) this returns ``(0, 0, 396, 612)`` and
+    ``(396, 0, 792, 612)`` -- matching the vault recipe's recorded
+    ``1 0 0 1 0 0 cm`` / ``1 0 0 1 396 0 cm``.
+    """
+    paper_w, paper_h = paper
+    fold_x = paper_w / 2.0
+    return (0.0, 0.0, fold_x, paper_h), (fold_x, 0.0, paper_w, paper_h)
+
+
+def _ceil4_total(n: int) -> int:
+    """The smallest multiple of 4 that is ``>= n`` (``0`` when ``n <= 0``)."""
+    if n <= 0:
+        return 0
+    remainder = n % 4
+    return n if remainder == 0 else n + (4 - remainder)
+
+
+def _pad_to_slots(active: list[SourcePage]) -> tuple[list[SourcePage | None], int]:
+    """Pad ``active`` to a multiple of 4 in exactly one pass.
+
+    Returns the padded slot list and the number of blank slots appended --
+    never a second padding pass, per the predecessor script's defect 2.
+    """
+    slots: list[SourcePage | None] = list(active)
+    target = _ceil4_total(len(slots))
+    blank_count = target - len(slots)
+    slots.extend([None] * blank_count)
+    return slots, blank_count
+
+
+def _signature_sheet_groups(
+    sheet_count: int, sheets_per_signature: int, blank_mode: str
+) -> list[tuple[int, ...]]:
+    """Group sheet indices ``0..sheet_count-1`` into signatures.
+
+    ``"end"`` reuses ``split_signatures`` directly -- contiguous groups with
+    the whole remainder in the final group. ``"balanced"`` keeps the same
+    number of groups but distributes the remainder across the *front*
+    groups, so the tail groups -- which is where the padding blanks land,
+    since sheets are always assigned to groups in ascending order -- are
+    never more than one sheet thinner than their neighbours.
+    """
+    if sheet_count <= 0:
+        return []
+    if blank_mode != "balanced":
+        return split_signatures(sheet_count, sheets_per_signature)
+
+    n_groups = -(-sheet_count // sheets_per_signature)  # ceil division
+    base = sheet_count // n_groups
+    extra = sheet_count % n_groups
+    sizes = [base + 1] * extra + [base] * (n_groups - extra)
+
+    groups: list[tuple[int, ...]] = []
+    start = 0
+    for size in sizes:
+        groups.append(tuple(range(start, start + size)))
+        start += size
+    return groups
+
+
+def _creep_advisory(warnings: list[LayoutWarning], settings: LayoutSettings) -> None:
+    """A never-applied advisory: predicted fore-edge creep, and the remedy.
+
+    The **only** function in this module permitted to reference
+    ``paper_thickness_pt`` -- enforced by an AST test in
+    ``tests/test_layout_saddle.py``. Creep is measured and reported, never
+    compensated in placement geometry: no ``Placement`` this module emits
+    may differ because of this value.
+    """
+    if settings.paper_thickness_pt <= 0.0:
+        return
+    predicted_trim = settings.paper_thickness_pt * settings.sheets_per_signature
+    remedy_sheets = max(1, settings.sheets_per_signature // 2)
+    warnings.append(
+        LayoutWarning(
+            sheet_index=0,
+            kind="creep_advisory",
+            detail=(
+                f"predicted fore-edge creep of {predicted_trim:.2f}pt over "
+                f"{settings.sheets_per_signature} sheets per signature; "
+                f"reduce to {remedy_sheets} sheets per signature to shrink it"
+            ),
+        )
+    )
+
+
+class SaddleStitchStrategy:
+    """Folio 2-up imposition: two source pages per physical sheet side.
+
+    All configuration arrives via ``settings`` -- this class takes no
+    constructor arguments and its ``impose`` signature is character-
+    identical to ``GutterShiftStrategy.impose``, per the ``LayoutStrategy``
+    seam.
+
+    The spine of a leaf is a function of **which cell it sits in**, not of
+    output-page parity: the left cell's spine is on its right edge (the
+    fold), the right cell's spine is on its left edge -- on both the front
+    and the back of the sheet. Consequently ``settings.binding_edge``
+    changes meaning under folio: it no longer selects which side of a page
+    gets the gutter, it selects **reading direction** -- ``"left"`` is
+    left-bound / LTR, ``"right"`` is right-bound / RTL -- which mirrors
+    which folio cell (not which position in the print-order pair) each
+    source slot lands in.
+    """
+
+    def impose(self, pages: Sequence[SourcePage], settings: LayoutSettings) -> SheetPlan:
+        active = [p for p in pages if not p.skipped]
+        warnings: list[LayoutWarning] = []
+
+        paper_w, paper_h = settings.paper
+        if paper_h >= paper_w:
+            # Portrait paper under folio: warn, never block or silently
+            # rotate the paper out from under the caller. See the
+            # path-traversal-validation decision-log precedent -- advise,
+            # don't refuse.
+            warnings.append(
+                LayoutWarning(
+                    sheet_index=0,
+                    kind="sheet_orientation",
+                    detail=(
+                        'fold_scheme="folio" expects landscape paper wider '
+                        "than it is tall; proceeding with the paper as given"
+                    ),
+                )
+            )
+
+        slots, blank_count = _pad_to_slots(active)
+        if blank_count > 0:
+            warnings.append(
+                LayoutWarning(
+                    sheet_index=0,
+                    kind="signature_padding",
+                    detail=f"padded with {blank_count} blank page(s) to complete the final signature",
+                )
+            )
+
+        sheets_n = len(slots) // 4
+        groups = _signature_sheet_groups(
+            sheets_n, settings.sheets_per_signature, settings.blank_mode
+        )
+
+        cells = cell_geometry(settings.paper)
+        fold_x = cells[0][2]
+        # ONE scale for the whole document, computed against a single cell
+        # -- every cell is identical under folio, so any one will do. Never
+        # recomputed per leaf: differing scales are exactly the bug the
+        # Traveller cover reproduced.
+        scale = document_scale(active, settings, cell=cells[0])
+
+        sheets: list[Sheet] = []
+        signatures: list[Signature] = []
+        sig_count = len(groups)
+
+        for sig_index, group in enumerate(groups):
+            page_offset = group[0] * 4
+            page_count = 4 * len(group)
+            sig_slots = slots[page_offset : page_offset + page_count]
+            sig_blank_count = sum(1 for s in sig_slots if s is None)
+
+            order = saddle_order(page_count)
+
+            for local_idx, sheet_index in enumerate(group):
+                pos = local_idx * 4
+                front_a, front_b = order[pos], order[pos + 1]
+                back_a, back_b = order[pos + 2], order[pos + 3]
+
+                # `a` is always the print-order-first leaf of its pair and
+                # `b` the second, regardless of binding edge -- so the
+                # fold-simulator round trip (which knows nothing of
+                # binding_edge) still lines up. `binding_edge` instead
+                # mirrors which *cell* -- and so which physical side of the
+                # sheet -- `a` and `b` land in.
+                if settings.binding_edge == "right":
+                    cell_a, spine_a = cells[1], "left"
+                    cell_b, spine_b = cells[0], "right"
+                else:
+                    cell_a, spine_a = cells[0], "right"
+                    cell_b, spine_b = cells[1], "left"
+
+                is_outermost = local_idx == 0
+                is_innermost = local_idx == len(group) - 1
+
+                front_marks: list = [fold_line(paper_h, fold_x)]
+                back_marks: list = [fold_line(paper_h, fold_x)]
+                if is_innermost:
+                    back_marks.extend(
+                        sewing_stations(paper_h, fold_x, settings.sewing_stations)
+                    )
+                if is_outermost:
+                    front_marks.append(
+                        signature_order_mark(sig_index, sig_count, paper_h, fold_x)
+                    )
+
+                front = Side(
+                    pages=(
+                        _place_page(
+                            slots[page_offset + front_a],
+                            0,
+                            settings,
+                            sheet_index,
+                            warnings,
+                            scale,
+                            cell=cell_a,
+                            spine_side=spine_a,
+                        ),
+                        _place_page(
+                            slots[page_offset + front_b],
+                            0,
+                            settings,
+                            sheet_index,
+                            warnings,
+                            scale,
+                            cell=cell_b,
+                            spine_side=spine_b,
+                        ),
+                    ),
+                    marks=tuple(front_marks),
+                )
+                back = Side(
+                    pages=(
+                        _place_page(
+                            slots[page_offset + back_a],
+                            0,
+                            settings,
+                            sheet_index,
+                            warnings,
+                            scale,
+                            cell=cell_a,
+                            spine_side=spine_a,
+                        ),
+                        _place_page(
+                            slots[page_offset + back_b],
+                            0,
+                            settings,
+                            sheet_index,
+                            warnings,
+                            scale,
+                            cell=cell_b,
+                            spine_side=spine_b,
+                        ),
+                    ),
+                    marks=tuple(back_marks),
+                )
+                sheets.append(Sheet(index=sheet_index, front=front, back=back))
+
+            signatures.append(
+                Signature(index=sig_index, sheet_indices=group, blank_count=sig_blank_count)
+            )
+
+        _creep_advisory(warnings, settings)
+
+        # Invariants, verified rather than trusted -- the SS-03 precedent.
+        all_sheet_indices = [i for sig in signatures for i in sig.sheet_indices]
+        assert all_sheet_indices == list(range(len(sheets))), (
+            "signature sheet_indices must be contiguous, gapless, and cover "
+            "every sheet exactly once, in binding order"
+        )
+        assert all(len(sig.sheet_indices) % 1 == 0 for sig in signatures)
+        assert sum(len(sig.sheet_indices) for sig in signatures) * 4 == len(slots), (
+            "signature slot counts must sum to the padded page count"
+        )
+
+        return SheetPlan(
+            sheets=sheets,
+            paper_pt=settings.paper,
+            warnings=warnings,
+            signatures=tuple(signatures),
+        )
