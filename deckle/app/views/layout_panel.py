@@ -19,12 +19,16 @@ from dataclasses import replace
 from typing import Literal
 
 from deckle.app.state import AppState
-from deckle.core.layout import GutterShiftStrategy
+from deckle.core.layout import GutterShiftStrategy, SaddleStitchStrategy
 from deckle.core.models import Project, SheetPlan
 
 BINDING_EDGES: tuple[str, ...] = ("left", "right")
 
 LANDSCAPE_POLICIES: tuple[str, ...] = ("rotate", "scale", "letterbox")
+
+FOLD_SCHEMES: tuple[str, ...] = ("none", "folio")
+
+BLANK_MODES: tuple[str, ...] = ("end", "balanced")
 
 # -- pure layout-settings mutators, each routed through AppState.mutate ----
 
@@ -107,9 +111,55 @@ def set_start_on_recto(project: Project, start_on_recto: bool) -> Project:
     return replace(project, layout=replace(project.layout, start_on_recto=start_on_recto))
 
 
+def set_fold_scheme(project: Project, fold_scheme: Literal["none", "folio"]) -> Project:
+    return replace(project, layout=replace(project.layout, fold_scheme=fold_scheme))
+
+
+def set_sheets_per_signature(project: Project, sheets_per_signature: int) -> Project:
+    return replace(
+        project, layout=replace(project.layout, sheets_per_signature=sheets_per_signature)
+    )
+
+
+def set_blank_mode(project: Project, blank_mode: Literal["end", "balanced"]) -> Project:
+    return replace(project, layout=replace(project.layout, blank_mode=blank_mode))
+
+
+def set_sewing_stations(project: Project, sewing_stations: int) -> Project:
+    return replace(project, layout=replace(project.layout, sewing_stations=sewing_stations))
+
+
+def set_paper_thickness_pt(project: Project, paper_thickness_pt: float) -> Project:
+    return replace(
+        project, layout=replace(project.layout, paper_thickness_pt=paper_thickness_pt)
+    )
+
+
 def recompute_plan(project: Project) -> SheetPlan:
-    """Re-run the imposer over every (non-skipped) page. Arithmetic only."""
+    """Re-run the imposer over every (non-skipped) page. Arithmetic only.
+
+    Dispatches on ``fold_scheme``: ``"folio"`` groups sheets into saddle-
+    stitched signatures via ``SaddleStitchStrategy``; ``"none"`` (the MVP
+    default) stays on ``GutterShiftStrategy``, one source page per side.
+    """
+    if project.layout.fold_scheme == "folio":
+        return SaddleStitchStrategy().impose(project.pages, project.layout)
     return GutterShiftStrategy().impose(project.pages, project.layout)
+
+
+def binding_readout_str(plan: SheetPlan) -> str:
+    """Render the binding readout, e.g. ``"17 signatures · 67 sheets · 2 blanks"``.
+
+    Pure text over the recomputed ``SheetPlan`` -- the signature count,
+    sheet count and total filler/blank count are the arithmetic a binder
+    actually decides on, so this reads straight off ``plan`` rather than
+    re-deriving anything from ``LayoutSettings``.
+    """
+    blank_count = sum(sig.blank_count for sig in plan.signatures)
+    return (
+        f"{len(plan.signatures)} signatures · {len(plan.sheets)} sheets · "
+        f"{blank_count} blanks"
+    )
 
 
 def apply_layout_change(state: AppState, mutator) -> SheetPlan:
@@ -142,14 +192,16 @@ def _qt_widgets():
         QComboBox,
         QDoubleSpinBox,
         QFormLayout,
+        QLabel,
         QPushButton,
         QRadioButton,
+        QSpinBox,
         QWidget,
     )
 
     return (
         QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-        QPushButton, QRadioButton, QWidget,
+        QLabel, QPushButton, QRadioButton, QSpinBox, QWidget,
     )
 
 
@@ -173,8 +225,10 @@ class LayoutPanel:
             QComboBox,
             QDoubleSpinBox,
             QFormLayout,
+            QLabel,
             QPushButton,
             QRadioButton,
+            QSpinBox,
             QWidget,
         ) = _qt_widgets()
 
@@ -257,6 +311,43 @@ class LayoutPanel:
         self.landscape_policy_combo.setCurrentText(state.project.layout.landscape_policy)
         form.addRow("Landscape policy:", self.landscape_policy_combo)
 
+        # -- signature/binding controls --------------------------------
+        self.fold_scheme_combo = QComboBox(self.widget)
+        self.fold_scheme_combo.addItems(list(FOLD_SCHEMES))
+        self.fold_scheme_combo.setCurrentText(state.project.layout.fold_scheme)
+        form.addRow("Fold scheme:", self.fold_scheme_combo)
+
+        self.sheets_per_signature_spinbox = QSpinBox(self.widget)
+        self.sheets_per_signature_spinbox.setRange(1, 100)
+        self.sheets_per_signature_spinbox.setValue(state.project.layout.sheets_per_signature)
+        form.addRow("Sheets per signature:", self.sheets_per_signature_spinbox)
+
+        self.blank_mode_combo = QComboBox(self.widget)
+        self.blank_mode_combo.addItems(list(BLANK_MODES))
+        self.blank_mode_combo.setCurrentText(state.project.layout.blank_mode)
+        form.addRow("Blank mode:", self.blank_mode_combo)
+
+        self.sewing_stations_spinbox = QSpinBox(self.widget)
+        self.sewing_stations_spinbox.setRange(0, 20)
+        self.sewing_stations_spinbox.setValue(state.project.layout.sewing_stations)
+        form.addRow("Sewing stations:", self.sewing_stations_spinbox)
+
+        self.paper_thickness_spinbox = QDoubleSpinBox(self.widget)
+        self.paper_thickness_spinbox.setDecimals(3)
+        self.paper_thickness_spinbox.setSingleStep(0.001)
+        self.paper_thickness_spinbox.setRange(0.0, from_points(10.0, self._unit))
+        self.paper_thickness_spinbox.setValue(
+            from_points(state.project.layout.paper_thickness_pt, self._unit)
+        )
+        form.addRow("Paper thickness:", self.paper_thickness_spinbox)
+
+        # Live readout -- "17 signatures · 67 sheets · 2 blanks" -- derived
+        # from the recomputed SheetPlan, since that arithmetic is the thing
+        # a binder actually decides on.
+        self.binding_readout_label = QLabel("", self.widget)
+        form.addRow("Binding:", self.binding_readout_label)
+        self.binding_readout_label.setText(binding_readout_str(recompute_plan(state.project)))
+
         self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
         for field, box in self.margin_spinboxes.items():
             box.valueChanged.connect(
@@ -268,6 +359,13 @@ class LayoutPanel:
         self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
         self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
         self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
+        self.fold_scheme_combo.currentTextChanged.connect(self._on_fold_scheme_changed)
+        self.sheets_per_signature_spinbox.valueChanged.connect(
+            self._on_sheets_per_signature_changed
+        )
+        self.blank_mode_combo.currentTextChanged.connect(self._on_blank_mode_changed)
+        self.sewing_stations_spinbox.valueChanged.connect(self._on_sewing_stations_changed)
+        self.paper_thickness_spinbox.valueChanged.connect(self._on_paper_thickness_changed)
 
     def _on_gutter_changed(self, value: float) -> None:
         points = to_points(value, self._unit)
@@ -331,6 +429,7 @@ class LayoutPanel:
         boxes += [
             (self.margin_spinboxes[f], getattr(layout, f), 216.0) for f in MARGIN_FIELDS
         ]
+        boxes.append((self.paper_thickness_spinbox, layout.paper_thickness_pt, 10.0))
         self._unit = unit
         for box, points, cap_pt in boxes:
             box.blockSignals(True)
@@ -361,3 +460,38 @@ class LayoutPanel:
     def _on_landscape_policy_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_landscape_policy(project, value))
         self.layout_changed.emit(plan)
+
+    def _on_fold_scheme_changed(self, value: str) -> None:
+        plan = apply_layout_change(self.state, lambda project: set_fold_scheme(project, value))
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_sheets_per_signature_changed(self, value: int) -> None:
+        plan = apply_layout_change(
+            self.state, lambda project: set_sheets_per_signature(project, value)
+        )
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_blank_mode_changed(self, value: str) -> None:
+        plan = apply_layout_change(self.state, lambda project: set_blank_mode(project, value))
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_sewing_stations_changed(self, value: int) -> None:
+        plan = apply_layout_change(
+            self.state, lambda project: set_sewing_stations(project, value)
+        )
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_paper_thickness_changed(self, value: float) -> None:
+        points = to_points(value, self._unit)
+        plan = apply_layout_change(
+            self.state, lambda project: set_paper_thickness_pt(project, points)
+        )
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _refresh_binding_readout(self, plan: SheetPlan) -> None:
+        self.binding_readout_label.setText(binding_readout_str(plan))

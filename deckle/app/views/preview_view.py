@@ -32,8 +32,8 @@ import threading
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
-from deckle.core.layout import content_box_rect_pt
-from deckle.core.models import LayoutWarning, OutputPage, Sheet, SheetPlan
+from deckle.core.layout import cell_geometry, content_box_rect_pt
+from deckle.core.models import LayoutWarning, OutputPage, Sheet, SheetPlan, Side
 from deckle.core.profiles import PrinterProfile
 from deckle.core.render import RenderedPage, render_sheet
 
@@ -162,6 +162,64 @@ def badge_text(warnings: Sequence[LayoutWarning]) -> str:
     to the sheet it describes.
     """
     return "\n".join(w.detail for w in warnings)
+
+
+def signature_index_for_sheet(plan: SheetPlan, sheet_index: int) -> int | None:
+    """Which signature (by ``Signature.index``) owns ``sheet_index``, if any."""
+    for signature in plan.signatures:
+        if sheet_index in signature.sheet_indices:
+            return signature.index
+    return None
+
+
+def content_box_guides_for_side(
+    settings,
+    side: Side,
+    *,
+    is_recto: bool,
+) -> list[tuple[tuple[float, float, float, float], OutputPage | None]]:
+    """Content-box guide rects for one rendered side, each paired with the
+    ``OutputPage`` it belongs to (``None`` when the side has no pages).
+
+    Under ``fold_scheme == "folio"`` a side holds two folio cells (left and
+    right of the fold), each fitted independently, so this returns one
+    guide per cell -- two per side. Under the MVP default (``"none"``) a
+    side is a single cell, matching prior behaviour: exactly one guide.
+    """
+    if settings is not None and settings.fold_scheme == "folio" and len(side.pages) > 1:
+        cells = cell_geometry(settings.paper)
+        if settings.binding_edge == "right":
+            cell_a, spine_a = cells[1], "left"
+            cell_b, spine_b = cells[0], "right"
+        else:
+            cell_a, spine_a = cells[0], "right"
+            cell_b, spine_b = cells[1], "left"
+        guides = []
+        for output_page, (cell, spine) in zip(
+            side.pages, ((cell_a, spine_a), (cell_b, spine_b))
+        ):
+            rect = content_box_rect_pt(settings, spine_side=spine, cell=cell)
+            guides.append((rect, output_page))
+        return guides
+    page = side.pages[0] if side.pages else None
+    rect = content_box_rect_pt(settings, is_recto=is_recto)
+    return [(rect, page)]
+
+
+def cell_label(plan: SheetPlan, sheet_index: int, output_page: OutputPage | None) -> str:
+    """Label text for one cell's guide: its source page number plus the
+    containing signature's index, e.g. ``"p12 · sig 3"``.
+
+    Empty for a filler cell (no source page) or when the sheet belongs to
+    no signature (MVP, ``fold_scheme="none"``).
+    """
+    if output_page is None or output_page.is_filler or output_page.source_ref is None:
+        return ""
+    page_num = output_page.source_ref.page_index + 1
+    sig_index = signature_index_for_sheet(plan, sheet_index)
+    if sig_index is None:
+        return f"p{page_num}"
+    return f"p{page_num} · sig {sig_index}"
 
 
 # -- the preview render path (routes through export, always) --------------
@@ -631,13 +689,33 @@ class PreviewView:
                 box = QPen(QColor(40, 110, 230))
                 box.setWidth(2)
                 box.setStyle(Qt.PenStyle.DashLine)
-                painter.setPen(box)
                 is_recto = frame.side == "front"
-                painter.drawRect(
-                    to_image_rect(
-                        content_box_rect_pt(self.layout_settings, is_recto=is_recto)
-                    )
+                sheet = next(
+                    (s for s in self.plan.sheets if s.index == frame.sheet_index), None
                 )
+                side = sheet.front if (sheet and frame.side == "front") else (
+                    sheet.back if sheet else None
+                )
+                if side is not None:
+                    guides = content_box_guides_for_side(
+                        self.layout_settings, side, is_recto=is_recto
+                    )
+                else:
+                    guides = [
+                        (content_box_rect_pt(self.layout_settings, is_recto=is_recto), None)
+                    ]
+                for rect_pt, output_page in guides:
+                    painter.setPen(box)
+                    image_rect = to_image_rect(rect_pt)
+                    painter.drawRect(image_rect)
+                    label = cell_label(self.plan, frame.sheet_index, output_page)
+                    if label:
+                        text_pen = QPen(QColor(40, 110, 230))
+                        painter.setPen(text_pen)
+                        painter.drawText(
+                            image_rect.adjusted(4, 4, -4, -4).topLeft() + type(image_rect.topLeft())(0, 12),
+                            label,
+                        )
         finally:
             painter.end()
 

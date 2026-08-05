@@ -171,6 +171,20 @@ class PrintDialog:
         self.test_first_checkbox = QCheckBox("Test one sheet first", self.widget)
         layout.addWidget(self.test_first_checkbox)
 
+        # Signature selector: "All" (the default -- prints the whole plan)
+        # or one signature by index, so a binder can reprint a single
+        # gathering without touching pass/sheet-order arithmetic. That
+        # arithmetic already lives in `plan_passes`/`PrintSession` -- this
+        # combo only ever supplies a `sheets=` subset, never computes one.
+        signature_row = QHBoxLayout()
+        signature_row.addWidget(QLabel("Signature:", self.widget))
+        self.signature_combo = QComboBox(self.widget)
+        self.signature_combo.addItem("All", None)
+        for signature in self.plan.signatures:
+            self.signature_combo.addItem(f"Signature {signature.index}", signature.sheet_indices)
+        signature_row.addWidget(self.signature_combo)
+        layout.addLayout(signature_row)
+
         self.status_label = QLabel("", self.widget)
         layout.addWidget(self.status_label)
 
@@ -195,12 +209,15 @@ class PrintDialog:
         printer_name = self.printer_combo.currentText()
         profile = self._resolve_profile(printer_name)
         backend = self._backend_cls(profile)
+        sheets = self.signature_combo.currentData()
+        kwargs = {} if sheets is None else {"sheets": sheets}
         session = self._session_cls(
             self.plan,
             profile,
             backend,
             test_first=self.test_first_checkbox.isChecked(),
             printer_name=printer_name,
+            **kwargs,
         )
         self._session = session
         session.start()
