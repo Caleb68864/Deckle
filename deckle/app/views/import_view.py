@@ -15,7 +15,8 @@ from dataclasses import replace
 from typing import Sequence
 
 from deckle.app.state import AppState
-from deckle.core.loader import EncryptedPdfError, load_image_dir, load_pdf
+from deckle.core.diagnostics import log_exception
+from deckle.core.loader import EncryptedPdfError, SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import SourcePage
 
 
@@ -111,6 +112,17 @@ class ImportWorker:
             self.pages, self.warnings = load_and_apply_import(self.state, self.source_path)
         except EncryptedPdfError as exc:
             self.error = f"password-protected PDF: {exc.path}"
+        except SourceLoadError as exc:
+            # Every other refusal from the loader already carries a message
+            # naming the file and the remedy -- a corrupt PDF, a directory
+            # with no images, a file that is not a PDF despite its name.
+            # Letting them propagate wasted all of that: a QThread has
+            # nowhere to deliver an exception, so Qt printed a traceback,
+            # `error` stayed None, and `_on_finished` took the SUCCESS
+            # branch and reported "Imported 0 page(s)." Reporting a failure
+            # as a success is worse than crashing.
+            self.error = str(exc)
+            log_exception("import_failed", exc, path=self.source_path)
 
 
 class ImportView:
