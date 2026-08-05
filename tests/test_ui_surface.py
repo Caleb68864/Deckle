@@ -448,3 +448,60 @@ def test_strategy_for_dispatches_on_fold_scheme_through_recompute_plan():
     assert len(folio_plan.sheets[0].front.pages) == 2
     assert none_plan.signatures == ()
     assert len(none_plan.sheets[0].front.pages) == 1
+
+
+def test_folio_side_produces_one_content_box_guide_per_cell():
+    """REQ-037: a folio side holds two cells, so it draws two guides.
+
+    The non-folio companion above proves the ``fold_scheme`` guard; this
+    proves the folio branch actually splits at the fold. Asserted via
+    disjoint x-ranges landing either side of the 396pt fold on letter
+    landscape, so a regression that returned the same whole-sheet rect
+    twice -- the plausible way to "return two guides" wrongly -- still
+    fails.
+    """
+    settings = _settings(paper=LETTER_LANDSCAPE, gutter_pt=0.0, fold_scheme="folio")
+    side = Side(pages=(_output_page(0), _output_page(1)))
+
+    guides = preview_view.content_box_guides_for_side(settings, side, is_recto=True)
+
+    assert len(guides) == 2
+    (rect_a, page_a), (rect_b, page_b) = guides
+
+    # Each guide belongs to its own page, in side order.
+    assert page_a is side.pages[0]
+    assert page_b is side.pages[1]
+
+    fold_x = LETTER_LANDSCAPE[0] / 2.0
+    a_x0, _, a_x1, _ = rect_a
+    b_x0, _, b_x1, _ = rect_b
+
+    assert 0.0 <= a_x0 < a_x1 <= fold_x, f"first cell escaped the left half: {rect_a}"
+    assert fold_x <= b_x0 < b_x1 <= LETTER_LANDSCAPE[0], (
+        f"second cell escaped the right half: {rect_b}"
+    )
+    assert a_x1 <= b_x0, "the two cell guides overlap across the fold"
+
+
+def test_folio_guides_mirror_when_the_binding_edge_is_right():
+    """Binding edge flips which cell carries the spine, never the cell order.
+
+    The guides stay left-then-right in sheet coordinates; what changes is
+    where the gutter is taken from within each cell. A regression that
+    reordered the cells instead would swap the page-to-cell mapping and
+    print the book back to front.
+    """
+    left = _settings(paper=LETTER_LANDSCAPE, gutter_pt=36.0, fold_scheme="folio")
+    right = _settings(
+        paper=LETTER_LANDSCAPE, gutter_pt=36.0, fold_scheme="folio", binding_edge="right"
+    )
+    side = Side(pages=(_output_page(0), _output_page(1)))
+
+    left_guides = preview_view.content_box_guides_for_side(left, side, is_recto=True)
+    right_guides = preview_view.content_box_guides_for_side(right, side, is_recto=True)
+
+    assert len(left_guides) == len(right_guides) == 2
+    # Cell order is positional, so page->cell mapping is identical...
+    assert [p for _, p in left_guides] == [p for _, p in right_guides]
+    # ...but the gutter moves, so the rects themselves differ.
+    assert [r for r, _ in left_guides] != [r for r, _ in right_guides]

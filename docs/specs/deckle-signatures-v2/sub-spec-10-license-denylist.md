@@ -357,7 +357,7 @@ against the working tree at authoring time and confirmed to exit 0 — see `docs
 | Existing AGPL substring test retained *(pre-verified)* | [STRUCTURAL] | `grep -q "def test_no_agpl_dependency" tests/test_license_audit.py \|\| (echo "FAIL: the AGPL substring test was removed" && exit 1)` |
 | Empty-closure guard retained *(pre-verified)* | [STRUCTURAL] | `grep -q "def test_dependency_closure_is_non_empty" tests/test_license_audit.py \|\| (echo "FAIL: the vacuous-pass guard was removed" && exit 1)` |
 | `top_level.txt` half of the dual check retained *(pre-verified)* | [STRUCTURAL] | `grep -q "_top_level_names" tests/test_license_audit.py \|\| (echo "FAIL: module-name half of the dual check removed" && exit 1)` |
-| Denylist is wired, not merely declared | [STRUCTURAL] | `python -m pytest tests/test_license_audit.py -q -k denylist_catches \|\| (echo "FAIL: denylist declared but not consulted" && exit 1)` |
+| Denylist is wired, not merely declared | [STRUCTURAL] | `python -m pytest tests/test_license_audit.py -q -k injected_pdfimpose_fails_the_denylist_check \|\| (echo "FAIL: denylist declared but not consulted" && exit 1)` |
 | Audit suite green, at least 3 tests | [MECHANICAL] | `python -m pytest tests/test_license_audit.py -q --collect-only 2>/dev/null \| grep -qE "^([3-9]\|[0-9]{2,}) tests? collected" \|\| (echo "FAIL: fewer than 3 license-audit tests" && exit 1)` |
 | Audit suite passes | [MECHANICAL] | `python -m pytest tests/test_license_audit.py -q \|\| (echo "FAIL: license audit red" && exit 1)` |
 | No oracle or AGPL distribution declared as a dependency *(pre-verified)* | [MECHANICAL] | `! grep -n "pdfimpose\|cpdf\|pymupdf\|fitz" pyproject.toml \|\| (echo "FAIL: AGPL/oracle distribution declared as a dependency" && exit 1)` |

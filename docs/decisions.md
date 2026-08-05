@@ -171,3 +171,10 @@
 - Surfaces: Worst was `PrintSession.list_resumable` skipping unreadable session files. A user whose state file was truncated by the very crash they are resuming from watched the session simply not appear, with no way to learn why.
 - Watch: Diagnostics must be total -- every public function in that module swallows its own errors and returns. A logging subsystem that raises while reporting a problem converts a degraded app into a crashed one, exactly when conditions are already bad (read-only dir, full disk). That is the one place a bare `except Exception` is the design rather than a smell. Warnings go to stderr, never stdout, and never change the exit code.
 - Commit: (this commit)
+
+## 2026-08-04 - The specs are self-verifying again: 49 unmatched selectors -> 0
+- Symptom: 49 of 73 `pytest -k` criteria named a selector matching no test, so the specs' own stated verification failed against correct code.
+- Fix: Classified all 49 rather than assuming. 21 COVERED (behaviour tested under another name -> remapped the criterion, keeping the better test name), 25 ABSENT (-> wrote the tests), 1 VACUOUS, plus 2 stragglers found by re-measuring afterwards: `denylist_catches` was COVERED by `test_injected_pdfimpose_fails_the_denylist_check`, and `folio_side_produces_one_content_box_guide_per_cell` was genuinely absent -- only the NON-folio guide case had been written.
+- Surfaces: Any spec whose acceptance criteria are shell commands. The criteria rot independently of the code, and a green suite says nothing about whether they still run.
+- Watch: Re-measure after fixing, do not trust the fix. Two more gaps surfaced only on the second pass, and one of them (the folio guide branch) was a real hole hidden because its non-folio sibling existed and looked like coverage. Remap a criterion to an existing test ONLY after confirming that test actually asserts the criterion's property -- bending the criterion to fit whatever is green is the exact failure the audit existed to correct.
+- Commit: (this commit)
