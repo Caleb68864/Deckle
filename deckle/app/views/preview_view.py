@@ -104,37 +104,38 @@ def clipping_warnings_for_sheet(
     imageable_rect = imageable_rect_pt(paper_pt, imageable_area_pt)
 
     warnings: list[LayoutWarning] = []
-    for side_name, output_page in (("front", sheet.front), ("back", sheet.back)):
-        if output_page is None:
+    for side_name, side in (("front", sheet.front), ("back", sheet.back)):
+        if side is None:
             continue
-        bbox = _output_page_bbox(output_page)
-        if bbox is None:
-            continue
+        for output_page in side.pages:
+            bbox = _output_page_bbox(output_page)
+            if bbox is None:
+                continue
 
-        if _escapes(bbox, paper_rect):
-            warnings.append(
-                LayoutWarning(
-                    sheet_index=sheet.index,
-                    kind="clipped_by_page",
-                    detail=(
-                        f"sheet {sheet.index} {side_name}: content extends past the "
-                        "physical page edge"
-                    ),
+            if _escapes(bbox, paper_rect):
+                warnings.append(
+                    LayoutWarning(
+                        sheet_index=sheet.index,
+                        kind="clipped_by_page",
+                        detail=(
+                            f"sheet {sheet.index} {side_name}: content extends past the "
+                            "physical page edge"
+                        ),
+                    )
                 )
-            )
-            continue
+                continue
 
-        if _escapes(bbox, imageable_rect):
-            warnings.append(
-                LayoutWarning(
-                    sheet_index=sheet.index,
-                    kind="clipped_by_imageable_area",
-                    detail=(
-                        f"sheet {sheet.index} {side_name}: content is on the page but "
-                        "falls outside the printer's imageable area"
-                    ),
+            if _escapes(bbox, imageable_rect):
+                warnings.append(
+                    LayoutWarning(
+                        sheet_index=sheet.index,
+                        kind="clipped_by_imageable_area",
+                        detail=(
+                            f"sheet {sheet.index} {side_name}: content is on the page but "
+                            "falls outside the printer's imageable area"
+                        ),
+                    )
                 )
-            )
     return warnings
 
 

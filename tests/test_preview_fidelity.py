@@ -22,6 +22,7 @@ from deckle.core.models import (
     Project,
     Sheet,
     SheetPlan,
+    Side,
     SourcePage,
     SourceRef,
 )
@@ -57,6 +58,10 @@ def _output_page(ref, is_filler=False, **placement_overrides) -> OutputPage:
     return OutputPage(source_ref=ref, placement=_placement(**placement_overrides), is_filler=is_filler)
 
 
+def _side(*pages: OutputPage) -> Side:
+    return Side(pages=tuple(pages))
+
+
 def _write_source_pdf(tmp_path, n_pages: int = 1, page_size=(612.0, 792.0)) -> str:
     path = os.path.join(str(tmp_path), "src.pdf")
     pdf = pikepdf.Pdf.new()
@@ -77,7 +82,7 @@ def _plan(sheets: list[Sheet], paper_pt=LETTER, warnings=None) -> SheetPlan:
 def test_render_visible_sheet_routes_through_export_with_sheet_index(tmp_path, monkeypatch):
     src = _write_source_pdf(tmp_path)
     ref = _ref(src)
-    sheet = Sheet(index=3, front=_output_page(ref), back=None)
+    sheet = Sheet(index=3, front=_side(_output_page(ref)), back=None)
     plan = _plan([Sheet(index=i, front=None, back=None) for i in range(3)] + [sheet])
 
     calls = []
@@ -104,7 +109,7 @@ def test_content_past_page_edge_is_clipped_by_page():
     # tx/ty/scale chosen so the placed content's footprint runs off the
     # right/top edge of the LETTER page entirely.
     ref = _ref("x.pdf", width_pt=612.0, height_pt=792.0)
-    sheet = Sheet(index=0, front=_output_page(ref, tx=100.0, ty=100.0), back=None)
+    sheet = Sheet(index=0, front=_side(_output_page(ref, tx=100.0, ty=100.0)), back=None)
 
     warnings = preview_view.clipping_warnings_for_sheet(sheet, LETTER, (18.0, 18.0, 18.0, 18.0))
 
@@ -117,7 +122,7 @@ def test_content_inside_page_but_outside_imageable_area_is_flagged_separately():
     ref = _ref("x.pdf", width_pt=612.0, height_pt=792.0)
     # Full-bleed placement: exactly fills the page, so it necessarily spills
     # into the printer's non-zero margins without ever leaving the page box.
-    sheet = Sheet(index=0, front=_output_page(ref, tx=0.0, ty=0.0), back=None)
+    sheet = Sheet(index=0, front=_side(_output_page(ref, tx=0.0, ty=0.0)), back=None)
 
     warnings = preview_view.clipping_warnings_for_sheet(sheet, LETTER, (18.0, 18.0, 18.0, 18.0))
 
@@ -128,8 +133,8 @@ def test_content_inside_page_but_outside_imageable_area_is_flagged_separately():
 
 def test_clipped_by_page_and_clipped_by_imageable_area_have_different_text():
     ref = _ref("x.pdf", width_pt=612.0, height_pt=792.0)
-    page_clip_sheet = Sheet(index=0, front=_output_page(ref, tx=100.0, ty=100.0), back=None)
-    imageable_clip_sheet = Sheet(index=1, front=_output_page(ref, tx=0.0, ty=0.0), back=None)
+    page_clip_sheet = Sheet(index=0, front=_side(_output_page(ref, tx=100.0, ty=100.0)), back=None)
+    imageable_clip_sheet = Sheet(index=1, front=_side(_output_page(ref, tx=0.0, ty=0.0)), back=None)
 
     page_warning = preview_view.clipping_warnings_for_sheet(page_clip_sheet, LETTER, (18.0, 18.0, 18.0, 18.0))[0]
     imageable_warning = preview_view.clipping_warnings_for_sheet(
@@ -142,7 +147,7 @@ def test_clipped_by_page_and_clipped_by_imageable_area_have_different_text():
 
 def test_content_fully_within_imageable_area_has_no_warning():
     ref = _ref("x.pdf", width_pt=612.0 - 36.0, height_pt=792.0 - 36.0)
-    sheet = Sheet(index=0, front=_output_page(ref, tx=18.0, ty=18.0), back=None)
+    sheet = Sheet(index=0, front=_side(_output_page(ref, tx=18.0, ty=18.0)), back=None)
 
     warnings = preview_view.clipping_warnings_for_sheet(sheet, LETTER, (18.0, 18.0, 18.0, 18.0))
 
@@ -150,11 +155,27 @@ def test_content_fully_within_imageable_area_has_no_warning():
 
 
 def test_filler_page_produces_no_clipping_warning():
-    sheet = Sheet(index=0, front=_output_page(None, is_filler=True), back=None)
+    sheet = Sheet(index=0, front=_side(_output_page(None, is_filler=True)), back=None)
 
     warnings = preview_view.clipping_warnings_for_sheet(sheet, LETTER, (18.0, 18.0, 18.0, 18.0))
 
     assert warnings == []
+
+
+def test_second_page_of_a_two_page_side_overflowing_is_reported():
+    # A 2-up side where only the SECOND page's placement runs off the page.
+    # Checking the side as a single unit (rather than per page) would miss
+    # this entirely -- this is the exact under-report the per-page loop
+    # exists to catch.
+    ref = _ref("x.pdf", width_pt=612.0, height_pt=792.0)
+    in_bounds_page = _output_page(ref, tx=18.0, ty=18.0, scale_x=0.25, scale_y=0.25)
+    overflowing_page = _output_page(ref, tx=100.0, ty=100.0)
+    sheet = Sheet(index=0, front=_side(in_bounds_page, overflowing_page), back=None)
+
+    warnings = preview_view.clipping_warnings_for_sheet(sheet, LETTER, (18.0, 18.0, 18.0, 18.0))
+
+    assert len(warnings) == 1
+    assert warnings[0].kind == "clipped_by_page"
 
 
 # -- [BEHAVIORAL] warning on sheet 12 is visible there, never modal -------
@@ -163,7 +184,7 @@ def test_filler_page_produces_no_clipping_warning():
 def test_warning_on_sheet_12_is_attached_to_sheet_12_only():
     ref = _ref("x.pdf", width_pt=612.0, height_pt=792.0)
     sheets = [Sheet(index=i, front=None, back=None) for i in range(12)]
-    sheets.append(Sheet(index=12, front=_output_page(ref, tx=0.0, ty=0.0), back=None))
+    sheets.append(Sheet(index=12, front=_side(_output_page(ref, tx=0.0, ty=0.0)), back=None))
     plan = _plan(sheets)
 
     by_sheet = preview_view.warnings_for_plan(plan, _profile())

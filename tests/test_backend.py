@@ -5,7 +5,9 @@ from __future__ import annotations
 
 
 from deckle.app import backend as backend_mod
-from deckle.app.backend import DEFAULT_CHUNK_SIZE, QtPrintBackend, _chunked
+from deckle.app.backend import DEFAULT_CHUNK_SIZE, QtPrintBackend, _chunked, _render_sheet_side
+from deckle.core import export as export_module
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side, SourceRef
 from deckle.core.printing import PrintPass
 from deckle.core.profiles import PrinterProfile
 
@@ -130,6 +132,45 @@ def test_submit_pass_calls_log_once_per_chunk(monkeypatch):
 
 def test_default_chunk_size_is_10():
     assert DEFAULT_CHUNK_SIZE == 10
+
+
+def test_render_sheet_side_paints_every_page_in_a_two_page_side(tmp_path, monkeypatch):
+    import pikepdf
+
+    src = tmp_path / "src.pdf"
+    with pikepdf.new() as pdf:
+        pdf.add_blank_page(page_size=(300.0, 400.0))
+        pdf.add_blank_page(page_size=(300.0, 400.0))
+        pdf.save(str(src))
+
+    placement = Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
+    ref0 = SourceRef(path=str(src), page_index=0, sha256="a" * 64, width_pt=150.0, height_pt=200.0)
+    ref1 = SourceRef(path=str(src), page_index=1, sha256="b" * 64, width_pt=150.0, height_pt=200.0)
+    side = Side(
+        pages=(
+            OutputPage(source_ref=ref0, placement=placement, is_filler=False),
+            OutputPage(source_ref=ref1, placement=placement, is_filler=False),
+        )
+    )
+    sheet = Sheet(index=0, front=side, back=None)
+    plan = SheetPlan(sheets=[sheet], paper_pt=(300.0, 400.0), warnings=[])
+
+    calls = []
+    real_place = export_module._place_output_page
+
+    def spy_place(sheet_pdf, dest_page, output_page, source_cache):
+        calls.append(output_page)
+        return real_place(sheet_pdf, dest_page, output_page, source_cache)
+
+    monkeypatch.setattr(export_module, "_place_output_page", spy_place)
+
+    rendered = _render_sheet_side(plan, 0, "front", 72, False, False)
+
+    # A two-page side must produce a raster carrying content from both
+    # source pages -- asserted by placement count, not a pixel diff.
+    assert len(calls) == 2
+    assert rendered.width > 0
+    assert rendered.height > 0
 
 
 def test_apply_rotate_backs_rotates_every_page(tmp_path):
