@@ -22,11 +22,11 @@ not a test harness, and the golden-fixture regression
 (`tests/test_golden_pinebox.py`) and CI both run it without a display
 server. A Qt import anywhere in `deckle.core` breaks that.
 
-## 2. The four-level page vocabulary
+## 2. The five-noun page model
 
-Every module in this codebase uses the same four terms, in the same
-order, for the same things. Get the vocabulary right and the rest of the
-code reads itself:
+Every module in this codebase uses the same terms, in the same order,
+for the same things. Get the vocabulary right and the rest of the code
+reads itself:
 
 1. **Source page** (`SourcePage`) -- a page as it exists in the input
    (a PDF page or an imported image, normalized to a PDF page), before any
@@ -35,21 +35,32 @@ code reads itself:
 2. **Output page** (`OutputPage`) -- a source page (or a blank filler)
    assigned a `Placement` on a sheet: the exact affine transform
    (`scale_x`, `scale_y`, `tx`, `ty`, `rotate_deg`) that positions its
-   content. `Placement` is computed exactly once, by `Imposer`, and every
+   content. `Placement` is computed exactly once, by the imposition
+   strategy (`GutterShiftStrategy` or `SaddleStitchStrategy`), and every
    downstream consumer (rasterizer, exporter, print backend) reproduces it
    verbatim -- nothing downstream ever recomputes or adjusts a
    `Placement`.
-3. **Sheet** (`Sheet`) -- one physical piece of paper: an optional front
-   `OutputPage` and an optional back `OutputPage`.
-4. **Pass** (`PrintPass`) -- one physical pass through the printer: an
+3. **Side** (`Side`) -- one printable face of a sheet: one or more
+   `OutputPage`s plus any bindery `Mark`s (sewing stations, signature
+   order bars, fold lines) drawn on that face. Under the MVP
+   `GutterShiftStrategy`, `Sheet.front`/`Sheet.back` may still carry a bare
+   `OutputPage` directly (one page per side); `SaddleStitchStrategy`
+   always produces a `Side` (two folio cells per face).
+4. **Sheet** (`Sheet`) -- one physical piece of paper: an optional front
+   face and an optional back face.
+5. **Signature** (`Signature`) -- a group of sheets folded and nested
+   together as one saddle-stitch gathering (`sheet_indices`, plus how many
+   of its slots are blank filler). Only `SaddleStitchStrategy` populates
+   `SheetPlan.signatures`; `GutterShiftStrategy` leaves it empty.
+6. **Pass** (`PrintPass`) -- one physical pass through the printer: an
    ordered set of sheets, a side (front/back), and (for manual duplex) a
-   plain-language reload instruction. `PassPlanner` turns a `SheetPlan`
+   plain-language reload instruction. `plan_passes` turns a `SheetPlan`
    plus a `PrinterProfile` into passes; nothing recomputes sheet order or
    flips a stack outside that module.
 
-Source page → output page → sheet → pass. Name new code, variables, and
-tests using this vocabulary rather than locally-nicer synonyms
-("page", "slot", "job") -- consistency here is worth more than a
+Source → output → side → sheet → signature → pass. Name new code,
+variables, and tests using this vocabulary rather than locally-nicer
+synonyms ("page", "slot", "job") -- consistency here is worth more than a
 marginally shorter identifier.
 
 ## 3. No external runtime binaries
@@ -72,6 +83,25 @@ is enforced by `tests/test_license_audit.py`, which enumerates the
 licenses of Deckle's own dependency closure and fails on any AGPL entry
 or on `PyMuPDF`/`fitz` being present, plus a grep guard for
 `pdfimpose`/`cpdf` references anywhere in `deckle/` or `tests/`.
+
+## 4. The zero-diff seam, and `paper_thickness_pt` is advisory only
+
+`deckle/core/printing.py` (`plan_passes`) and `deckle/core/profiles.py`
+(`PrinterProfile`) are the MVP's pass-planning seam, and v2 signature
+work must not touch them: `tests/test_seam_zero_diff.py` diffs both files
+against their MVP baseline and fails on any change. `plan_passes` already
+accepts an arbitrary `sheets` subsequence -- printing a single signature's
+sheets (`plan_passes(plan, profile, sheets=plan.signatures[i].sheet_indices)`)
+is the existing reprint/subset path, not a new one, and needs no change to
+either file.
+
+`LayoutSettings.paper_thickness_pt` is **advisory only**. The only place
+permitted to read it is `deckle/core/layout.py`'s `_creep_advisory`
+helper, which turns it into a `LayoutWarning` (predicted fore-edge creep,
+plus a suggested remedy) and nothing else -- no `Placement` this codebase
+emits may differ because of this value. `tests/test_layout_saddle.py`
+enforces this with an AST check: `paper_thickness_pt` may not be
+referenced anywhere else in `deckle/core/layout.py`.
 
 ## Other useful facts
 

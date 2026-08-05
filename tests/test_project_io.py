@@ -342,16 +342,23 @@ def test_legacy_deckle_with_removed_field_still_loads(tmp_path):
 
 
 def test_future_deckle_with_unknown_field_still_loads():
-    """Forward direction: a file written by a build that knows fold_scheme
-    must open here, dropping what this build cannot use."""
+    """Forward direction: a file written by a build that knows some field
+    this build has never heard of must open here, dropping what this build
+    cannot use.
+
+    Uses a placeholder field name rather than a real one: ``fold_scheme``
+    and ``sheets_per_signature`` are now known ``LayoutSettings`` fields
+    (signatures v2, SS-09/SS-10), so they no longer exercise this path --
+    the genuinely-unknown-field case still needs a name this build's
+    ``LayoutSettings`` has never defined.
+    """
     from deckle.core.project_io import UnknownLayoutFieldsWarning, _layout_from_dict
 
     future = {
         "paper": [612.0, 792.0],
         "gutter_pt": 18.0,
         "binding_edge": "left",
-        "fold_scheme": "folio",
-        "sheets_per_signature": 4,
+        "some_field_a_future_build_added": "placeholder",
     }
     with pytest.warns(UnknownLayoutFieldsWarning):
         settings = _layout_from_dict(future)

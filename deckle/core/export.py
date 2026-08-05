@@ -48,19 +48,6 @@ _DEFAULT_CACHE_SIZE = 200
 _BATCH_SHEETS = 50
 
 
-def _pages_and_marks(side: OutputPage | Side) -> tuple[tuple[OutputPage, ...], tuple[Mark, ...]]:
-    """Normalize a ``Sheet.front``/``Sheet.back`` value to ``(pages, marks)``.
-
-    ``Sheet.front``/``Sheet.back`` may carry either a single legacy
-    ``OutputPage`` (the one-page-per-side MVP layout) or a ``Side`` (one or
-    more ``OutputPage``s plus ``marks``). Both shapes render through the
-    same code path from here on.
-    """
-    if isinstance(side, Side):
-        return side.pages, side.marks
-    return (side,), ()
-
-
 def _mark_key(mark: Mark) -> str:
     return f"{mark.kind}:{mark.x0}:{mark.y0}:{mark.x1}:{mark.y1}"
 
@@ -81,10 +68,9 @@ def _plan_hash(plan: SheetPlan) -> str:
             if side is None:
                 digest.update(b"none")
                 continue
-            pages, marks = _pages_and_marks(side)
-            for page in pages:
+            for page in side.pages:
                 digest.update(_output_page_key(page).encode("utf-8"))
-            for mark in marks:
+            for mark in side.marks:
                 digest.update(f"|mark:{_mark_key(mark)}".encode("utf-8"))
     return digest.hexdigest()
 
@@ -217,17 +203,16 @@ def _place_output_page(
     dest_page.contents_add(content_stream)
 
 
-def _sides(sheet: Sheet) -> list[tuple[tuple[OutputPage, ...], tuple[Mark, ...]]]:
-    """The physical faces of ``sheet`` -- front then back -- each normalized
-    to ``(pages, marks)`` via ``_pages_and_marks``. One physical PDF page is
-    produced per entry, regardless of how many ``OutputPage``s (Form
-    XObjects) it carries.
+def _sides(sheet: Sheet) -> list[Side]:
+    """The physical faces of ``sheet`` -- front then back. One physical PDF
+    page is produced per ``Side``, regardless of how many ``OutputPage``s
+    (Form XObjects) it carries.
     """
     sides = []
     if sheet.front is not None:
-        sides.append(_pages_and_marks(sheet.front))
+        sides.append(sheet.front)
     if sheet.back is not None:
-        sides.append(_pages_and_marks(sheet.back))
+        sides.append(sheet.back)
     return sides
 
 
@@ -311,11 +296,11 @@ def _export_batched(plan: SheetPlan, selected: list[Sheet], tmp_path: str) -> No
     source_cache: dict[str, pikepdf.Pdf] = {}
     try:
         for i, sheet in enumerate(selected, start=1):
-            for pages, marks in _sides(sheet):
+            for side in _sides(sheet):
                 dest_page = out.add_blank_page(page_size=plan.paper_pt)
-                for output_page in pages:
+                for output_page in side.pages:
                     _place_output_page(out, dest_page, output_page, source_cache)
-                _draw_marks(dest_page, marks)
+                _draw_marks(dest_page, side.marks)
 
             if i % _BATCH_SHEETS == 0 and i != len(selected):
                 _flush_batch(out, source_cache, tmp_path)

@@ -136,3 +136,10 @@
 - Watch: The decision-log hook appends a fresh scaffold on every commit *attempt*, so a blocked multi-commit recovery accumulates unfilled scaffolds that each block the next commit. Two traps: strip stale scaffolds before retrying, and never write the hook's placeholder token literally in prose — the hook string-matches it and will block on your own documentation.
 - Commit: (this commit)
 
+
+## 2026-08-04 - SS-12 stranded output committed; crash dump untracked
+- Symptom: The factory's PHASE-CLOSER deferred on E_COMMIT_COVERAGE_VIOLATION because SS-12 produced zero commits. Its work was on disk and correct -- tests/test_integration_signatures.py passes 3/3 -- but the worker's own check command interpolated an empty TMPDIR, so it never reached its commit step.
+- Fix: Verified the stranded output independently, then committed it under the SS-12 factory tag. Also ran `git rm --cached bash.exe.stackdump`: SS-01's worker force-added a Cygwin crash dump even though `*.stackdump` has been in .gitignore since line 31.
+- Surfaces: Any check command that interpolates an environment variable the worker's shell does not define. Git Bash on Windows leaves TMPDIR empty, so "$TMPDIR/out.pdf" resolves to /out.pdf -- an unwritable MSYS root -- and the command hangs rather than failing loudly.
+- Watch: Check commands referencing $TMPDIR, $TMP, or $HOME subpaths. Prefer a repo-relative path under a .gitignored scratch dir, which exists identically on every platform. Also audit `git status` for tracked files that .gitignore already covers -- ignore rules do not apply retroactively to files a worker force-added.
+- Commit: (this commit)

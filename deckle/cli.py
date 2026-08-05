@@ -20,7 +20,7 @@ from typing import Sequence
 
 from deckle import __version__ as _DECKLE_VERSION
 from deckle.core.export import export as export_plan
-from deckle.core.layout import GutterShiftStrategy
+from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
 from deckle.core.loader import EncryptedPdfError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.project_io import SourceChangedWarning, save_project
@@ -116,7 +116,22 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         paper=args.paper,
         gutter_pt=args.gutter,
         binding_edge=args.binding_edge,
+        fold_scheme=args.fold_scheme,
+        sheets_per_signature=args.sheets_per_signature,
+        blank_mode=args.blank_mode,
+        sewing_stations=args.sewing_stations,
     )
+
+
+def _strategy_for(settings: LayoutSettings) -> LayoutStrategy:
+    """Pick the imposition strategy named by ``settings.fold_scheme``.
+
+    ``"folio"`` is the v2 saddle-stitch path; anything else (``"none"``,
+    the default) keeps the MVP one-page-per-side behavior.
+    """
+    if settings.fold_scheme == "folio":
+        return SaddleStitchStrategy()
+    return GutterShiftStrategy()
 
 
 def _add_layout_args(parser: argparse.ArgumentParser) -> None:
@@ -131,6 +146,24 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",
         help="which edge the gutter shifts toward (default: left)",
+    )
+    parser.add_argument(
+        "--fold-scheme", choices=["none", "folio"], default="none",
+        help="imposition scheme: 'none' (one page per side) or 'folio' "
+        "(saddle-stitch signatures) (default: none)",
+    )
+    parser.add_argument(
+        "--sheets-per-signature", type=int, default=4,
+        help="sheets per saddle-stitch signature, under --fold-scheme folio (default: 4)",
+    )
+    parser.add_argument(
+        "--blank-mode", choices=["end", "balanced"], default="end",
+        help="how padding blanks are distributed across signatures, under "
+        "--fold-scheme folio (default: end)",
+    )
+    parser.add_argument(
+        "--sewing-stations", type=int, default=3,
+        help="number of sewing station marks per signature, under --fold-scheme folio (default: 3)",
     )
 
 
@@ -149,7 +182,14 @@ def _cmd_info(args: argparse.Namespace) -> int:
 
     import_warnings = list(getattr(pages, "warnings", []))
     settings = _build_layout_settings(args)
-    plan = GutterShiftStrategy().impose(pages, settings)
+    plan = _strategy_for(settings).impose(pages, settings)
+
+    # Signature breakdown -- always printed, even under the MVP
+    # (fold_scheme="none") path, where there are simply zero signatures.
+    blank_total = sum(sig.blank_count for sig in plan.signatures)
+    print(f"signature count: {len(plan.signatures)}")
+    print(f"sheet count: {len(plan.sheets)}")
+    print(f"blank count: {blank_total}")
 
     all_warnings = import_warnings + list(plan.warnings)
     if all_warnings:
@@ -169,7 +209,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
 
     settings = _build_layout_settings(args)
-    plan = GutterShiftStrategy().impose(pages, settings)
+    plan = _strategy_for(settings).impose(pages, settings)
     export_plan(plan, args.output)
     print(f"wrote {args.output}")
     return 0
