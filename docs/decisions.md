@@ -248,3 +248,10 @@
 - Surfaces: The existing `test_license_audit.py` reads pyproject.toml and walks the declared closure. It is necessary and insufficient: PyInstaller bundles what it can REACH, not what you declared, so the build environment is part of the licence surface. None of those packages was a Deckle dependency -- they were merely installed.
 - Watch: Do not fix this with `--exclude-module`. That is whack-a-mole against an environment you do not control, and the next machine has a different set. Control the environment instead. Also: the frozen binary reported "pikepdf not installed" for every dependency until `copy_metadata` was added, because importlib.metadata reads .dist-info that PyInstaller does not ship by default -- wrong information in `--version`, the one command whose job is to answer that question for a bug report.
 - Commit: (this commit)
+
+## 2026-08-04 - The binding schedule describes the plan; it never re-derives it
+- Symptom: An imposed PDF tells a binder nothing about what to DO with the paper -- which sheets gather together, which way round, where the blanks fall, where to pierce.
+- Fix: `deckle/core/schedule.py` derives a work order from the SheetPlan and formats it for the bench, plus a `deckle schedule` subcommand. Pure, Qt-free, no I/O.
+- Surfaces: The tempting design is for the schedule to compute its own sheet order from the page count. That would be a SECOND implementation of the imposition, free to disagree with the PDF in the user's hand -- and the paper would be wrong while both halves looked internally consistent. It reads `plan.signatures` and `side.pages` and reports what it finds.
+- Watch: The ordering test is written out BY HAND from the standard 16-page arrangement (outermost 16|1 and 2|15, innermost 10|7 and 8|9), not generated from `saddle_order`. A test that derives its expectation from the code it checks proves only self-consistency. There is also a permutation property across several signature sizes -- every page exactly once -- because a duplicated or dropped page is a misbound book and is easy to lose in a refactor.
+- Commit: (this commit)

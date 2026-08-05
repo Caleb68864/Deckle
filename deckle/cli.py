@@ -25,6 +25,7 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.core.schedule import build_schedule, format_schedule_text
 from deckle.core.project_io import SourceChangedWarning, save_project
 
 # A-6: `deckle --version` prints the app version plus the resolved versions
@@ -314,6 +315,46 @@ def _cmd_impose(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_schedule(args: argparse.Namespace) -> int:
+    """Print the binding schedule for a source document.
+
+    :param args: parsed arguments.
+    :returns: a process exit code.
+
+    Goes to stdout by default so it can be piped or redirected; ``-o``
+    writes a file. Layout warnings still go to stderr, so a redirected
+    schedule stays clean while the warnings remain visible in the terminal.
+    """
+    pages = _load_source_or_report(args.source)
+    if pages is None:
+        return 1
+
+    if args.output is not None and _report_output_problem(args.output, args.source):
+        return 1
+
+    settings = _build_layout_settings(args)
+    plan = _strategy_for(settings).impose(pages, settings)
+    _emit_warnings(pages, plan)
+
+    text = format_schedule_text(
+        build_schedule(plan, settings), os.path.basename(args.source)
+    )
+
+    if args.output is None:
+        print(text, end="")
+        return 0
+
+    try:
+        with open(args.output, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError as exc:
+        print(f"error: {describe_write_failure(args.output, exc)}", file=sys.stderr)
+        log_exception("output_write_failed", exc, path=args.output)
+        return 1
+    print(f"wrote {args.output}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The full argument parser for ``deckle``.
 
@@ -352,6 +393,20 @@ def build_parser() -> argparse.ArgumentParser:
     info_parser.add_argument("source", help="a PDF file or a directory of images")
     _add_layout_args(info_parser)
     info_parser.set_defaults(func=_cmd_info)
+
+    schedule_parser = subparsers.add_parser(
+        "schedule",
+        help="print the binding schedule: what to gather, fold and sew",
+    )
+    schedule_parser.add_argument("source", help="a PDF file or a directory of images")
+    schedule_parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="write the schedule to a file instead of stdout",
+    )
+    _add_layout_args(schedule_parser)
+    schedule_parser.set_defaults(func=_cmd_schedule)
 
     return parser
 
