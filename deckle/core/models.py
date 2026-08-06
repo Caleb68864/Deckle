@@ -179,8 +179,23 @@ class Sheet:
     :ivar index: the sheet's position in the plan, and the identifier every
         pass, export subset and cache key refers to it by.
     :ivar front: the first face through the printer, or ``None``.
-    :ivar back: the second face, or ``None`` -- an odd final sheet under
-        gutter shift has no back at all.
+    :ivar back: the second face, or ``None`` for a face that does not
+        exist -- as distinct from one carrying only filler, which is a
+        ``Side`` whose pages are all blank. See ``Side.pages``.
+
+        **No strategy currently produces ``None`` here.** This previously
+        claimed an odd final sheet under gutter shift has no back, which
+        is not true: ``layout._pad_to_even`` rounds the slot count up
+        before sheets are built, so every gutter-shift sheet gets both
+        faces and the last back is filler rather than absent. Saddle
+        stitch pads to a multiple of four for the same reason.
+
+        The field stays because the distinction is real and the exporter
+        has to honour it either way -- and the two consumers want opposite
+        things. A both-faces export omits an absent face; a manual-duplex
+        pass pads it with a blank, because a pass's pages map one-to-one
+        onto the sheets being fed and dropping one shifts every later back
+        onto the wrong front.
     """
 
     index: int

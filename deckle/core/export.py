@@ -232,23 +232,35 @@ def _place_output_page(
     dest_page.contents_add(content_stream)
 
 
-def _sides(sheet: Sheet, side: str | None = None) -> list[Side]:
-    """The physical faces of ``sheet`` -- front then back. One physical PDF
-    page is produced per ``Side``, regardless of how many ``OutputPage``s
-    (Form XObjects) it carries.
+def _sides(sheet: Sheet, side: str | None = None) -> list[Side | None]:
+    """The faces of ``sheet`` to write, front then back.
 
-    ``side`` narrows the result to one face, which is what a manual-duplex
-    pass needs: every front, or every back, one page per sheet. A sheet
-    that has no such face contributes nothing rather than a blank page --
-    an odd final sheet under gutter shift genuinely has no back, and
-    inventing one is a sheet of paper the binder does not need.
+    One physical PDF page is produced per entry, regardless of how many
+    ``OutputPage``s (Form XObjects) it carries. ``None`` in the result
+    means "write a blank page here".
+
+    ``side`` narrows the result to one face -- one manual-duplex pass. The
+    two modes differ in what they do about a face that does not exist, and
+    the difference is load-bearing:
+
+    - **Both faces** (``side is None``) omit it. This is the interleaved
+      document a real duplexer consumes; there is nothing to print, so a
+      page there is a wasted side of paper.
+
+    - **A pass** pads it with a blank. A pass PDF's pages map one-to-one
+      onto the sheets being fed, so dropping one shifts every later back
+      onto the wrong front -- the entire stack ruined, and not discovered
+      until the paper is spent. A blank sheet through the printer costs a
+      pass; a mis-registered stack costs the job.
+
+    No plan Deckle currently produces reaches the padding branch --
+    ``_pad_to_even`` gives gutter shift an even slot count, so its
+    ``back=None`` case is unreachable. It is written correctly anyway
+    because the cost of the two branches is so lopsided.
     """
-    sides = []
-    if sheet.front is not None and side in (None, "front"):
-        sides.append(sheet.front)
-    if sheet.back is not None and side in (None, "back"):
-        sides.append(sheet.back)
-    return sides
+    if side is None:
+        return [face for face in (sheet.front, sheet.back) if face is not None]
+    return [sheet.front if side == "front" else sheet.back]
 
 
 _DASHED_MARK_KINDS = frozenset({"fold_line"})
@@ -398,9 +410,10 @@ def export(
         printed sheet can be measured against it. For proofs -- it is drawn
         over the content, not around it.
     :param side: ``"front"`` or ``"back"`` to write only that face of each
-        sheet -- one manual-duplex pass. ``None`` writes both, interleaved,
-        which is what a real duplexer wants. A sheet lacking the requested
-        face is skipped, not padded with a blank.
+        sheet -- one manual-duplex pass, one page per sheet, padded with a
+        blank where a sheet has no such face so the pass stays in register.
+        ``None`` writes both faces interleaved, which is what a real
+        duplexer wants, and there omits a face that does not exist.
     :param rotate_180: turn every written page a half turn. What a back
         pass needs when the operator flips the stack on its long edge.
         Applied to the scratch file before it is renamed into place, so the
@@ -488,9 +501,13 @@ def _export_batched(
         for i, sheet in enumerate(selected, start=1):
             for face in _sides(sheet, side):
                 dest_page = out.add_blank_page(page_size=plan.paper_pt)
-                for output_page in face.pages:
-                    _place_output_page(out, dest_page, output_page, source_cache)
-                _draw_marks(dest_page, face.marks)
+                # `None` is a face that does not exist on a sheet a pass
+                # still has to feed -- the blank page above is the whole
+                # of it, and it keeps the pass in register.
+                if face is not None:
+                    for output_page in face.pages:
+                        _place_output_page(out, dest_page, output_page, source_cache)
+                    _draw_marks(dest_page, face.marks)
                 if rule:
                     _draw_proof_rule(dest_page, plan.paper_pt)
 

@@ -576,20 +576,9 @@ def test_a_back_pass_contains_the_backs(tmp_path):
     assert _page_streams(backs) == [both_streams[1], both_streams[3]]
 
 
-def test_a_sheet_with_no_back_contributes_nothing_to_a_back_pass():
-    """``Sheet.back`` is ``None`` for a face that does not exist. A pass
-    must skip it, not invent a blank -- that would be a sheet of paper the
-    binder does not need and a reload that no longer matches.
-
-    Exercised on a constructed ``Sheet`` rather than an imposed plan: the
-    gutter-shift imposer pads an odd final sheet with a FILLER back rather
-    than leaving it absent, so a real plan cannot reach this branch. The
-    branch still has to be right -- ``Side`` documents the distinction
-    between an absent face and one carrying only filler, and the exporter
-    is what has to honour it.
-    """
-    front_only = Sheet(
-        index=0,
+def _sheet_without_a_back(index: int = 0) -> Sheet:
+    return Sheet(
+        index=index,
         front=Side(
             pages=(
                 OutputPage(
@@ -604,9 +593,43 @@ def test_a_sheet_with_no_back_contributes_nothing_to_a_back_pass():
         back=None,
     )
 
-    assert export._sides(front_only, "back") == []
-    assert len(export._sides(front_only, "front")) == 1
-    assert len(export._sides(front_only)) == 1
+
+def test_a_both_faces_export_omits_a_face_that_does_not_exist(tmp_path):
+    """Nothing to print, so no page. This is the interleaved document a
+    real duplexer consumes, and a blank there is a wasted side."""
+    plan = SheetPlan(
+        sheets=[_sheet_without_a_back(0)], paper_pt=LETTER, warnings=[]
+    )
+    out = os.path.join(str(tmp_path), "both.pdf")
+
+    export_fn(plan, out)
+
+    with pikepdf.open(out) as pdf:
+        assert len(pdf.pages) == 1, "a blank was invented for an absent face"
+
+
+def test_a_pass_keeps_one_page_per_sheet_even_where_a_face_is_absent(tmp_path):
+    """A pass PDF's pages map one-to-one onto the sheets being fed. Drop a
+    page for a sheet that lacks that face and every later back lands on the
+    wrong front -- the whole stack ruined, discovered after the paper is
+    spent.
+
+    So a pass pads where a both-faces export omits. The two are different
+    documents answering different questions: "what is there to print" for
+    the duplexer, "what goes through the printer on this pass" for a
+    manual reload.
+    """
+    plan = SheetPlan(
+        sheets=[_sheet_without_a_back(0), _sheet_without_a_back(1)],
+        paper_pt=LETTER,
+        warnings=[],
+    )
+    out = os.path.join(str(tmp_path), "backs.pdf")
+
+    export_fn(plan, out, side="back")
+
+    with pikepdf.open(out) as pdf:
+        assert len(pdf.pages) == 2, "a pass must not shift its own registration"
 
 
 def test_asking_for_no_particular_side_still_writes_both(tmp_path):
