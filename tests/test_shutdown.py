@@ -56,17 +56,25 @@ elif how == "close_event":
     window.window.closeEvent(QCloseEvent())
 elif how == "stop_only":
     window.stop_background_work()
+    # Every live thread, not just `view._thread`. Counting only the
+    # current one is what let this probe report "nothing running" while
+    # superseded renders were still in flight -- the exact condition
+    # that then crashed the process during interpreter teardown.
     running = [
         name
         for name, view in (("preview", window.preview_view),
                            ("thumbnails", window.arrange_view))
-        if getattr(view, "_thread", None) is not None
-        and view._thread.isRunning()
+        for t in am._live_threads(view)
+        if t.isRunning()
     ]
     print("still running:", running)
-    # Closing the window as well: destroying a live QMainWindow at
-    # interpreter exit crashes PySide6 regardless of any thread, which is
-    # a separate teardown problem and not what this probe measures.
+    # Closing the window as well, so the probe exits the way a real
+    # session does. This used to claim that destroying a live QMainWindow
+    # at interpreter exit crashes PySide6 regardless of any thread, and
+    # that was false: a window built, closed and dropped with no render in
+    # flight exits cleanly every time, measured over 16 runs. The crash
+    # always needed a surviving render thread, which is why chasing a
+    # "separate teardown problem" found nothing for so long.
     window.close()
 print("exited via", how)
 '''
@@ -117,6 +125,13 @@ def test_stopping_background_work_is_enough_on_its_own():
         f"stop_background_work did not settle the threads "
         f"(exit {result.returncode}).\nstderr:\n{result.stderr[-1500:]}"
     )
+    # The invariant, asserted rather than inferred from the exit code. A
+    # surviving thread only SOMETIMES crashes the process, so exit 0 on
+    # its own never proved the threads had settled -- which is why this
+    # file went green for a fix that was incomplete.
+    assert "still running: []" in result.stdout, (
+        f"threads survived stop_background_work.\nstdout:\n{result.stdout}"
+    )
 
 
 def test_the_unguarded_exit_is_what_this_protects_against():
@@ -131,3 +146,83 @@ def test_the_unguarded_exit_is_what_this_protects_against():
     if result.returncode == 0:
         pytest.skip("this platform no longer crashes on an unguarded exit")
     assert result.returncode != 0
+
+
+# -- which threads the shutdown actually waits for ------------------------
+#
+# The subprocess tests above were flaky at about one run in four, and the
+# cause was not the test: `stop_background_work` waited only for each
+# view's CURRENT `_thread`. Both views replace `_thread` every time a
+# render is superseded, so rapid churn leaves earlier threads running with
+# nobody waiting for them. Measured directly, every crashing run had
+# threads still running after `close()` returned and every clean run had
+# none -- exit 0xC0000409, no Python traceback, pdfium called during
+# interpreter teardown.
+#
+# Superseded workers already get their cancel token set when they are
+# replaced, so cancellation was never the gap. Waiting was.
+
+
+class _FakeThread:
+    def __init__(self, running: bool = True) -> None:
+        self._running = running
+        self.waited_ms: int | None = None
+
+    def isRunning(self) -> bool:
+        return self._running
+
+    def wait(self, timeout_ms: int) -> bool:
+        self.waited_ms = timeout_ms
+        self._running = False
+        return True
+
+
+class _FakeWidget:
+    def __init__(self, children: list) -> None:
+        self._children = children
+
+    def findChildren(self, _type) -> list:
+        return list(self._children)
+
+
+class _FakeView:
+    def __init__(self, current, children) -> None:
+        self._thread = current
+        self._worker = None
+        self.widget = _FakeWidget(children)
+
+
+def test_live_threads_includes_superseded_ones_not_just_the_current():
+    from deckle.app.main import _live_threads
+
+    current = _FakeThread()
+    superseded_a = _FakeThread()
+    superseded_b = _FakeThread()
+    view = _FakeView(current, [superseded_a, current, superseded_b])
+
+    found = _live_threads(view)
+
+    assert current in found
+    assert superseded_a in found
+    assert superseded_b in found
+
+
+def test_live_threads_reports_each_thread_once():
+    """The current thread is also a child of the widget, so a naive union
+    would wait on it twice -- harmless, but it would make the count a lie
+    for anything that reads it."""
+    from deckle.app.main import _live_threads
+
+    current = _FakeThread()
+    view = _FakeView(current, [current])
+
+    assert len(_live_threads(view)) == 1
+
+
+def test_live_threads_survives_a_view_with_no_widget():
+    from deckle.app.main import _live_threads
+
+    class _Bare:
+        _thread = None
+
+    assert _live_threads(_Bare()) == []

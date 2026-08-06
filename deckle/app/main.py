@@ -219,6 +219,55 @@ def _new_thread(parent):
     return QThread(parent)
 
 
+def _live_threads(view) -> list:
+    """Every render thread ``view`` still has alive, current or superseded.
+
+    ``view._thread`` is only the LATEST one. Both views replace it every
+    time a render is superseded -- scrubbing sheets, churning the arrange
+    grid -- so reading that attribute alone reports one thread while
+    several are running.
+
+    That was the whole of the shutdown flakiness. Quitting mid-render
+    crashed about one run in four with ``0xC0000409`` and no Python
+    traceback, and every crashing run was measured to have threads still
+    running after ``close()`` returned, while every clean run had none.
+    A superseded worker is cancelled the moment it is replaced, so
+    cancellation was never the gap; nobody waited for it to notice, and a
+    render still inside pdfium when the interpreter finalises takes the
+    process down with it.
+
+    Threads are parented to the view's widget precisely so they cannot
+    leak, which makes the widget's own child list the authoritative
+    register -- no second bookkeeping to drift out of sync with it.
+    ``_thread`` is still consulted first: tests inject a fake thread that
+    is not a real ``QObject`` and so is not a child of anything.
+
+    :param view: a view exposing ``_thread`` and/or a ``widget``.
+    :returns: the threads, current first, each appearing once. Includes
+        threads that have already finished -- waiting on one of those
+        returns immediately, and filtering them here would race with them
+        finishing between the check and the wait.
+    """
+    from PySide6.QtCore import QThread
+
+    threads: list = []
+    seen: set[int] = set()
+
+    current = getattr(view, "_thread", None)
+    if current is not None:
+        threads.append(current)
+        seen.add(id(current))
+
+    widget = getattr(view, "widget", None)
+    finder = getattr(widget, "findChildren", None)
+    if finder is not None:
+        for child in finder(QThread):
+            if id(child) not in seen:
+                threads.append(child)
+                seen.add(id(child))
+    return threads
+
+
 def available_printer_names() -> list[str]:
     """The names of printers Qt currently knows about.
 
@@ -932,10 +981,17 @@ class MainWindow:
 
         for view in (self.preview_view, self.arrange_view):
             try:
-                thread = getattr(view, "_thread", None)
-                if thread is not None and thread.isRunning():
-                    if not thread.wait(timeout_ms):
-                        log_event("shutdown_thread_timeout", view=type(view).__name__)
+                # Every live thread, not just `view._thread` -- see
+                # `_live_threads`. Waiting only for the current one left
+                # superseded renders running into interpreter teardown,
+                # which is the crash this method exists to prevent.
+                for thread in _live_threads(view):
+                    if thread.isRunning():
+                        if not thread.wait(timeout_ms):
+                            log_event(
+                                "shutdown_thread_timeout",
+                                view=type(view).__name__,
+                            )
             except Exception as exc:  # pragma: no cover - defensive
                 log_exception("shutdown_wait_failed", exc)
 
