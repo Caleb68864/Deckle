@@ -218,9 +218,20 @@ def test_apply_rotate_backs_flattens_for_drivers_that_ignore_rotate(tmp_path):
 
 
 def test_rotate_backs_never_assigns_page_rotate_directly():
+    """Older qpdf has mishandled a direct assignment to the rotation key,
+    and a relative turn is the only correct one for a page that already
+    carries a rotation.
+
+    Inspects ``export.rotate_pages_180``, which is where the operation now
+    lives: the CLI needs it for ``--pass back`` and cannot import the Qt
+    layer. ``backend._apply_rotate_backs`` delegates to it, so this guards
+    the code that actually runs in both callers.
+    """
     import inspect
 
-    source = inspect.getsource(backend_mod._apply_rotate_backs)
+    from deckle.core import export as export_mod
+
+    source = inspect.getsource(export_mod.rotate_pages_180)
     assert "page.Rotate =" not in source
     assert "page.rotate(180, relative=True)" in source
 

@@ -152,18 +152,16 @@ def _chunked(items: Sequence[int], size: int) -> list[list[int]]:
 def _apply_rotate_backs(pdf_path: str, ignore_rotate: bool) -> None:
     """Rotate every page in ``pdf_path`` 180 degrees, in place.
 
-    Uses ``page.rotate(180, relative=True)`` -- never a direct assignment
-    to the page's rotation key, which older qpdf has mishandled. When
-    ``ignore_rotate`` is True (the target driver is known to ignore
-    ``/Rotate``), also bakes the rotation into content with
-    ``page.flatten_rotation()`` so the driver cannot discard it.
+    The half turn a long-edge flip needs. The implementation now lives in
+    :func:`deckle.core.export.rotate_pages_180`, because the CLI needs the
+    same operation for ``--pass back`` and cannot import anything from this
+    module -- ``deckle.app`` is the Qt layer, and the CLI must run on a
+    machine with no display libraries at all.
+
+    ``ignore_rotate`` means the target driver is known to discard
+    ``/Rotate``, so the turn is baked into the content instead.
     """
-    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
-        for page in pdf.pages:
-            page.rotate(180, relative=True)
-            if ignore_rotate:
-                page.flatten_rotation()
-        pdf.save(pdf_path)
+    export.rotate_pages_180(pdf_path, flatten=ignore_rotate)
 
 
 def _render_sheet_side(

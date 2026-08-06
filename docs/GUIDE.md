@@ -445,6 +445,45 @@ changed, versus Deckle's own session format changed. They need different
 answers, and conflating them would send you hunting for an edit you never
 made.
 
+### Manual duplex from the CLI
+
+The desktop app drives the printer directly. The CLI writes each pass as its
+own PDF, for printing from a viewer, a print server, or a machine with no
+display at all:
+
+```bash
+python -m deckle.cli export book.pdf -o fronts.pdf --gutter 0.75in \
+    --pass front --profile generic_face_down_reversed
+# wrote fronts.pdf
+# Load paper face down, feed edge top, and print pass 1 (fronts).
+
+python -m deckle.cli export book.pdf -o backs.pdf --gutter 0.75in \
+    --pass back --profile generic_face_down_reversed
+# wrote backs.pdf
+# After pass 1 finishes, reverse the printed stack (flip the whole stack
+# over) before reloading, flip each sheet on its long edge, face down, and
+# print pass 2 (backs).
+```
+
+`--profile` takes a calibrated profile saved under a printer's name, or one of
+the built-in presets above. `--pass` requires it: neither the sheet order nor
+the half turn has a safe default, and guessing wrong prints every back onto
+the wrong front — which you discover only once the paper is spent.
+
+Both the sheet order and the rotation come from the same `plan_passes` the
+desktop app uses. The CLI decides neither; a second implementation of the
+ordering table would be free to disagree with the app about the same printer,
+and the paper would be wrong while both halves looked right.
+
+Add `--sheets` to narrow a pass — `--pass back --sheets 7` reprints one sheet's
+back without re-running the job.
+
+> **A pass PDF asks the driver *not* to duplex.** It carries one face per page,
+> so a printer that duplexed it would put two consecutive fronts on two sides
+> of one sheet. Deckle writes `/Duplex /Simplex` on a pass and the real flip
+> edge only on a both-faces export, which is the document a real duplexer
+> actually wants.
+
 ---
 
 ## 7 · Reading a binding schedule

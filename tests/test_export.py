@@ -518,3 +518,190 @@ def test_the_rule_is_drawn_on_every_exported_face(tmp_path):
         face_count = len(pdf.pages)
     for index in range(face_count):
         assert "in exactly" in _page_text(out, index), f"no rule on face {index}"
+
+
+# --- BEHAVIORAL: one face per sheet, for a manual duplex pass -----------
+#
+# A printer with no duplexer runs the job in two passes: every front, a
+# manual reload, then every back. Each pass is a PDF containing one face
+# per sheet -- which the exporter could not produce, because it always
+# wrote both faces of every sheet it was given.
+
+
+def _page_streams(path: str) -> list[bytes]:
+    """Each page's content stream, with XObject resource names normalised.
+
+    ``add_resource`` mints a random name per document, so the same face
+    exported twice differs in that token and nowhere else. Comparing raw
+    bytes across two exports therefore always fails, while telling you
+    nothing about the geometry -- which is the part these tests are about.
+    """
+    import re
+
+    with pikepdf.open(path) as pdf:
+        return [re.sub(rb"/Fx\S+", b"/Fx", _content_bytes(page)) for page in pdf.pages]
+
+
+def test_exporting_a_front_pass_writes_one_page_per_sheet(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)  # 4 pages -> 2 sheets, 4 faces
+    out = os.path.join(str(tmp_path), "fronts.pdf")
+
+    export_fn(plan, out, side="front")
+
+    assert len(_page_streams(out)) == 2
+
+
+def test_a_front_pass_contains_the_fronts_and_not_the_backs(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    both = os.path.join(str(tmp_path), "both.pdf")
+    fronts = os.path.join(str(tmp_path), "fronts.pdf")
+
+    export_fn(plan, both)
+    export_fn(plan, fronts, side="front")
+
+    both_streams = _page_streams(both)
+    # Interleaved front, back, front, back -- so the fronts are 0 and 2.
+    assert _page_streams(fronts) == [both_streams[0], both_streams[2]]
+
+
+def test_a_back_pass_contains_the_backs(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    both = os.path.join(str(tmp_path), "both.pdf")
+    backs = os.path.join(str(tmp_path), "backs.pdf")
+
+    export_fn(plan, both)
+    export_fn(plan, backs, side="back")
+
+    both_streams = _page_streams(both)
+    assert _page_streams(backs) == [both_streams[1], both_streams[3]]
+
+
+def test_a_sheet_with_no_back_contributes_nothing_to_a_back_pass():
+    """``Sheet.back`` is ``None`` for a face that does not exist. A pass
+    must skip it, not invent a blank -- that would be a sheet of paper the
+    binder does not need and a reload that no longer matches.
+
+    Exercised on a constructed ``Sheet`` rather than an imposed plan: the
+    gutter-shift imposer pads an odd final sheet with a FILLER back rather
+    than leaving it absent, so a real plan cannot reach this branch. The
+    branch still has to be right -- ``Side`` documents the distinction
+    between an absent face and one carrying only filler, and the exporter
+    is what has to honour it.
+    """
+    front_only = Sheet(
+        index=0,
+        front=Side(
+            pages=(
+                OutputPage(
+                    source_ref=None,
+                    placement=Placement(
+                        scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0
+                    ),
+                    is_filler=True,
+                ),
+            )
+        ),
+        back=None,
+    )
+
+    assert export._sides(front_only, "back") == []
+    assert len(export._sides(front_only, "front")) == 1
+    assert len(export._sides(front_only)) == 1
+
+
+def test_asking_for_no_particular_side_still_writes_both(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "both.pdf")
+
+    export_fn(plan, out)
+
+    assert len(_page_streams(out)) == 4
+
+
+# --- BEHAVIORAL: rotating a back pass ----------------------------------
+#
+# A printer whose operator flips the stack on its LONG edge lands every
+# back upside down relative to its front. `plan_passes` decides whether
+# that is so; the exporter is what has to do something about it.
+
+
+def _rotations(path: str) -> list[int]:
+    with pikepdf.open(path) as pdf:
+        return [page.rotation for page in pdf.pages]
+
+
+def test_a_back_pass_can_be_turned_a_half_turn(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "backs.pdf")
+
+    export_fn(plan, out, side="back", rotate_180=True)
+
+    assert _rotations(out) == [180, 180]
+
+
+def test_a_pass_is_not_turned_unless_asked(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "backs.pdf")
+
+    export_fn(plan, out, side="back")
+
+    assert _rotations(out) == [0, 0]
+
+
+def test_the_half_turn_is_relative_to_any_rotation_already_there(tmp_path):
+    """``page.rotate(180, relative=True)``, never an assignment to the
+    rotation key -- a page already turned 90 must end at 270, not at 180."""
+    path = os.path.join(str(tmp_path), "pre-rotated.pdf")
+    pdf = pikepdf.Pdf.new()
+    pdf.add_blank_page(page_size=(400.0, 600.0))
+    pdf.pages[0].rotate(90, relative=True)
+    pdf.save(path)
+    pdf.close()
+
+    export.rotate_pages_180(path)
+
+    assert _rotations(path) == [270]
+
+
+def test_a_single_pass_asks_the_driver_not_to_duplex(tmp_path):
+    """A pass carries ONE face per page, so a driver that honours a duplex
+    hint would print two consecutive fronts onto two sides of one sheet --
+    turning the exact hint that helps a duplexer into the thing that ruins
+    a manual-duplex job. The pass says simplex, and means it."""
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "fronts.pdf")
+
+    export_fn(plan, out, side="front")
+
+    assert _viewer_preferences(out).get("/Duplex") == pikepdf.Name("/Simplex")
+
+
+def test_a_back_pass_also_asks_the_driver_not_to_duplex(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "backs.pdf")
+
+    export_fn(plan, out, side="back")
+
+    assert _viewer_preferences(out).get("/Duplex") == pikepdf.Name("/Simplex")
+
+
+def test_a_both_faces_export_still_asks_for_the_flip_edge(tmp_path):
+    """The hint is right for the document it was always right for: both
+    faces interleaved, which is what a real duplexer consumes."""
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "both.pdf")
+
+    export_fn(plan, out)
+
+    assert _viewer_preferences(out).get("/Duplex") == pikepdf.Name(
+        "/DuplexFlipLongEdge"
+    )
+
+
+def test_a_single_pass_still_refuses_scaling(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "fronts.pdf")
+
+    export_fn(plan, out, side="front")
+
+    assert _viewer_preferences(out).get("/PrintScaling") == pikepdf.Name("/None")

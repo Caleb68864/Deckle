@@ -232,15 +232,21 @@ def _place_output_page(
     dest_page.contents_add(content_stream)
 
 
-def _sides(sheet: Sheet) -> list[Side]:
+def _sides(sheet: Sheet, side: str | None = None) -> list[Side]:
     """The physical faces of ``sheet`` -- front then back. One physical PDF
     page is produced per ``Side``, regardless of how many ``OutputPage``s
     (Form XObjects) it carries.
+
+    ``side`` narrows the result to one face, which is what a manual-duplex
+    pass needs: every front, or every back, one page per sheet. A sheet
+    that has no such face contributes nothing rather than a blank page --
+    an odd final sheet under gutter shift genuinely has no back, and
+    inventing one is a sheet of paper the binder does not need.
     """
     sides = []
-    if sheet.front is not None:
+    if sheet.front is not None and side in (None, "front"):
         sides.append(sheet.front)
-    if sheet.back is not None:
+    if sheet.back is not None and side in (None, "back"):
         sides.append(sheet.back)
     return sides
 
@@ -363,6 +369,8 @@ def export(
     out_path: str,
     sheets: Sequence[int] | None = None,
     rule: bool = False,
+    side: str | None = None,
+    rotate_180: bool = False,
 ) -> None:
     """Render ``plan`` (or the sheets in ``sheets``) to a PDF at ``out_path``.
 
@@ -389,6 +397,14 @@ def export(
     :param rule: draw a labelled ruler of known length on every face, so a
         printed sheet can be measured against it. For proofs -- it is drawn
         over the content, not around it.
+    :param side: ``"front"`` or ``"back"`` to write only that face of each
+        sheet -- one manual-duplex pass. ``None`` writes both, interleaved,
+        which is what a real duplexer wants. A sheet lacking the requested
+        face is skipped, not padded with a blank.
+    :param rotate_180: turn every written page a half turn. What a back
+        pass needs when the operator flips the stack on its long edge.
+        Applied to the scratch file before it is renamed into place, so the
+        output is never briefly present in the wrong orientation.
     :returns: nothing.
     :raises OSError: the output directory does not exist, or the scratch
         file cannot be created.
@@ -408,11 +424,40 @@ def export(
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(os.path.abspath(out_path)) or None)
     os.close(tmp_fd)
     try:
-        _export_batched(plan, selected, tmp_path, rule)
+        _export_batched(plan, selected, tmp_path, rule, side)
+        if rotate_180:
+            rotate_pages_180(tmp_path)
         os.replace(tmp_path, out_path)
     finally:
         if os.path.exists(tmp_path):
             _safe_remove(tmp_path)
+
+
+def rotate_pages_180(pdf_path: str, flatten: bool = False) -> None:
+    """Turn every page in ``pdf_path`` a half turn, in place.
+
+    What a manual-duplex back pass needs when the operator flips the stack
+    on its long edge: the sheet comes back through the printer upside down
+    relative to its front, so the back sides have to be turned to match.
+    :func:`deckle.core.printing.plan_passes` decides *whether*; this does it.
+
+    Uses ``page.rotate(180, relative=True)`` rather than assigning the
+    page's rotation key directly -- older qpdf has mishandled that, and a
+    relative turn is also the only correct one for a page that already
+    carries a rotation.
+
+    :param pdf_path: the PDF to rotate, modified in place.
+    :param flatten: also bake the rotation into the page content, for a
+        driver known to ignore ``/Rotate``. Off by default: flattening is
+        lossier, and most drivers honour the key.
+    :returns: nothing.
+    """
+    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+        for page in pdf.pages:
+            page.rotate(180, relative=True)
+            if flatten:
+                page.flatten_rotation()
+        pdf.save(pdf_path)
 
 
 def _check_writable(out_path: str) -> None:
@@ -426,7 +471,12 @@ def _check_writable(out_path: str) -> None:
 
 
 def _export_batched(
-    plan: SheetPlan, selected: list[Sheet], tmp_path: str, rule: bool = False
+    plan: SheetPlan,
+    selected: list[Sheet],
+    tmp_path: str,
+    rule: bool = False,
+    side: str | None = None,
+    rotate_180: bool = False,
 ) -> None:
     """Assemble ``selected`` sheets into ``tmp_path``, saving/reopening in
     batches of ``_BATCH_SHEETS`` so source handles never accumulate across a
@@ -436,11 +486,11 @@ def _export_batched(
     source_cache: dict[str, pikepdf.Pdf] = {}
     try:
         for i, sheet in enumerate(selected, start=1):
-            for side in _sides(sheet):
+            for face in _sides(sheet, side):
                 dest_page = out.add_blank_page(page_size=plan.paper_pt)
-                for output_page in side.pages:
+                for output_page in face.pages:
                     _place_output_page(out, dest_page, output_page, source_cache)
-                _draw_marks(dest_page, side.marks)
+                _draw_marks(dest_page, face.marks)
                 if rule:
                     _draw_proof_rule(dest_page, plan.paper_pt)
 
@@ -450,7 +500,7 @@ def _export_batched(
 
         # Written to the document that is actually saved, not the first one
         # assembled: a batched export replaces `out` on every flush.
-        _set_print_intent(out, plan.paper_pt)
+        _set_print_intent(out, plan.paper_pt, side)
         out.remove_unreferenced_resources()
         out.save(tmp_path)
     finally:
@@ -459,7 +509,9 @@ def _export_batched(
         out.close()
 
 
-def _set_print_intent(out: pikepdf.Pdf, paper_pt: tuple[float, float]) -> None:
+def _set_print_intent(
+    out: pikepdf.Pdf, paper_pt: tuple[float, float], side: str | None = None
+) -> None:
     """State in the catalog how this document is meant to reach paper.
 
     An exported PDF is printed by whatever viewer the user opens it in, and
@@ -477,7 +529,12 @@ def _set_print_intent(out: pikepdf.Pdf, paper_pt: tuple[float, float]) -> None:
     - ``/Duplex`` -- which edge to turn the sheet about, from
       :func:`deckle.core.printing.duplex_flip_edge`. The same rule
       ``plan_passes`` applies to a manual reload, told to the duplexer
-      instead of to the user.
+      instead of to the user. **A single pass says ``/Simplex`` instead**:
+      it carries one face per page, so a driver that honoured a flip-edge
+      hint would print two consecutive fronts onto two sides of one sheet.
+      The hint that helps a duplexer is the one that ruins a manual-duplex
+      job, and the difference is exactly whether the document interleaves
+      faces.
     - ``/PickTrayByPDFSize`` -- choose the tray that fits the sheet rather
       than scaling the sheet to fit a tray.
 
@@ -490,11 +547,15 @@ def _set_print_intent(out: pikepdf.Pdf, paper_pt: tuple[float, float]) -> None:
     :param paper_pt: the plan's sheet size, which decides the flip edge.
     :returns: nothing.
     """
-    flip = "Long" if duplex_flip_edge(paper_pt) == "long" else "Short"
+    if side is None:
+        flip = "Long" if duplex_flip_edge(paper_pt) == "long" else "Short"
+        duplex = Name(f"/DuplexFlip{flip}Edge")
+    else:
+        duplex = Name("/Simplex")
     out.Root.ViewerPreferences = out.make_indirect(
         pikepdf.Dictionary(
             PrintScaling=Name("/None"),
-            Duplex=Name(f"/DuplexFlip{flip}Edge"),
+            Duplex=duplex,
             PickTrayByPDFSize=True,
         )
     )

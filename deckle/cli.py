@@ -22,6 +22,8 @@ from typing import Sequence
 
 from deckle import __version__ as _DECKLE_VERSION
 from deckle.core.export import export as export_plan, proof_rule_length_pt
+from deckle.core.printing import plan_passes
+from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
@@ -230,6 +232,50 @@ def _report_missing_sheets(plan, selection: list[int], total: int) -> bool:
         file=sys.stderr,
     )
     return True
+
+
+def _resolve_profile(name: str):
+    """The printer profile called ``name``: saved first, then built-in.
+
+    A saved profile wins because it came from a calibration run against
+    that actual printer, and a built-in preset is a generic stand-in.
+    Names are printer names, which is how the desktop app stores them.
+
+    :param name: the profile or printer name asked for.
+    :returns: the :class:`~deckle.core.profiles.PrinterProfile`, or
+        ``None`` if nothing matched -- in which case a message naming the
+        alternatives has already been printed.
+    """
+    try:
+        return PrinterProfile.load(name)
+    except (OSError, ValueError, KeyError, TypeError):
+        # No saved profile, or one that cannot be read. Either way the
+        # built-ins are the next place to look, and a corrupt saved file
+        # should not be more fatal than a missing one.
+        pass
+    preset = BUILTIN_PRESETS.get(name)
+    if preset is not None:
+        return preset
+    print(
+        f"error: no printer profile {name!r}. Built-in profiles: "
+        f"{', '.join(sorted(BUILTIN_PRESETS))}. Calibrate a printer in the "
+        "desktop app to save one under its own name.",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _pass_for(plan, side: str, profile, sheets: list[int] | None):
+    """The :class:`~deckle.core.printing.PrintPass` for one side.
+
+    Everything here comes from ``plan_passes`` -- the sheet order, the
+    half turn, the reload wording. The CLI decides none of it: a second
+    implementation of the ordering table would be free to disagree with
+    the desktop app about the same printer, and the paper would be wrong
+    while both halves looked right.
+    """
+    passes = plan_passes(plan, profile, sheets=sheets)
+    return next(print_pass for print_pass in passes if print_pass.side == side)
 
 
 def _load_source(path: str) -> list[SourcePage]:
@@ -589,8 +635,37 @@ def _cmd_export(args: argparse.Namespace) -> int:
     ):
         return 1
 
+    side = None
+    rotate_180 = False
+    print_pass = None
+    if args.pass_side is not None:
+        if args.profile is None:
+            print(
+                f"error: --pass {args.pass_side} needs --profile, because "
+                "neither the sheet order nor the half turn has a safe "
+                "default -- guessing wrong prints every back onto the wrong "
+                "front. Built-in profiles: "
+                f"{', '.join(sorted(BUILTIN_PRESETS))}",
+                file=sys.stderr,
+            )
+            return 1
+        profile = _resolve_profile(args.profile)
+        if profile is None:
+            return 1
+        print_pass = _pass_for(plan, args.pass_side, profile, selection)
+        side = args.pass_side
+        selection = print_pass.sheet_order
+        rotate_180 = print_pass.side == "back" and print_pass.rotate_backs
+
     try:
-        export_plan(plan, args.output, sheets=selection, rule=args.rule)
+        export_plan(
+            plan,
+            args.output,
+            sheets=selection,
+            rule=args.rule,
+            side=side,
+            rotate_180=rotate_180,
+        )
     except OSError as exc:
         _report_write_failure(args.output, exc)
         return 1
@@ -602,6 +677,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
         log_exception("export_failed", exc, path=args.output)
         return 1
     print(f"wrote {args.output}")
+    if print_pass is not None:
+        print(print_pass.reload_instruction)
     if args.rule:
         _report_rule(plan.paper_pt[0])
     return 0
@@ -741,6 +818,27 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "draw a ruler of known length on every sheet, to check whether "
             "the printer scaled the page. Use on a proof, not on the job"
+        ),
+    )
+    export_parser.add_argument(
+        "--pass",
+        dest="pass_side",
+        choices=("front", "back"),
+        default=None,
+        help=(
+            "write one manual-duplex pass instead of both faces: every "
+            "front, or every back in the order your printer's reload "
+            "behaviour demands. Requires --profile"
+        ),
+    )
+    export_parser.add_argument(
+        "--profile",
+        default=None,
+        metavar="NAME",
+        help=(
+            "the printer profile describing your reload behaviour -- a "
+            "calibrated one saved under the printer's name, or a built-in: "
+            + ", ".join(sorted(BUILTIN_PRESETS))
         ),
     )
     _add_layout_args(export_parser)
