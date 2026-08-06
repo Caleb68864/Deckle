@@ -379,3 +379,78 @@ def test_large_document_export_peak_memory_under_4x_small_export(tmp_path):
         f"500-page export (peak_50={peak_50}, peak_500={peak_500}); A-8 "
         "requires this to stay under 4x"
     )
+
+
+# --- BEHAVIORAL: print intent ------------------------------------------
+#
+# An exported PDF is printed by whatever viewer the user opens it in, and
+# those viewers default to "fit to page". That silently rescales the sheet
+# to the printer's imageable area, so every margin, gutter and sewing
+# station lands somewhere other than where the imposer put it -- and the
+# result still looks plausible. The catalog is where a PDF says otherwise.
+
+
+def _viewer_preferences(path: str) -> dict | None:
+    """The catalog's /ViewerPreferences as plain Python values.
+
+    Read out inside the ``with``: a pikepdf object handed back after its
+    ``Pdf`` closes is dead, and every lookup on it quietly returns None --
+    which reads exactly like "the key is missing" and would make these
+    tests pass on nothing.
+    """
+    with pikepdf.open(path) as pdf:
+        prefs = pdf.Root.get("/ViewerPreferences")
+        if prefs is None:
+            return None
+        return {str(key): value for key, value in prefs.items()}
+
+
+def test_the_exported_pdf_tells_the_viewer_not_to_scale_it(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out)
+
+    prefs = _viewer_preferences(out)
+    assert prefs is not None, "no /ViewerPreferences: the PDF states no print intent"
+    assert prefs.get("/PrintScaling") == pikepdf.Name("/None")
+
+
+def test_the_exported_pdf_asks_for_the_tray_matching_its_own_page_size(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out)
+
+    assert _viewer_preferences(out).get("/PickTrayByPDFSize") is True
+
+
+def test_a_portrait_export_asks_for_a_long_edge_duplex_flip(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out)
+
+    assert _viewer_preferences(out).get("/Duplex") == pikepdf.Name("/DuplexFlipLongEdge")
+
+
+def test_a_landscape_export_asks_for_a_short_edge_duplex_flip(tmp_path):
+    landscape = LayoutSettings(paper=(792.0, 612.0), gutter_pt=18.0, binding_edge="left")
+    plan = _plan_from_source(tmp_path, 4, settings=landscape)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out)
+
+    assert _viewer_preferences(out).get("/Duplex") == pikepdf.Name("/DuplexFlipShortEdge")
+
+
+def test_print_intent_survives_a_batched_export(tmp_path, monkeypatch):
+    # A long document saves and reopens mid-assembly. Intent written on the
+    # first catalog would be written to a document that gets replaced.
+    monkeypatch.setattr(export, "_BATCH_SHEETS", 2)
+    plan = _plan_from_source(tmp_path, 10)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out)
+
+    assert _viewer_preferences(out).get("/PrintScaling") == pikepdf.Name("/None")

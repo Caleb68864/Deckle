@@ -319,3 +319,69 @@ def test_every_page_appears_exactly_once_across_the_schedule(sheets_per_signatur
         if p is not None
     ]
     assert sorted(seen) == list(range(1, n_pages + 1))
+
+
+# -- at the printer ------------------------------------------------------
+#
+# The schedule is what the user has in hand when the paper goes in, so it
+# is the right place to say the two things that ruin a job before a single
+# fold: a viewer that rescales the sheet, and a duplexer turning it about
+# the wrong edge. Both apply to the gutter path as much as to folio, and
+# the gutter path is the one the schedule used to fall silent on.
+
+
+def _gutter_schedule(n_pages: int = 8, paper=(612.0, 792.0)):
+    settings = LayoutSettings(paper=paper, gutter_pt=36.0, binding_edge="left")
+    plan = GutterShiftStrategy().impose(_pages(n_pages), settings)
+    return build_schedule(plan, settings)
+
+
+def test_a_gutter_schedule_still_says_how_much_paper_the_job_needs():
+    text = format_schedule_text(_gutter_schedule(8))
+
+    assert "Sheets to print: 4" in text
+
+
+def test_a_gutter_schedule_tells_the_user_to_print_at_actual_size():
+    text = format_schedule_text(_gutter_schedule(8))
+
+    assert "actual size" in text.lower()
+    assert "fit to page" in text.lower()
+
+
+def test_a_folio_schedule_tells_the_user_to_print_at_actual_size():
+    text = format_schedule_text(_folio_schedule(16))
+
+    assert "actual size" in text.lower()
+
+
+def test_a_portrait_gutter_schedule_names_the_long_edge_flip():
+    text = format_schedule_text(_gutter_schedule(8, paper=(612.0, 792.0)))
+
+    assert "long edge" in text.lower()
+    assert "short edge" not in text.lower()
+
+
+def test_a_landscape_folio_schedule_names_the_short_edge_flip():
+    # Folio imposes onto a landscape sheet; a long-edge flip lands every
+    # back upside down.
+    text = format_schedule_text(_folio_schedule(16))
+
+    assert "short edge" in text.lower()
+    assert "long edge" not in text.lower()
+
+
+def test_every_schedule_says_to_proof_one_sheet_before_the_stack():
+    for text in (
+        format_schedule_text(_gutter_schedule(8)),
+        format_schedule_text(_folio_schedule(16)),
+    ):
+        assert "sheet 1" in text.lower()
+
+
+def test_the_flip_edge_is_carried_on_the_schedule_not_re_derived_by_the_text():
+    """``schedule.py`` describes; it never re-derives. A formatter that
+    worked the flip edge out for itself would be free to disagree with the
+    ``/Duplex`` value the exporter wrote into the PDF."""
+    assert _gutter_schedule(8, paper=(612.0, 792.0)).duplex_flip_edge == "long"
+    assert _gutter_schedule(8, paper=(792.0, 612.0)).duplex_flip_edge == "short"

@@ -6,7 +6,12 @@ import json
 
 
 from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side
-from deckle.core.printing import PrintPass, PrintResult, plan_passes
+from deckle.core.printing import (
+    PrintPass,
+    PrintResult,
+    duplex_flip_edge,
+    plan_passes,
+)
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 
 
@@ -137,3 +142,26 @@ def test_printer_profile_save_and_load_roundtrip(tmp_path, monkeypatch):
     assert saved_path.exists()
     data = json.loads(saved_path.read_text(encoding="utf-8"))
     assert data["flip_axis"] == "long"
+
+
+# --- duplex flip edge --------------------------------------------------
+#
+# The spine is vertical on the sheet under every scheme Deckle imposes, so
+# the back must be turned about the sheet's *vertical* edge. Which named
+# edge that is depends entirely on the sheet's orientation.
+
+
+def test_a_portrait_sheet_flips_on_its_long_edge():
+    assert duplex_flip_edge((612.0, 792.0)) == "long"
+
+
+def test_a_landscape_sheet_flips_on_its_short_edge():
+    # Folio imposes onto a landscape sheet folded down the middle. Turning
+    # it about the long (horizontal) edge would land every back upside down.
+    assert duplex_flip_edge((792.0, 612.0)) == "short"
+
+
+def test_a_square_sheet_flips_on_its_long_edge():
+    # Neither edge is longer, so neither answer is wrong -- pin one so the
+    # exported PDF does not depend on a float comparison going either way.
+    assert duplex_flip_edge((612.0, 612.0)) == "long"

@@ -37,6 +37,7 @@ from pikepdf.canvas import ContentStreamBuilder
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
+from deckle.core.printing import duplex_flip_edge
 
 _CACHE_DIR_NAME = "deckle_export_cache"
 
@@ -355,12 +356,56 @@ def _export_batched(plan: SheetPlan, selected: list[Sheet], tmp_path: str) -> No
                 _flush_batch(out, source_cache, tmp_path)
                 out = pikepdf.open(tmp_path, allow_overwriting_input=True)
 
+        # Written to the document that is actually saved, not the first one
+        # assembled: a batched export replaces `out` on every flush.
+        _set_print_intent(out, plan.paper_pt)
         out.remove_unreferenced_resources()
         out.save(tmp_path)
     finally:
         for src in source_cache.values():
             src.close()
         out.close()
+
+
+def _set_print_intent(out: pikepdf.Pdf, paper_pt: tuple[float, float]) -> None:
+    """State in the catalog how this document is meant to reach paper.
+
+    An exported PDF is printed by whatever viewer the user opens it in, and
+    every one of them defaults to *fit to page*. That rescales the sheet to
+    the printer's imageable area by a few percent, which moves the gutter,
+    the margins and the sewing stations off the numbers the imposer
+    computed -- and the output still looks entirely plausible. It is the
+    only failure mode in the export path that produces a wrong result
+    nobody can see.
+
+    ``/ViewerPreferences`` is where a PDF says otherwise, and the values
+    here are the print dialog Deckle would set if it were driving:
+
+    - ``/PrintScaling /None`` -- print at actual size. The load-bearing one.
+    - ``/Duplex`` -- which edge to turn the sheet about, from
+      :func:`deckle.core.printing.duplex_flip_edge`. The same rule
+      ``plan_passes`` applies to a manual reload, told to the duplexer
+      instead of to the user.
+    - ``/PickTrayByPDFSize`` -- choose the tray that fits the sheet rather
+      than scaling the sheet to fit a tray.
+
+    Every one is a *hint*: a viewer may ignore it, and a driver's own saved
+    preset can still override it. That is worth doing anyway -- it makes
+    the correct setting the default the user has to override, instead of a
+    step they have to know about.
+
+    :param out: the document about to be saved.
+    :param paper_pt: the plan's sheet size, which decides the flip edge.
+    :returns: nothing.
+    """
+    flip = "Long" if duplex_flip_edge(paper_pt) == "long" else "Short"
+    out.Root.ViewerPreferences = out.make_indirect(
+        pikepdf.Dictionary(
+            PrintScaling=Name("/None"),
+            Duplex=Name(f"/DuplexFlip{flip}Edge"),
+            PickTrayByPDFSize=True,
+        )
+    )
 
 
 def _flush_batch(

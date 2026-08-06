@@ -22,8 +22,14 @@ from pathlib import Path
 
 # Captured 2026-08-04 at SS-04 implementation time, before any edits to
 # either file in this sub-spec's run.
+#
+# printing.py re-pinned 2026-08-06: `duplex_flip_edge` was added, deriving
+# the flip edge from sheet orientation so the exporter's /Duplex entry and
+# the printed schedule give one answer instead of two. Deliberate, and
+# outside the SS-04 seam this test guards -- `_hash_plan` and the pass
+# planner are untouched, and profiles.py still matches its original pin.
 PINNED_SHA256 = {
-    "deckle/core/printing.py": "cbf1a0e81404cf85794242b0da466e6be82f9f0116ba111fdba803123d47607e",
+    "deckle/core/printing.py": "41a0d2ff4a3a9ad9a10ef1ef4b918c0c1656f774badc4bbd5757de6d27f07922",
     "deckle/core/profiles.py": "390ebd76acd340aec2fd327d1edf3e7c01250026e6b35068d3c85e268c88ae95",
 }
 

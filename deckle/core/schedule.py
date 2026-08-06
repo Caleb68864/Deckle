@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 
 from deckle.core.marks import SEWING_MARGIN_PT
 from deckle.core.models import LayoutSettings, SheetPlan
+from deckle.core.printing import duplex_flip_edge
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,11 @@ class Schedule:
     :ivar spine_width_pt: likely sewn-block thickness at the spine as a
         ``(low, high)`` range in points, or ``None`` when paper thickness is
         unset. What you cut boards against.
+    :ivar duplex_flip_edge: ``"long"`` or ``"short"`` -- which edge the
+        sheet must be turned about for the backs to land upright. Carried
+        here rather than worked out by the formatter so it is the same
+        answer the exporter wrote into the PDF's ``/Duplex`` entry; see
+        this module's "describes, never re-derives" rule.
     :ivar notes: advisories worth reading before cutting paper.
     """
 
@@ -115,6 +121,7 @@ class Schedule:
     paper_thickness_pt: float
     fold_scheme: str
     spine_width_pt: tuple[float, float] | None = None
+    duplex_flip_edge: str = "long"
     notes: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -255,6 +262,7 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
         paper_thickness_pt=settings.paper_thickness_pt,
         fold_scheme=settings.fold_scheme,
         spine_width_pt=spine_width_pt(len(plan.sheets), settings.paper_thickness_pt),
+        duplex_flip_edge=duplex_flip_edge(plan.paper_pt),
         notes=tuple(notes),
     )
 
@@ -264,6 +272,48 @@ def _format_pages(pages: tuple[int | None, ...]) -> str:
     if not pages:
         return "(nothing)"
     return "  ".join("blank" if p is None else str(p) for p in pages)
+
+
+def _printer_lines(schedule: Schedule) -> list[str]:
+    """The settings to get right before any paper is committed.
+
+    Two of them, and both ruin the job in a way that is not visible until
+    it is too late to matter.
+
+    Scaling is the worse one. Every PDF viewer defaults to "fit to page",
+    which shrinks the sheet a few percent to clear the printer's
+    non-printable border -- and moves the gutter, the margins and the
+    sewing stations off every number printed above, while the sheet itself
+    still looks entirely correct. The exporter asks for actual size in the
+    PDF, but that is a hint a driver preset can override, so it is said
+    here too, where the user is looking when they press print.
+
+    The flip edge is the other. It is named one way only: telling a user
+    both edges and expecting them to pick is how the wrong one gets picked.
+    """
+    edge = "LONG" if schedule.duplex_flip_edge == "long" else "SHORT"
+    shape = "portrait" if schedule.duplex_flip_edge == "long" else "landscape"
+    lines = ["AT THE PRINTER", "-" * len("AT THE PRINTER")]
+    lines.append("  Print at ACTUAL SIZE.")
+    lines.append('    Turn off "fit to page", "shrink oversized pages", and')
+    lines.append("    every other scaling option in the print dialog.")
+    lines.append("    Scaling moves the gutter, the margins and every")
+    lines.append("    printed mark off the geometry Deckle computed, and the")
+    lines.append("    sheet still looks right -- which is why this is the")
+    lines.append("    setting worth checking twice. Deckle asks for actual")
+    lines.append("    size in the PDF itself, but a driver preset can")
+    lines.append("    override it.")
+    lines.append("")
+    lines.append(f"  Duplex: turn the sheet about its {edge} edge.")
+    lines.append(f"    The sheet is {shape} and the spine runs head to tail,")
+    lines.append(f"    so its {edge.lower()} edge is the vertical one. Turning it")
+    lines.append("    about the other edge lands every back upside down.")
+    lines.append("")
+    lines.append("  Print sheet 1 on its own first.")
+    lines.append("    Check the back is upright and the spine margin falls on")
+    lines.append("    the bound edge before committing the rest of the stack.")
+    lines.append("")
+    return lines
 
 
 def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
@@ -288,11 +338,17 @@ def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
     if schedule.fold_scheme != "folio" or not schedule.signatures:
         lines.append(
             "This document is imposed one page per side, not folded into "
-            "signatures, so there is nothing to gather or sew."
+            "signatures, so there is nothing to gather or sew. The binding "
+            "is the gutter: every sheet carries its spine margin on the "
+            "edge that will be bound, alternating side so the margins line "
+            "up once the stack is collated in order."
         )
         lines.append("")
         lines.append(f"Sheets to print: {schedule.sheets_total}")
         lines.append("")
+        # A job with no folding is still a job, and the two settings that
+        # ruin it are the same ones folio has to get right.
+        lines.extend(_printer_lines(schedule))
         return "\n".join(lines) + "\n"
 
     lines.append(
@@ -304,6 +360,7 @@ def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
     lines.append("Print all fronts, reload the stack, then print all backs.")
     lines.append("Keep the sheets in the order they emerge.")
     lines.append("")
+    lines.extend(_printer_lines(schedule))
 
     for signature in schedule.signatures:
         span = ""

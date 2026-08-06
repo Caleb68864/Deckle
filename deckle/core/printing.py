@@ -46,6 +46,30 @@ from deckle.core.models import SheetPlan
 from deckle.core.profiles import PrinterProfile
 
 
+def duplex_flip_edge(paper_pt: tuple[float, float]) -> Literal["long", "short"]:
+    """Which edge a duplexer must turn the sheet about, from its size alone.
+
+    The spine is vertical on the sheet under every scheme Deckle imposes --
+    ``binding_edge`` is left or right, and ``marks.fold_line`` runs head to
+    tail -- so the back must be turned about the sheet's **vertical** edge.
+    Turning it about the horizontal one lands every back upside down.
+
+    Which *named* edge that is depends on orientation, and this is the whole
+    reason the answer cannot be a constant: a portrait sheet's vertical edge
+    is its long one (gutter shift), a landscape sheet's is its short one
+    (folio, folded down the middle). Getting it backwards is the single
+    most common way a manual duplex job is ruined, and it is not visible
+    until the paper is already printed.
+
+    :param paper_pt: the sheet size as ``(width, height)`` in points.
+    :returns: ``"long"`` or ``"short"``. A square sheet answers ``"long"``:
+        neither is wrong, and pinning one keeps the exported PDF from
+        depending on which way a float comparison falls.
+    """
+    width, height = paper_pt
+    return "long" if height >= width else "short"
+
+
 @dataclass(frozen=True)
 class PrintResult:
     """The outcome of submitting one or more passes to a print backend."""
