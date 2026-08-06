@@ -372,11 +372,14 @@ def test_a_landscape_folio_schedule_names_the_short_edge_flip():
 
 
 def test_every_schedule_says_to_proof_one_sheet_before_the_stack():
+    """Named by the number the rest of Deckle uses. Sheets are 0-based
+    everywhere -- the warnings, the gathering list, ``--sheets`` -- so a
+    proof instruction saying "sheet 1" points at the second sheet."""
     for text in (
         format_schedule_text(_gutter_schedule(8)),
         format_schedule_text(_folio_schedule(16)),
     ):
-        assert "sheet 1" in text.lower()
+        assert "print sheet 0 on its own first" in text.lower()
 
 
 def test_the_flip_edge_is_carried_on_the_schedule_not_re_derived_by_the_text():

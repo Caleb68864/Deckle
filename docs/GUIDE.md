@@ -236,9 +236,32 @@ recto, right on the verso. That mirror is a real bug that once shipped —
 every test that existed asserted the gutter-left side, where the two modes
 agreed.
 
-**4. Print.** See [§6](#6--printing-manual-duplex).
+**4. Proof one sheet.** Before committing a stack, print sheet 0 on its own.
+Sheets are numbered from 0, the same as everywhere else Deckle counts them.
 
-**5. Bind.** Nothing to fold. Stack in order, jog the spine edge square, and
+```bash
+python -m deckle.cli export book.pdf -o proof.pdf --gutter 0.75in --sheets 0 --rule
+```
+
+`--sheets` takes single numbers, comma lists and inclusive ranges — `0`,
+`2,0`, `0,2-4`. Asking for a sheet the document does not have is an error, not
+an empty PDF.
+
+`--rule` draws a ruler of known length across the sheet and prints what it
+should measure. This is the only direct evidence that your printer honoured
+actual-size printing: the exported PDF asks for it via `/PrintScaling /None`,
+but that is a hint, and a driver preset can override it. A sheet scaled by
+three percent looks completely correct — a seven-inch line that measures
+6¾ does not. The rule is drawn *over* the content, so use it on a proof and
+not on the job.
+
+Check the same sheet for the two things that are cheap to fix now and
+expensive to fix after a stack: the back is upright, and the gutter falls on
+the edge you are binding.
+
+**5. Print.** See [§6](#6--printing-manual-duplex).
+
+**6. Bind.** Nothing to fold. Stack in order, jog the spine edge square, and
 bind along the gutter side.
 
 ---

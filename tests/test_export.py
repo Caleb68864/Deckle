@@ -454,3 +454,67 @@ def test_print_intent_survives_a_batched_export(tmp_path, monkeypatch):
     export_fn(plan, out)
 
     assert _viewer_preferences(out).get("/PrintScaling") == pikepdf.Name("/None")
+
+
+# --- BEHAVIORAL: the proof rule ----------------------------------------
+#
+# Deckle asks the viewer not to scale the page, but that is a hint a driver
+# can ignore, and a sheet scaled by a few percent looks entirely correct.
+# A ruler of known length printed on the sheet turns "did it scale?" from a
+# guess into something a tape measure settles.
+
+
+def _page_text(path: str, page_index: int = 0) -> str:
+    import pypdfium2
+
+    document = pypdfium2.PdfDocument(path)
+    try:
+        return document[page_index].get_textpage().get_text_bounded()
+    finally:
+        document.close()
+
+
+def test_the_rule_is_the_longest_whole_inch_fitting_the_sheet():
+    # Letter is 8.5in wide; half an inch clear at each end leaves 7.5in of
+    # room, and a ruler is only useful if it is a round number.
+    assert export.proof_rule_length_pt(612.0) == 504.0
+
+
+def test_the_rule_shrinks_to_fit_a_narrow_sheet():
+    assert export.proof_rule_length_pt(200.0) == 72.0
+
+
+def test_a_sheet_too_narrow_for_one_inch_gets_no_rule():
+    assert export.proof_rule_length_pt(100.0) == 0.0
+
+
+def test_the_rule_is_absent_unless_asked_for(tmp_path):
+    plan = _plan_from_source(tmp_path, 2)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out)
+
+    assert "in exactly" not in _page_text(out)
+
+
+def test_the_rule_prints_its_own_length_so_it_can_be_measured(tmp_path):
+    plan = _plan_from_source(tmp_path, 2)
+    out = os.path.join(str(tmp_path), "proof.pdf")
+
+    export_fn(plan, out, rule=True)
+
+    text = _page_text(out)
+    assert "7 in exactly" in text, f"rule label missing, page text: {text!r}"
+
+
+def test_the_rule_is_drawn_on_every_exported_face(tmp_path):
+    # You check whichever face comes out of the printer, not a nominated one.
+    plan = _plan_from_source(tmp_path, 2)
+    out = os.path.join(str(tmp_path), "proof.pdf")
+
+    export_fn(plan, out, rule=True)
+
+    with pikepdf.open(out) as pdf:
+        face_count = len(pdf.pages)
+    for index in range(face_count):
+        assert "in exactly" in _page_text(out, index), f"no rule on face {index}"

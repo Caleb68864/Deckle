@@ -274,10 +274,95 @@ def _draw_marks(dest_page: pikepdf.Page, marks: Sequence[Mark]) -> None:
     dest_page.contents_add(content_stream)
 
 
+PT_PER_INCH = 72.0
+
+# Clear space kept at each end of the rule, so it does not run into the
+# sheet edge or the printer's non-printable border.
+_RULE_END_CLEARANCE_PT = 0.5 * PT_PER_INCH
+
+_RULE_BASELINE_PT = 0.5 * PT_PER_INCH
+_RULE_TICK_PT = 6.0
+_RULE_END_TICK_PT = 10.0
+_RULE_LABEL_SIZE_PT = 8.0
+
+
+def proof_rule_length_pt(paper_width_pt: float) -> float:
+    """The length of the printed rule for a sheet this wide, in points.
+
+    A whole number of inches, because the entire point is that a person
+    reads it against a tape measure: "is this line 7 inches?" is a question
+    anyone can answer, and "is this line 7.43 inches?" is not.
+
+    :param paper_width_pt: the sheet width in points.
+    :returns: the rule length in points, or ``0.0`` when the sheet is too
+        narrow for even one inch with clearance -- there is no useful rule
+        to draw, and half of one would be worse than none.
+    """
+    usable = paper_width_pt - 2 * _RULE_END_CLEARANCE_PT
+    whole_inches = math.floor(usable / PT_PER_INCH)
+    if whole_inches < 1:
+        return 0.0
+    return whole_inches * PT_PER_INCH
+
+
+def _draw_proof_rule(dest_page: pikepdf.Page, paper_pt: tuple[float, float]) -> None:
+    """Draw a ruler of known length, labelled with that length.
+
+    This is the only direct evidence available that the printer honoured
+    the export's "actual size" request. ``/PrintScaling /None`` is a hint;
+    a driver preset can override it, and a sheet scaled by three percent
+    looks exactly like one that was not. A line that should measure seven
+    inches and measures six and three quarters settles it in one reading.
+
+    Drawn over the page content rather than around it: a proof is a proof,
+    and a rule tucked somewhere guaranteed to be empty would have to be
+    short enough to be useless. Print it on sheet 0, measure, discard.
+    """
+    width, _height = paper_pt
+    length = proof_rule_length_pt(width)
+    if length <= 0.0:
+        return
+
+    inches = int(round(length / PT_PER_INCH))
+    x0 = (width - length) / 2.0
+    y = _RULE_BASELINE_PT
+
+    builder = ContentStreamBuilder()
+    builder.push()
+    builder.set_line_width(0.5)
+    builder.set_dashes(None)
+    builder.line(x0, y, x0 + length, y)
+    builder.stroke_and_close()
+    for step in range(inches + 1):
+        tick = _RULE_END_TICK_PT if step in (0, inches) else _RULE_TICK_PT
+        tick_x = x0 + step * PT_PER_INCH
+        builder.line(tick_x, y, tick_x, y + tick)
+        builder.stroke_and_close()
+    builder.pop()
+
+    font = pikepdf.Dictionary(
+        Type=Name.Font, Subtype=Name.Type1, BaseFont=Name.Helvetica
+    )
+    font_name = dest_page.add_resource(font, Name.Font, prefix="Ft")
+    builder.push()
+    builder.begin_text()
+    builder.set_text_font(font_name, _RULE_LABEL_SIZE_PT)
+    builder.move_cursor(x0, y - _RULE_LABEL_SIZE_PT - 3.0)
+    builder.show_text(
+        f"{inches} in exactly -- if this measures short, the printer scaled "
+        "the page"
+    )
+    builder.end_text()
+    builder.pop()
+
+    dest_page.contents_add(b"q\n" + builder.build() + b"Q\n")
+
+
 def export(
     plan: SheetPlan,
     out_path: str,
     sheets: Sequence[int] | None = None,
+    rule: bool = False,
 ) -> None:
     """Render ``plan`` (or the sheets in ``sheets``) to a PDF at ``out_path``.
 
@@ -301,6 +386,9 @@ def export(
     :param sheets: the sheet indices to export, in the order given, or
         ``None`` for the whole plan. An index not present in the plan is
         skipped rather than raising.
+    :param rule: draw a labelled ruler of known length on every face, so a
+        printed sheet can be measured against it. For proofs -- it is drawn
+        over the content, not around it.
     :returns: nothing.
     :raises OSError: the output directory does not exist, or the scratch
         file cannot be created.
@@ -320,7 +408,7 @@ def export(
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(os.path.abspath(out_path)) or None)
     os.close(tmp_fd)
     try:
-        _export_batched(plan, selected, tmp_path)
+        _export_batched(plan, selected, tmp_path, rule)
         os.replace(tmp_path, out_path)
     finally:
         if os.path.exists(tmp_path):
@@ -337,7 +425,9 @@ def _check_writable(out_path: str) -> None:
         raise PermissionError(f"Path is not writable: {out_path}")
 
 
-def _export_batched(plan: SheetPlan, selected: list[Sheet], tmp_path: str) -> None:
+def _export_batched(
+    plan: SheetPlan, selected: list[Sheet], tmp_path: str, rule: bool = False
+) -> None:
     """Assemble ``selected`` sheets into ``tmp_path``, saving/reopening in
     batches of ``_BATCH_SHEETS`` so source handles never accumulate across a
     very large document.
@@ -351,6 +441,8 @@ def _export_batched(plan: SheetPlan, selected: list[Sheet], tmp_path: str) -> No
                 for output_page in side.pages:
                     _place_output_page(out, dest_page, output_page, source_cache)
                 _draw_marks(dest_page, side.marks)
+                if rule:
+                    _draw_proof_rule(dest_page, plan.paper_pt)
 
             if i % _BATCH_SHEETS == 0 and i != len(selected):
                 _flush_batch(out, source_cache, tmp_path)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import json
 import os
 import re
 import sys
@@ -20,7 +21,7 @@ import warnings
 from typing import Sequence
 
 from deckle import __version__ as _DECKLE_VERSION
-from deckle.core.export import export as export_plan
+from deckle.core.export import export as export_plan, proof_rule_length_pt
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
@@ -101,6 +102,13 @@ def _parse_length_pt(value: str) -> float:
 
 
 def _parse_paper(value: str) -> tuple[float, float]:
+    """A ``--paper`` value as ``(width_pt, height_pt)``.
+
+    :param value: a preset name, or ``WxH`` with an optional unit.
+    :returns: the dimensions in points.
+    :raises argparse.ArgumentTypeError: unparseable, or a size no PDF can
+        represent.
+    """
     preset = _PAPER_PRESETS.get(value.lower())
     if preset is not None:
         return preset
@@ -108,11 +116,120 @@ def _parse_paper(value: str) -> tuple[float, float]:
     if match:
         w, h, unit = match.groups()
         factor = _UNIT_TO_PT[(unit or "pt").lower()]
-        return (float(w) * factor, float(h) * factor)
+        paper = (float(w) * factor, float(h) * factor)
+        _reject_unprintable_paper(paper, value)
+        return paper
     raise argparse.ArgumentTypeError(
         f"invalid paper {value!r}: expected a preset ({', '.join(_PAPER_PRESETS)}) "
-        "or WxH[unit]"
+        f"or WxH with an optional unit ({', '.join(_UNIT_TO_PT)}) -- e.g. 8.5x11in"
     )
+
+
+# The PDF page-size limits pikepdf enforces, in points. Outside them there
+# is no page to make, so there is no point imposing one.
+MIN_PAPER_PT = 3.0
+MAX_PAPER_PT = 14400.0
+
+
+def _reject_unprintable_paper(paper: tuple[float, float], typed: str) -> None:
+    """Refuse a sheet size no PDF can represent, while the user is still
+    looking at what they typed.
+
+    ``--paper 0x0`` was accepted here, imposed, and then failed inside
+    pikepdf with "Page size must be between 3 and 14400 PDF units" -- a
+    library traceback that names neither ``--paper`` nor the value the
+    user gave, after doing all the work. The limit is real; the place to
+    apply it is the boundary the value came in through.
+
+    :param paper: the parsed dimensions, in points.
+    :param typed: what the user actually wrote, for the message.
+    :raises argparse.ArgumentTypeError: the size is outside PDF's range.
+    """
+    for length in paper:
+        if not MIN_PAPER_PT <= length <= MAX_PAPER_PT:
+            raise argparse.ArgumentTypeError(
+                f"invalid paper {typed!r}: a PDF page must be between "
+                f"{MIN_PAPER_PT:g} and {MAX_PAPER_PT:g}pt "
+                f"({MIN_PAPER_PT / 72:.2g}in to {MAX_PAPER_PT / 72:g}in) on "
+                f"each side; that is {paper[0]:g}x{paper[1]:g}pt"
+            )
+
+
+def _parse_sheet_selection(value: str) -> list[int]:
+    """A ``--sheets`` value as the sheet indices it names, in order.
+
+    Accepts single numbers and inclusive ranges, comma-separated:
+    ``0``, ``2,0``, ``1-3``, ``0,2-4``. Indices are **0-based**, matching
+    every other sheet number Deckle prints -- the layout warnings, the
+    schedule's gathering list, ``Sheet.index``. A 1-based flag would
+    disagree with all three.
+
+    Order is preserved rather than sorted, and repeats are kept: both are
+    what :func:`deckle.core.export.export` documents for its ``sheets``
+    argument, and neither is worth silently correcting -- ``2,0`` is a
+    reasonable thing to ask for.
+
+    Open-ended ranges (``2-``) are deliberately not accepted: the total
+    sheet count is not known until the document is imposed, which is after
+    argparse has run, so the flag cannot honour one at the point it is read.
+
+    :param value: the raw flag text.
+    :returns: the indices, in the order named.
+    :raises argparse.ArgumentTypeError: empty, malformed, negative, or a
+        range that runs backwards.
+    """
+    selection: list[int] = []
+    items = [item.strip() for item in value.split(",")]
+    if not value.strip() or any(not item for item in items):
+        raise argparse.ArgumentTypeError(
+            f"invalid sheets {value!r}: expected sheet numbers like 0, 2,0 "
+            "or 0,2-4 -- counting from 0, as the schedule and the warnings do"
+        )
+    for item in items:
+        bounds = [part.strip() for part in item.split("-")]
+        if len(bounds) > 2 or any(not part.isdigit() for part in bounds):
+            raise argparse.ArgumentTypeError(
+                f"invalid sheets {value!r}: {item!r} is not a sheet number "
+                "or an inclusive range like 2-4"
+            )
+        if len(bounds) == 1:
+            selection.append(int(bounds[0]))
+            continue
+        start, end = int(bounds[0]), int(bounds[1])
+        if end < start:
+            raise argparse.ArgumentTypeError(
+                f"invalid sheets {value!r}: the range {item!r} runs backwards"
+            )
+        selection.extend(range(start, end + 1))
+    return selection
+
+
+def _report_missing_sheets(plan, selection: list[int], total: int) -> bool:
+    """Refuse a selection naming a sheet the document does not have.
+
+    :func:`deckle.core.export.export` skips an unknown index rather than
+    raising, which is right for a library and wrong for a command: asking
+    for sheet 99 of a four-sheet book would write a PDF with nothing in it
+    and print ``wrote proof.pdf``. A file that exists and is empty, from a
+    command that reported success, is the worst available outcome.
+
+    :param plan: the imposed plan, for the indices it really has.
+    :param selection: what the user asked for.
+    :param total: how many sheets the document has, for the message.
+    :returns: ``True`` if the selection is impossible and a message has
+        been printed.
+    """
+    have = {sheet.index for sheet in plan.sheets}
+    missing = sorted({index for index in selection if index not in have})
+    if not missing:
+        return False
+    named = ", ".join(str(index) for index in missing)
+    print(
+        f"error: no sheet {named} in this document -- it has {total} "
+        f"sheet(s), numbered 0 to {total - 1}",
+        file=sys.stderr,
+    )
+    return True
 
 
 def _load_source(path: str) -> list[SourcePage]:
@@ -189,7 +306,27 @@ def _load_project_or_report(path: str) -> Project | None:
         )
         log_exception("project_source_changed", exc, path=path)
         return None
-    except (OSError, ValueError, KeyError) as exc:
+    except KeyError as exc:
+        # `str(KeyError)` is the bare key, so the default branch below
+        # produced "error: cannot open job.deckle: 'pages'" -- which names
+        # the problem only to someone who already knows the file format.
+        print(
+            f"error: cannot open {path}: it is missing {exc} and so is not a "
+            "complete Deckle project. If you edited it by hand, compare it "
+            "against one Deckle wrote.",
+            file=sys.stderr,
+        )
+        log_exception("project_open_failed", exc, path=path)
+        return None
+    except json.JSONDecodeError as exc:
+        print(
+            f"error: cannot open {path}: it is not valid JSON ({exc.msg} at "
+            f"line {exc.lineno}), so it is not a Deckle project file.",
+            file=sys.stderr,
+        )
+        log_exception("project_open_failed", exc, path=path)
+        return None
+    except (OSError, ValueError) as exc:
         print(f"error: cannot open {path}: {exc}", file=sys.stderr)
         log_exception("project_open_failed", exc, path=path)
         return None
@@ -445,13 +582,53 @@ def _cmd_export(args: argparse.Namespace) -> int:
 
     plan = _strategy_for(settings).impose(pages, settings)
     _emit_warnings(pages, plan)
+
+    selection = args.sheets
+    if selection is not None and _report_missing_sheets(
+        plan, selection, len(plan.sheets)
+    ):
+        return 1
+
     try:
-        export_plan(plan, args.output)
+        export_plan(plan, args.output, sheets=selection, rule=args.rule)
     except OSError as exc:
         _report_write_failure(args.output, exc)
         return 1
+    except ValueError as exc:
+        # A `.deckle` carries its own paper and never passes through the
+        # flag parser, so an out-of-range sheet can still arrive here.
+        # Without this it surfaces as a bare pikepdf traceback.
+        print(f"error: cannot write {args.output}: {exc}", file=sys.stderr)
+        log_exception("export_failed", exc, path=args.output)
+        return 1
     print(f"wrote {args.output}")
+    if args.rule:
+        _report_rule(plan.paper_pt[0])
     return 0
+
+
+def _report_rule(paper_width_pt: float) -> None:
+    """Say what the printed rule should measure, and what it means if it
+    does not.
+
+    The rule is labelled on the sheet, but the number belongs here too: it
+    is what turns "print this and look at it" into a check with a pass
+    condition, and the person reading this line is the one about to walk to
+    the printer.
+    """
+    length = proof_rule_length_pt(paper_width_pt)
+    if length <= 0:
+        print(
+            "note: this sheet is too narrow for a rule, so none was drawn",
+            file=sys.stderr,
+        )
+        return
+    inches = int(round(length / 72.0))
+    print(
+        f"measure the printed rule: it should be {inches} in exactly. "
+        "If it is short, the printer scaled the page -- turn off "
+        '"fit to page" and print again.'
+    )
 
 
 def _cmd_impose(args: argparse.Namespace) -> int:
@@ -547,6 +724,25 @@ def build_parser() -> argparse.ArgumentParser:
     export_parser = subparsers.add_parser("export", help="impose and export a source directly to PDF")
     export_parser.add_argument("source", help="a PDF file or a directory of images")
     export_parser.add_argument("-o", "--output", required=True, help="path to write the exported PDF")
+    export_parser.add_argument(
+        "--sheets",
+        type=_parse_sheet_selection,
+        default=None,
+        metavar="SPEC",
+        help=(
+            "export only these sheets, counting from 0 -- e.g. 0, 2,0 or "
+            "0,2-4. Print sheet 0 on its own to proof a job before "
+            "committing the stack"
+        ),
+    )
+    export_parser.add_argument(
+        "--rule",
+        action="store_true",
+        help=(
+            "draw a ruler of known length on every sheet, to check whether "
+            "the printer scaled the page. Use on a proof, not on the job"
+        ),
+    )
     _add_layout_args(export_parser)
     export_parser.set_defaults(func=_cmd_export, _command="export")
 

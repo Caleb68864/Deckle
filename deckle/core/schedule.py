@@ -309,9 +309,11 @@ def _printer_lines(schedule: Schedule) -> list[str]:
     lines.append(f"    so its {edge.lower()} edge is the vertical one. Turning it")
     lines.append("    about the other edge lands every back upside down.")
     lines.append("")
-    lines.append("  Print sheet 1 on its own first.")
+    lines.append("  Print sheet 0 on its own first -- deckle export --sheets 0.")
     lines.append("    Check the back is upright and the spine margin falls on")
     lines.append("    the bound edge before committing the rest of the stack.")
+    lines.append("    Add --rule to print a measurable ruler on it: if the")
+    lines.append("    ruler is short, the printer scaled the page.")
     lines.append("")
     return lines
 
