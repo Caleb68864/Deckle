@@ -425,6 +425,11 @@ def export(
         ``out_path`` is not writable. Checked *before* any bytes are
         written, so a partial file never appears on disk.
     :raises pikepdf.PdfError: a source page cannot be read or copied.
+    :raises ExportVerificationError: the assembled document does not match
+        the plan -- a page count or a sheet size that disagrees. Checked
+        before the scratch file is renamed, so the destination is never
+        written and any previous export there survives. Not a user error:
+        see the exception's own documentation.
     """
     target_indices = (
         [s.index for s in plan.sheets] if sheets is None else list(sheets)
@@ -440,10 +445,83 @@ def export(
         _export_batched(plan, selected, tmp_path, rule, side)
         if rotate_180:
             rotate_pages_180(tmp_path)
+        # Checked on the scratch file, before it is renamed into place: a
+        # file that fails this must never reach the destination, and a
+        # previous good export sitting at that path has to survive.
+        _verify_output(
+            tmp_path,
+            expected_pages=sum(len(_sides(sheet, side)) for sheet in selected),
+            paper_pt=plan.paper_pt,
+        )
         os.replace(tmp_path, out_path)
     finally:
         if os.path.exists(tmp_path):
             _safe_remove(tmp_path)
+
+
+class ExportVerificationError(Exception):
+    """The written PDF does not match the plan it was composed from.
+
+    Deliberately not caught by the CLI. Every input this module rejects
+    for a user's reason -- an unwritable path, a missing directory, a
+    corrupt source -- is refused before composition starts, so by the time
+    a document has been assembled the only way it can fail this check is a
+    defect in Deckle. A traceback is the correct outcome for that, and a
+    message that made it look like the user's problem would send them
+    looking for an error they did not make.
+    """
+
+
+# Page sizes round-trip through the PDF as decimal strings, so the value
+# read back is close to, not identical with, the float laid out for.
+_SIZE_TOLERANCE_PT = 1e-6
+
+
+def _verify_output(path: str, expected_pages: int, paper_pt: tuple[float, float]) -> None:
+    """Check the written file against what the plan said it would be.
+
+    Every other check in this module runs on the ``SheetPlan``. Nothing had
+    ever looked at the artifact, so a composition that dropped a page or
+    sized one wrongly would be reported as a successful export and the
+    first symptom would be paper coming out of a printer.
+
+    Two properties, chosen because they are total and cheap -- neither
+    rasterizes anything, so this costs one open and a metadata read even
+    on a long document:
+
+    - **One page per face.** Catches a face silently lost, and a pass that
+      lost its one-to-one mapping onto the sheets being fed.
+    - **Every page the size the plan was laid out for.** Catches a sheet
+      composed against a different paper than the placements assumed,
+      which is the failure that looks correct on screen and is wrong by a
+      measurable margin on paper.
+
+    :param path: the PDF to inspect.
+    :param expected_pages: how many pages composition should have written.
+    :param paper_pt: the plan's sheet size.
+    :returns: nothing.
+    :raises ExportVerificationError: the file disagrees with the plan.
+    """
+    width, height = paper_pt
+    with pikepdf.open(path) as pdf:
+        actual_pages = len(pdf.pages)
+        if actual_pages != expected_pages:
+            raise ExportVerificationError(
+                f"composed {actual_pages} page(s) but the plan calls for "
+                f"{expected_pages}"
+            )
+        for index, page in enumerate(pdf.pages):
+            box = [float(value) for value in page.mediabox]
+            page_w = abs(box[2] - box[0])
+            page_h = abs(box[3] - box[1])
+            if not (
+                math.isclose(page_w, width, abs_tol=_SIZE_TOLERANCE_PT)
+                and math.isclose(page_h, height, abs_tol=_SIZE_TOLERANCE_PT)
+            ):
+                raise ExportVerificationError(
+                    f"page {index} is {page_w:g}x{page_h:g}pt but the plan "
+                    f"is laid out for {width:g}x{height:g}pt"
+                )
 
 
 def rotate_pages_180(pdf_path: str, flatten: bool = False) -> None:

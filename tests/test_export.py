@@ -728,3 +728,114 @@ def test_a_single_pass_still_refuses_scaling(tmp_path):
     export_fn(plan, out, side="front")
 
     assert _viewer_preferences(out).get("/PrintScaling") == pikepdf.Name("/None")
+
+
+# --- BEHAVIORAL: verifying what was actually written -------------------
+#
+# Every check in this module runs on the PLAN. Nothing had ever looked at
+# the file, so a composition that silently dropped or mis-sized a page
+# would be reported as a successful export -- and the first symptom would
+# be paper. The two properties worth confirming are cheap and total: one
+# page per face written, every page the size the plan was laid out for.
+
+
+def test_verify_output_accepts_a_correct_export(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+    export_fn(plan, out)
+
+    export._verify_output(out, expected_pages=4, paper_pt=LETTER)
+
+
+def test_verify_output_rejects_a_missing_page(tmp_path):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+    export_fn(plan, out)
+
+    with pytest.raises(export.ExportVerificationError) as excinfo:
+        export._verify_output(out, expected_pages=5, paper_pt=LETTER)
+
+    assert "5" in str(excinfo.value) and "4" in str(excinfo.value)
+
+
+def test_verify_output_rejects_a_page_of_the_wrong_size(tmp_path):
+    plan = _plan_from_source(tmp_path, 2)
+    out = os.path.join(str(tmp_path), "out.pdf")
+    export_fn(plan, out)
+
+    with pytest.raises(export.ExportVerificationError) as excinfo:
+        export._verify_output(out, expected_pages=2, paper_pt=(595.28, 841.89))
+
+    assert "612" in str(excinfo.value), "the message does not say what it found"
+
+
+def test_verify_output_tolerates_floating_point_noise(tmp_path):
+    """Page sizes round-trip through the PDF as decimal strings, so an
+    exact float comparison would reject a correct file."""
+    plan = _plan_from_source(tmp_path, 2)
+    out = os.path.join(str(tmp_path), "out.pdf")
+    export_fn(plan, out)
+
+    export._verify_output(
+        out, expected_pages=2, paper_pt=(612.0 + 1e-9, 792.0 - 1e-9)
+    )
+
+
+def _break_composition(export_mod, monkeypatch) -> None:
+    """Make composition lose its last page, and nothing else.
+
+    Injected at the composition boundary rather than at ``_sides``:
+    ``export`` derives the expected page count from ``_sides`` too, so
+    patching that moves the answer and the question together and the
+    check can never fail. The fault has to land somewhere the expectation
+    does not read.
+    """
+    real_batched = export_mod._export_batched
+
+    def losing_a_page(plan, selected, path, rule=False, side=None):
+        real_batched(plan, selected, path, rule, side)
+        with pikepdf.open(path, allow_overwriting_input=True) as pdf:
+            del pdf.pages[-1]
+            pdf.save(path)
+
+    monkeypatch.setattr(export_mod, "_export_batched", losing_a_page)
+
+
+def test_an_export_that_loses_a_page_fails_instead_of_reporting_success(
+    tmp_path, monkeypatch
+):
+    """The whole point: a wrong file must not be handed over as a right
+    one. Verified before the scratch file is renamed into place, so the
+    destination is never briefly wrong and a previous good export at that
+    path survives."""
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+    export_fn(plan, out)  # a good file already at the destination
+
+    _break_composition(export, monkeypatch)
+
+    with pytest.raises(export.ExportVerificationError):
+        export_fn(plan, out)
+
+    # The good file is still there and still complete.
+    with pikepdf.open(out) as pdf:
+        assert len(pdf.pages) == 4, "a failed export overwrote a good file"
+
+
+def test_a_failed_verification_leaves_no_scratch_file_behind(tmp_path, monkeypatch):
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    _break_composition(export, monkeypatch)
+
+    with pytest.raises(export.ExportVerificationError):
+        export_fn(plan, out)
+
+    # `src.pdf` is this test's own source. Anything else ending in .pdf is
+    # a scratch file the failed export failed to reclaim -- including the
+    # destination, which must not exist at all: verification runs before
+    # the rename, so nothing should ever have been put there.
+    leftovers = [
+        n for n in os.listdir(str(tmp_path)) if n.endswith(".pdf") and n != "src.pdf"
+    ]
+    assert leftovers == [], f"failed export left files behind: {leftovers}"
