@@ -2,7 +2,8 @@
 
 Three independent pieces:
 
-- ``split_signatures`` -- how sheets are grouped into signatures.
+- ``split_signatures`` / ``split_signatures_at`` -- how sheets are grouped
+  into signatures, by one uniform size or by an explicit list.
 - ``saddle_order`` -- the closed-form permutation that answers "given n
   pages folded and nested as one signature, which page goes in which
   physical print slot". This is the executed, verified recipe from
@@ -27,6 +28,7 @@ No I/O, no Qt -- see ``tests/test_core_purity.py``.
 from __future__ import annotations
 
 from collections import deque
+from typing import Sequence
 
 from deckle.core.models import SheetPlan
 
@@ -63,6 +65,55 @@ def split_signatures(
     for start in range(0, sheet_count, sheets_per_signature):
         end = min(start + sheets_per_signature, sheet_count)
         groups.append(tuple(range(start, end)))
+    return groups
+
+
+def split_signatures_at(
+    sheet_count: int, lengths: Sequence[int]
+) -> list[tuple[int, ...]]:
+    """Group sheet indices into signatures of exactly the sizes given.
+
+    The explicit form of :func:`split_signatures`. One uniform number says
+    "make them all this big and let the last be whatever is left", which
+    cannot express either job a binder actually has: a page count that
+    divides badly, where a shorter final signature beats six blank leaves;
+    and chapter-aligned gatherings, where a chapter break should land on a
+    signature boundary so the book opens flat there.
+
+    :param sheet_count: how many sheets there are.
+    :param lengths: the size of each signature, in binding order.
+    :returns: the groups, contiguous and in order -- concatenating them
+        reproduces ``range(sheet_count)`` exactly, as
+        ``split_signatures`` also guarantees.
+    :raises ValueError: ``lengths`` is empty, contains a value below one,
+        or does not sum to ``sheet_count``.
+
+        The sum has to match exactly. A short list leaves sheets nobody
+        said where to put; a long one describes signatures made of sheets
+        that do not exist. Either could be a typo or a changed page count,
+        and guessing which would be worse than saying so -- the message
+        names both numbers, because the one the user needs in order to fix
+        it is the sheet count, and that is not knowable without imposing.
+    """
+    if not lengths:
+        raise ValueError("signature lengths must not be empty")
+    for length in lengths:
+        if length < 1:
+            raise ValueError(
+                f"every signature must hold at least one sheet, got {tuple(lengths)}"
+            )
+    total = sum(lengths)
+    if total != sheet_count:
+        raise ValueError(
+            f"signature lengths {tuple(lengths)} add up to {total} sheet(s), "
+            f"but this document makes {sheet_count}"
+        )
+
+    groups: list[tuple[int, ...]] = []
+    start = 0
+    for length in lengths:
+        groups.append(tuple(range(start, start + length)))
+        start += length
     return groups
 
 

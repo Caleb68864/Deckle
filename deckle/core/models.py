@@ -410,6 +410,24 @@ class LayoutSettings:
     sewing_stations: int = 3
     blank_mode: Literal["end","balanced"] = "end"
 
+    signature_lengths: tuple[int, ...] | None = None
+    """Explicit sheet counts per signature, or ``None`` for uniform ones.
+
+    ``sheets_per_signature`` says "make them all this big and let the last
+    one be whatever is left", which cannot express either job a binder
+    actually has. A page count that divides badly: ``7,7,6,6`` beats
+    ``4,4,4,4,4,4,2`` and six blank leaves at the end. And chapter-aligned
+    gatherings, where a chapter break should fall on a signature boundary
+    so the book opens flat there.
+
+    When set, this wins over ``sheets_per_signature`` and over
+    ``blank_mode`` -- both describe how to *derive* a grouping, and the
+    user has instead stated one. The lengths must sum to the document's
+    sheet count exactly; see
+    :func:`deckle.core.signatures.split_signatures_at` for why that is
+    refused rather than reconciled.
+    """
+
     crop_odd_pt: tuple[float, float, float, float] | None = None
     crop_even_pt: tuple[float, float, float, float] | None = None
     """Space removed from each source page before it is imposed.

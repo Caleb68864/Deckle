@@ -247,7 +247,16 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
                 "Paper thickness is not set, so creep is not estimated. "
                 "Measure your stock and set it if the fore-edge matters."
             )
-        if len(signatures) > 1 and len({s.sheet_count for s in signatures}) > 1:
+        uneven = len(signatures) > 1 and len({s.sheet_count for s in signatures}) > 1
+        if uneven and settings.signature_lengths:
+            # The binder stated these lengths. Explaining their own choice
+            # back to them as an accident of arithmetic would be a
+            # confident falsehood, which is worse than saying nothing.
+            notes.append(
+                "The signatures are different sizes because you asked for "
+                f"{', '.join(str(n) for n in settings.signature_lengths)}."
+            )
+        elif uneven:
             notes.append(
                 "The last signature is shorter than the others. That is "
                 "normal -- the page count did not divide evenly."

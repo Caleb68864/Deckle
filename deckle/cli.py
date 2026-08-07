@@ -158,6 +158,35 @@ def _reject_unprintable_paper(paper: tuple[float, float], typed: str) -> None:
             )
 
 
+def _parse_signature_lengths(value: str) -> tuple[int, ...]:
+    """A ``--signatures`` value as the sheet count of each gathering.
+
+    ``10,10,8`` -- the same shape Bookbinder JS asks for, because a binder
+    who has used one should not have to learn a second notation for the
+    same idea.
+
+    :param value: comma-separated positive integers.
+    :returns: the lengths, in binding order.
+    :raises argparse.ArgumentTypeError: empty, non-numeric, or any value
+        below one. Whether the lengths ADD UP to the document is checked
+        later, by the imposer, because the sheet count is not known until
+        the pages have been read.
+    """
+    items = [item.strip() for item in value.split(",")]
+    if not value.strip() or any(not item.isdigit() for item in items):
+        raise argparse.ArgumentTypeError(
+            f"invalid signatures {value!r}: expected sheet counts separated "
+            "by commas, such as 10,10,8"
+        )
+    lengths = tuple(int(item) for item in items)
+    if any(length < 1 for length in lengths):
+        raise argparse.ArgumentTypeError(
+            f"invalid signatures {value!r}: every signature must hold at "
+            "least one sheet"
+        )
+    return lengths
+
+
 def _parse_crop(value: str) -> tuple[float, float, float, float]:
     """A ``--crop`` value as ``(left, bottom, right, top)`` insets in points.
 
@@ -619,6 +648,7 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         trim_pt=args.trim_pt,
         crop_odd_pt=args.crop,
         crop_even_pt=args.crop_even,
+        signature_lengths=args.signature_lengths,
     )
 
 
@@ -675,6 +705,16 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
         "--paper-thickness", type=_parse_length_pt, default=0.0,
         help="caliper of one sheet, e.g. 0.004in or 0.1mm. Used to estimate "
         "fore-edge creep and spine thickness (default: 0, unset)",
+    )
+    parser.add_argument(
+        "--signatures", dest="signature_lengths",
+        type=_parse_signature_lengths, default=None, metavar="N,N,N",
+        help=(
+            "sheet count of each signature, such as 10,10,8 -- instead of "
+            "one uniform --sheets-per-signature. For a page count that "
+            "divides badly, or to land a chapter break on a signature "
+            "boundary. Must add up to the document's sheet count"
+        ),
     )
     parser.add_argument(
         "--sewing-stations", type=int, default=3,
@@ -739,7 +779,9 @@ def _cmd_info(args: argparse.Namespace) -> int:
         print(f"  {w:.2f} x {h:.2f}")
 
     import_warnings = list(getattr(pages, "warnings", []))
-    plan = _strategy_for(settings).impose(pages, settings)
+    plan = _impose_or_report(pages, settings)
+    if plan is None:
+        return 1
 
     # Signature breakdown -- always printed, even under the MVP
     # (fold_scheme="none") path, where there are simply zero signatures.
@@ -780,6 +822,35 @@ def _emit_warnings(pages, plan) -> None:
         )
 
 
+def _impose_or_report(pages, settings):
+    """Impose, or print why the settings cannot produce a book.
+
+    A handful of settings can only be judged once the pages have been
+    read -- ``--signatures`` that do not add up to the sheet count the
+    document actually makes, a ``--trim`` deep enough that opposing cuts
+    cross, a ``--crop`` that consumes the page. Each already raises a
+    ``ValueError`` naming the numbers involved, but the raise happens
+    inside ``impose()``, which sits outside every try block the commands
+    had -- so a plain typo produced a traceback.
+
+    That is the wrong side of the line this CLI draws: a traceback is a
+    bug report, and these are the user telling Deckle to do something
+    arithmetically impossible. The message was always right; only its
+    presentation was wrong.
+
+    :param pages: the source pages.
+    :param settings: the layout to impose them with.
+    :returns: the plan, or ``None`` when the settings cannot work -- the
+        error is already on stderr.
+    """
+    try:
+        return _strategy_for(settings).impose(pages, settings)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        log_exception("impose_failed", exc)
+        return None
+
+
 def _cmd_export(args: argparse.Namespace) -> int:
     if _report_output_problem(args.output, args.source):
         return 1
@@ -788,7 +859,9 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
     pages, settings = resolved
 
-    plan = _strategy_for(settings).impose(pages, settings)
+    plan = _impose_or_report(pages, settings)
+    if plan is None:
+        return 1
     _emit_warnings(pages, plan)
 
     selection = args.sheets
@@ -889,7 +962,10 @@ def _cmd_impose(args: argparse.Namespace) -> int:
         return 1
     pages, settings = resolved
 
-    _emit_warnings(pages, _strategy_for(settings).impose(pages, settings))
+    plan = _impose_or_report(pages, settings)
+    if plan is None:
+        return 1
+    _emit_warnings(pages, plan)
     project = Project(pages=list(pages), layout=settings, printer=args.printer)
     try:
         save_project(project, args.output)
@@ -921,7 +997,9 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     if args.output is not None and _report_output_problem(args.output, args.source):
         return 1
 
-    plan = _strategy_for(settings).impose(pages, settings)
+    plan = _impose_or_report(pages, settings)
+    if plan is None:
+        return 1
     _emit_warnings(pages, plan)
 
     text = format_schedule_text(

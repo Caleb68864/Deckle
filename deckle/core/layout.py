@@ -30,7 +30,11 @@ from deckle.core.models import (
     SourcePage,
     is_blank_page,
 )
-from deckle.core.signatures import saddle_order, split_signatures
+from deckle.core.signatures import (
+    saddle_order,
+    split_signatures,
+    split_signatures_at,
+)
 
 Cell = tuple[float, float, float, float]
 """A cell within a sheet: ``(x0, y0, x1, y1)`` in sheet points.
@@ -732,7 +736,10 @@ def _pad_to_slots(active: list[SourcePage]) -> tuple[list[SourcePage | None], in
 
 
 def _signature_sheet_groups(
-    sheet_count: int, sheets_per_signature: int, blank_mode: str
+    sheet_count: int,
+    sheets_per_signature: int,
+    blank_mode: str,
+    lengths: Sequence[int] | None = None,
 ) -> list[tuple[int, ...]]:
     """Group sheet indices ``0..sheet_count-1`` into signatures.
 
@@ -745,6 +752,11 @@ def _signature_sheet_groups(
     """
     if sheet_count <= 0:
         return []
+    if lengths:
+        # An explicit list wins over both of the other two: they
+        # describe how to DERIVE a grouping, and the user has
+        # stated one instead.
+        return split_signatures_at(sheet_count, lengths)
     if blank_mode != "balanced":
         return split_signatures(sheet_count, sheets_per_signature)
 
@@ -869,7 +881,10 @@ class SaddleStitchStrategy:
 
         sheets_n = len(slots) // 4
         groups = _signature_sheet_groups(
-            sheets_n, settings.sheets_per_signature, settings.blank_mode
+            sheets_n,
+            settings.sheets_per_signature,
+            settings.blank_mode,
+            settings.signature_lengths,
         )
 
         cells = cell_geometry(settings.paper)

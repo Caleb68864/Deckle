@@ -66,6 +66,7 @@ ranking below still reads as though nothing has been built. What has:
 - **#9 page-number stamping** — shipped 2026-08-06 as the small version the
   analysis recommends: `deckle dummy` generates a numbered source rather
   than stamping user content. Built to make the folio check cheap.
+- **#7 custom per-signature lengths** — shipped 2026-08-06, `--signatures`.
 - **#5 grain direction** — shipped 2026-08-05 (`7d7b3a2`).
 - **#8 spine width in the binding schedule** — shipped 2026-08-05 (`7d7b3a2`).
 
