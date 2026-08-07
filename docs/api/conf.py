@@ -120,11 +120,16 @@ def _demote_pipe_tables(lines: list[str]) -> list[str]:
     """Render Markdown-style pipe tables as literal blocks.
 
     ``deckle/core/printing.py`` carries the verified back-pass ordering
-    table as a Markdown pipe table -- and that module is contractually
-    frozen (``tests/test_seam_zero_diff.py``), so the docstring cannot be
-    rewritten into RST grid-table syntax. Left alone, docutils reads the
+    table as a Markdown pipe table. Left alone, docutils reads the
     ``|---|---|`` separator row as an undefined substitution reference and
     the build fails under ``-W``.
+
+    That module was contractually frozen by a SHA-256 pin when this was
+    written, so rewriting the docstring into RST grid-table syntax was not
+    an option. The pin was retired on 2026-08-06 and the rewrite is now
+    possible -- but it is still not worth doing. A pipe table is legible
+    in the source, where a binder reading ``printing.py`` will meet it,
+    and RST grid tables are not.
 
     Demoting the table to a literal block keeps the author's alignment and
     every character of the content, and costs only the table borders that a

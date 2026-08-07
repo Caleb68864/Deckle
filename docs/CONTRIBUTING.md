@@ -84,16 +84,28 @@ licenses of Deckle's own dependency closure and fails on any AGPL entry
 or on `PyMuPDF`/`fitz` being present, plus a grep guard for
 `pdfimpose`/`cpdf` references anywhere in `deckle/` or `tests/`.
 
-## 4. The zero-diff seam, and `paper_thickness_pt` is advisory only
+## 4. The pass-planning seam, and `paper_thickness_pt` is advisory only
 
 `deckle/core/printing.py` (`plan_passes`) and `deckle/core/profiles.py`
-(`PrinterProfile`) are the MVP's pass-planning seam, and v2 signature
-work must not touch them: `tests/test_seam_zero_diff.py` diffs both files
-against their MVP baseline and fails on any change. `plan_passes` already
-accepts an arbitrary `sheets` subsequence -- printing a single signature's
-sheets (`plan_passes(plan, profile, sheets=plan.signatures[i].sheet_indices)`)
-is the existing reprint/subset path, not a new one, and needs no change to
-either file.
+(`PrinterProfile`) are the pass-planning seam. `plan_passes` accepts an
+arbitrary `sheets` subsequence, so printing a single signature's sheets
+(`plan_passes(plan, profile, sheets=plan.signatures[i].sheet_indices)`) is
+the existing reprint/subset path rather than a new one.
+
+**Both files are ordinary code now.** They were pinned by SHA-256 in
+`tests/test_seam_zero_diff.py` while the v2 signature work was in
+progress, to make that sub-spec's "these two files do not change" claim
+falsifiable rather than aspirational. That sub-spec is finished, and the
+pin was regenerated three times in a single day for changes that were all
+deliberate and all outside the seam it guarded -- it had started catching
+ordinary maintenance instead of the violation it was written for. It was
+retired on 2026-08-06.
+
+What replaced it is better: both modules are at **100% statement
+coverage** from behavioural tests (`tests/test_printing.py`,
+`tests/test_registration.py`). A hash tells you a file changed; those
+tell you whether it still does the right thing, which is the property
+anyone actually cared about.
 
 `LayoutSettings.paper_thickness_pt` is **advisory only**. The only place
 permitted to read it is `deckle/core/layout.py`'s `_creep_advisory`
