@@ -257,9 +257,29 @@ Use `--crop-even` when the source is a scan whose gutter swaps sides every
 leaf; one rectangle cannot fit both. Without it, `--crop` applies to the whole
 document.
 
-There is no overlay preview yet, and no automatic "trim to content" — both are
-worth building and neither is here. For now, crop, export, and look at the
-result.
+**Or let Deckle measure it.** `--auto-crop` rasterises the pages, finds where
+the ink actually is, and reports the values it derived:
+
+```
+auto-crop: --crop 106.0pt,106.0pt,106.0pt,106.0pt
+auto-crop: --crop-even 106.0pt,106.0pt,106.0pt,106.0pt
+```
+
+Those are printed as `--crop` values on purpose: measure once, then pin them
+and stop rasterising the whole document on every run.
+
+It measures odd and even pages separately, which is the case `--crop-even`
+exists for. The crop is the *least aggressive* inset any page needs, not a
+per-page fit — cropping each page to its own ink would let the text block
+move from leaf to leaf, which is worse than not cropping.
+
+Ink bounds come off a low-resolution raster, so the answer runs a point or two
+shy of the true edge — it errs toward keeping content. Use `--auto-crop-margin
+6pt` to keep more back for descenders and hairline rules.
+
+There is no overlay preview yet — briss shows all pages superimposed so you
+can see the real content extent before committing. That is still worth
+building and is not here.
 
 **4. Proof one sheet.** Before committing a stack, print sheet 0 on its own.
 Sheets are numbered from 0, the same as everywhere else Deckle counts them.

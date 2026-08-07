@@ -391,6 +391,80 @@ def _scale_bbox_to_points(
     return (x0, y0, x1, y1)
 
 
+Insets = tuple[float, float, float, float]
+
+
+def auto_crop_insets(
+    pages: Sequence[SourcePage],
+    *,
+    margin_pt: float = 0.0,
+    dpi: int = 36,
+    split_parity: bool = True,
+) -> tuple[Insets | None, Insets | None]:
+    """Derive crop insets from where the ink actually is.
+
+    Cropping by hand means measuring a scan in a viewer, typing four
+    numbers and reprinting when they were wrong. Everything needed to
+    measure it is already here: :func:`ink_bbox` rasterises a page and
+    returns its content bounds, cached per ``SourceRef``.
+
+    **Document-wide, not per page.** The result is the *least aggressive*
+    inset any measured page needs, so no page loses content and every page
+    keeps the same frame. Cropping each page to its own ink would let the
+    text block move from leaf to leaf -- a page whose last line is short
+    would crop tighter than its neighbour -- which is worse than not
+    cropping at all.
+
+    Computed as a per-page inset from each edge and then minimised, rather
+    than as a union of boxes, so a document whose pages differ in size
+    still gets an answer that is correct for all of them. A union of
+    absolute rectangles is meaningless across mixed page sizes.
+
+    :param pages: the document's pages. Skipped pages are ignored -- a
+        page excluded from the imposition must not constrain the crop of
+        the pages that are in it -- as are inserted blanks, which have no
+        file to measure.
+    :param margin_pt: kept back from every edge. Ink bounds come off a
+        low-dpi raster and a descender or hairline rule can fall just
+        outside the box, so this is how that is bought back. Insets clamp
+        at zero rather than going negative.
+    :param dpi: scan resolution, passed to :func:`ink_bbox`.
+    :param split_parity: measure odd and even pages separately, which is
+        the case ``crop_even_pt`` exists for -- a scanned book's gutter
+        alternates sides, so one answer cannot fit both. ``False``
+        measures the document as a whole and returns it as the odd value
+        with ``None`` for even.
+    :returns: ``(odd, even)`` insets, either of which is ``None`` when
+        nothing was measurable -- a document with no ink is not cropped,
+        because "content touches every edge" and "there is no content" are
+        different answers and only one of them means do nothing.
+    """
+    groups: dict[bool, list[Insets]] = {True: [], False: []}
+    for page in pages:
+        if page.skipped or is_blank_page(page):
+            continue
+        ref = page.ref
+        x0, y0, x1, y1 = ink_bbox(ref, dpi)
+        if x1 <= x0 or y1 <= y0:
+            # A blank page's degenerate box. Folded in unexamined it reads
+            # as "content touches every edge" and silently disables the
+            # crop for the whole document.
+            continue
+        insets = (x0, y0, ref.width_pt - x1, ref.height_pt - y1)
+        is_odd = (ref.page_index + 1) % 2 == 1
+        groups[is_odd if split_parity else True].append(insets)
+
+    def _least(measured: list[Insets]) -> Insets | None:
+        if not measured:
+            return None
+        return tuple(
+            max(0.0, min(page_insets[edge] for page_insets in measured) - margin_pt)
+            for edge in range(4)
+        )
+
+    return _least(groups[True]), _least(groups[False])
+
+
 def clear_ink_bbox_cache() -> None:
     """Drop every cached ink bbox. Mainly useful for test isolation.
 

@@ -12,6 +12,7 @@ display server present.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import importlib.metadata
 import json
 import os
@@ -488,6 +489,36 @@ def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParse
     return sorted(given)
 
 
+def _apply_auto_crop(pages, settings, args):
+    """Measure the crop from the pages themselves and report what it found.
+
+    Reported rather than applied silently, and reported as the exact
+    ``--crop`` values that reproduce it. A geometry change nobody typed is
+    worth saying out loud, and the numbers are the useful artifact: measure
+    once, then pin them and stop rasterising the document on every run.
+    """
+    from deckle.core.render import auto_crop_insets
+
+    odd, even = auto_crop_insets(pages, margin_pt=args.auto_crop_margin)
+    if odd is None and even is None:
+        print(
+            "note: --auto-crop found no content to measure, so nothing was "
+            "cropped. A scan of blank pages, or a threshold that read the "
+            "whole page as background.",
+            file=sys.stderr,
+        )
+        return settings
+    print(f"auto-crop: --crop {_format_insets(odd)}" if odd else "auto-crop: odd pages not measured")
+    if even is not None:
+        print(f"auto-crop: --crop-even {_format_insets(even)}")
+    return dataclasses.replace(settings, crop_odd_pt=odd, crop_even_pt=even)
+
+
+def _format_insets(insets) -> str:
+    """Insets as a `--crop` value, so the output can be pasted back in."""
+    return ",".join(f"{v:.1f}pt" for v in insets)
+
+
 def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | None:
     """Turn ``args.source`` into pages plus the layout to impose them with.
 
@@ -519,7 +550,10 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
     pages = _load_source_or_report(args.source)
     if pages is None:
         return None
-    return pages, _build_layout_settings(args)
+    settings = _build_layout_settings(args)
+    if getattr(args, "auto_crop", False):
+        settings = _apply_auto_crop(pages, settings, args)
+    return pages, settings
 
 
 def _load_source_or_report(path: str) -> list[SourcePage] | None:
@@ -653,6 +687,22 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
             "from the left, bottom, right and top, e.g. 0.5in,0.25in,"
             "0.5in,0.25in. Cropping a scan's wide margins is what lets the "
             "type stay readable at a small trim size"
+        ),
+    )
+    parser.add_argument(
+        "--auto-crop", action="store_true",
+        help=(
+            "measure the crop from where the ink actually is, instead of "
+            "typing it. Odd and even pages are measured separately. Prints "
+            "the values it found so you can pin them with --crop"
+        ),
+    )
+    parser.add_argument(
+        "--auto-crop-margin", type=_parse_length_pt, default=0.0,
+        metavar="LENGTH",
+        help=(
+            "keep this much back from every edge found by --auto-crop, "
+            "for descenders and hairline rules a low-dpi scan can miss"
         ),
     )
     parser.add_argument(
