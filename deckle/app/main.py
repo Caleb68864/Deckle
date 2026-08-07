@@ -32,6 +32,7 @@ from deckle.core.project_io import (
     save_project,
 )
 from deckle.core.profiles import BUILTIN_PRESETS
+from deckle.core import recent
 
 LETTER_PT = (612.0, 792.0)
 
@@ -305,6 +306,23 @@ def _qt_vertical():
     return Qt.Orientation.Vertical
 
 
+def _recent_label(path: str) -> str:
+    """A menu label for a recent project: its name, then its folder.
+
+    Two projects called ``book.deckle`` in different folders are a normal
+    thing to have, and a list showing the same word twice would be worse
+    than no list.
+    """
+    return f"{os.path.basename(path)}  --  {os.path.dirname(path)}"
+
+
+def _new_menu(parent):
+    """A ``QMenu``. Patchable seam, like :func:`_new_thread`."""
+    from PySide6.QtWidgets import QMenu
+
+    return QMenu(parent)
+
+
 def _qt_widgets():
     from PySide6.QtWidgets import (
         QHBoxLayout,
@@ -409,6 +427,20 @@ class MainWindow:
         )
         controls_layout.addWidget(self.open_project_button)
 
+        # A menu rather than a submenu of Open: the list is the whole
+        # point, and burying it one click deeper than the dialog it
+        # exists to save you from would defeat it.
+        self.recent_button = QPushButton("Recent projects", controls)
+        self.recent_button.setToolTip(
+            "Projects you have opened or saved, most recent first.\n\n"
+            "A project on a drive that is not currently connected is "
+            "hidden rather than forgotten, and comes back when the "
+            "drive does."
+        )
+        self._recent_menu = _new_menu(self.recent_button)
+        self.recent_button.setMenu(self._recent_menu)
+        controls_layout.addWidget(self.recent_button)
+
         self.save_project_button = QPushButton("Save project...", controls)
         self.save_project_button.setToolTip(SAVE_PROJECT_TOOLTIP)
         controls_layout.addWidget(self.save_project_button)
@@ -492,6 +524,7 @@ class MainWindow:
         #: bar has ONE writer and a later import cannot leave a stale
         #: instruction up.
         self._printer_message = ""
+        self._refresh_recent_menu()
         self._sync_document_actions()
         self._sync_history_actions()
         self._install_shortcuts()
@@ -754,6 +787,32 @@ class MainWindow:
         self.undo_button.setEnabled(self.state.can_undo)
         self.redo_button.setEnabled(self.state.can_redo)
 
+    def _refresh_recent_menu(self) -> None:
+        """Rebuild the Recent projects menu from the store.
+
+        Rebuilt rather than appended to, so an entry cannot appear twice
+        after a project is reopened and so a file that has since gone
+        drops out without any bookkeeping to keep in step.
+
+        :returns: nothing, and never raises. A convenience menu that
+            could not be built must not be what stops the window opening.
+        """
+        menu = getattr(self, "_recent_menu", None)
+        if menu is None:
+            return
+        try:
+            menu.clear()
+            paths = recent.existing()
+            for path in paths:
+                action = menu.addAction(_recent_label(path))
+                action.setToolTip(path)
+                action.triggered.connect(
+                    lambda _checked=False, target=path: self.open_project(target)
+                )
+            self.recent_button.setEnabled(bool(paths))
+        except Exception as exc:  # noqa: BLE001 -- convenience, never fatal
+            log_exception("recent_menu_refresh_failed", exc)
+
     def _on_open_project_clicked(self) -> None:
         """Open a saved project, replacing whatever is loaded.
 
@@ -763,8 +822,14 @@ class MainWindow:
         """
         from PySide6.QtWidgets import QFileDialog
 
+        # Start where the last project came from. An empty string here
+        # meant every open began wherever the OS thought best, which is
+        # rarely the folder holding the job you are working on.
         path, _ = QFileDialog.getOpenFileName(
-            self.window, "Open project", "", "Deckle projects (*.deckle)"
+            self.window,
+            "Open project",
+            recent.last_directory(),
+            "Deckle projects (*.deckle)",
         )
         if not path:
             return
@@ -819,6 +884,8 @@ class MainWindow:
             log_exception("project_open_failed", exc, path=path)
             return False
 
+        recent.record(path)
+        self._refresh_recent_menu()
         self.state = AppState(project, project_path=path)
         self.import_view.state = self.state
         self.arrange_view.state = self.state
@@ -870,6 +937,10 @@ class MainWindow:
             log_exception("project_write_failed", exc, path=path)
             return
         self.state.project_path = path
+        # Saving is how a project first comes into existence, so it
+        # belongs in the list as much as opening one does.
+        recent.record(path)
+        self._refresh_recent_menu()
         self.status_bar.showMessage(f"Saved project to {path}")
         log_event("project_saved", path=path, pages=len(self.state.project.pages))
 

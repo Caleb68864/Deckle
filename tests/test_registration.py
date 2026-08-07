@@ -66,7 +66,7 @@ def test_every_builtin_preset_defaults_to_no_correction():
 
 def test_the_offsets_survive_a_save_and_load(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("deckle.core.profiles.sys.platform", "linux")
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
 
     _profile(back_offset_x_pt=3.5, back_offset_y_pt=-2.25).save("Calibrated")
 
@@ -78,7 +78,7 @@ def test_the_offsets_survive_a_save_and_load(tmp_path, monkeypatch):
 def test_a_profile_written_before_this_feature_still_loads(tmp_path, monkeypatch):
     """Adding a field must not orphan every profile already on disk."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("deckle.core.profiles.sys.platform", "linux")
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
     directory = tmp_path / "deckle" / "printer_profiles"
     directory.mkdir(parents=True)
     (directory / "Old.json").write_text(
@@ -108,7 +108,7 @@ def test_a_profile_from_a_newer_build_loads_instead_of_raising(tmp_path, monkeyp
     one -- the same latent break already fixed once for LayoutSettings.
     Adding a field today is exactly the change that trips it."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("deckle.core.profiles.sys.platform", "linux")
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
     directory = tmp_path / "deckle" / "printer_profiles"
     directory.mkdir(parents=True)
     payload = {
@@ -320,7 +320,7 @@ def test_the_flag_shifts_the_back_of_an_ordinary_export(tmp_path):
 
 def test_a_calibrated_profile_supplies_the_correction(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("deckle.core.profiles.sys.platform", "linux")
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
     _profile(
         flip_axis="short", reverse_stack=False, back_offset_x_pt=4.0,
         back_offset_y_pt=1.5,
@@ -340,7 +340,7 @@ def test_the_flag_overrides_the_profile(tmp_path, monkeypatch):
     """Trying a value has to be possible without editing a JSON file in
     the OS config directory between every attempt."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("deckle.core.profiles.sys.platform", "linux")
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
     _profile(
         flip_axis="short", reverse_stack=False, back_offset_x_pt=4.0,
         back_offset_y_pt=1.5,

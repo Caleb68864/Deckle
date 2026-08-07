@@ -29,9 +29,11 @@ of it.
    core.render
    core.dummy
    core.locate
+   core.paths
    core.project_io
    core.outputs
    core.printing
+   core.recent
    core.profiles
    core.print_session
    core.schedule

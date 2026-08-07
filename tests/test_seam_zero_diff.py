@@ -37,7 +37,18 @@ PINNED_SHA256 = {
 # adding a field is exactly what breaks it, as the 2026-08-04 entry for
 # `LayoutSettings` records. Deliberate, and outside the SS-04 seam this
 # test guards: the pass planner and `_hash_plan` are untouched.
-    "deckle/core/profiles.py": "eeef0cc989d24d3acd10e7fe05ce1c16e0d049ec2542fdca4d8d48ff3d8a9e62",
+# profiles.py re-pinned again 2026-08-06: the OS config-directory decision
+# moved to `deckle.core.paths`, because the recent-projects list needs the
+# same answer and two copies could drift -- putting a user's profiles
+# somewhere their recent list was not.
+#
+# **This pin has now been regenerated three times in one day**, each for a
+# change that was deliberate and outside the SS-04 seam it guards. That is
+# the signal the docstring above asks for: the sub-spec this protects is
+# long finished, and the test now catches ordinary maintenance rather than
+# a zero-diff violation. Retiring it is worth a decision -- it is not
+# doing the job it was written to do.
+    "deckle/core/profiles.py": "c0a310697716913b053219af5cc021c5e47a7c3780873cd8d2b38d194ae6c9d2",
 }
 
 

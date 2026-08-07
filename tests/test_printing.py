@@ -130,7 +130,7 @@ def test_print_pass_and_print_result_and_print_backend_shapes():
 
 def test_printer_profile_save_and_load_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    monkeypatch.setattr("deckle.core.profiles.sys.platform", "linux")
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
 
     profile = _profile()
     profile.save("My Test Printer")

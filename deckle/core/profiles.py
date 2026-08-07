@@ -18,12 +18,12 @@ This module must not import any Qt binding -- see
 from __future__ import annotations
 
 import json
-import os
-import sys
 import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
+
+from deckle.core.paths import config_dir
 
 
 @dataclass(frozen=True)
@@ -115,14 +115,14 @@ class PrinterProfile:
 
 
 def _config_dir() -> Path:
-    """The OS-appropriate config directory for Deckle's printer profiles."""
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "Deckle" / "printer_profiles"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Deckle" / "printer_profiles"
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "deckle" / "printer_profiles"
+    """The OS-appropriate config directory for Deckle's printer profiles.
+
+    The three-way platform answer now lives in
+    :func:`deckle.core.paths.config_dir`, because the recent-projects list
+    needs the same one and two copies could drift -- leaving a user's
+    profiles somewhere their recent list was not.
+    """
+    return config_dir("printer_profiles")
 
 
 def _profile_path(name: str) -> Path:
