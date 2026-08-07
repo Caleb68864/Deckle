@@ -383,6 +383,7 @@ def export(
     rule: bool = False,
     side: str | None = None,
     rotate_180: bool = False,
+    back_offset_pt: tuple[float, float] = (0.0, 0.0),
 ) -> None:
     """Render ``plan`` (or the sheets in ``sheets``) to a PDF at ``out_path``.
 
@@ -418,6 +419,11 @@ def export(
         pass needs when the operator flips the stack on its long edge.
         Applied to the scratch file before it is renamed into place, so the
         output is never briefly present in the wrong orientation.
+    :param back_offset_pt: the front/back registration correction, applied
+        to BACK faces only -- see
+        :attr:`deckle.core.profiles.PrinterProfile.back_offset_x_pt`.
+        Expressed on the paper, so it is negated when ``rotate_180`` turns
+        the face. ``(0.0, 0.0)`` writes nothing at all.
     :returns: nothing.
     :raises OSError: the output directory does not exist, or the scratch
         file cannot be created.
@@ -442,7 +448,18 @@ def export(
     tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(os.path.abspath(out_path)) or None)
     os.close(tmp_fd)
     try:
-        _export_batched(plan, selected, tmp_path, rule, side)
+        _export_batched(
+            plan,
+            selected,
+            tmp_path,
+            rule=rule,
+            side=side,
+            # By keyword: these two are both "extra behaviour flags" and
+            # positionally interchangeable to the reader, so an argument
+            # order that drifts would swap a tuple and a bool silently.
+            back_offset_pt=back_offset_pt,
+            rotate_180=rotate_180,
+        )
         if rotate_180:
             rotate_pages_180(tmp_path)
         # Checked on the scratch file, before it is renamed into place: a
@@ -457,6 +474,58 @@ def export(
     finally:
         if os.path.exists(tmp_path):
             _safe_remove(tmp_path)
+
+
+def _is_back_face(sheet: Sheet, side: str | None, position: int) -> bool:
+    """Whether the face at ``position`` in ``_sides(sheet, side)`` is a back.
+
+    Under ``side="back"`` every face is one. Under ``side="front"`` none
+    is. In a both-faces export the faces are front then back, so the back
+    is whichever entry is not the front -- which is position 1 normally,
+    and position 0 on a sheet that has a back and no front.
+    """
+    if side == "back":
+        return True
+    if side == "front":
+        return False
+    return position == (1 if sheet.front is not None else 0)
+
+
+def _apply_back_offset(
+    dest_page: pikepdf.Page,
+    offset_pt: tuple[float, float],
+    rotate_180: bool,
+) -> None:
+    """Shift a whole back face by the registration correction.
+
+    Applied as a page-level translation wrapping everything already
+    composed -- placements, marks and rule alike. Two reasons it is not
+    done by adjusting each ``Placement``: this module promises never to
+    modify a ``Placement`` the imposer produced (see the module
+    docstring), and the correction is not a layout decision at all. The
+    layout is right; the printer is putting it in the wrong place, and the
+    fold line and sewing stations have to move with the content or they
+    would no longer mark where the content actually is.
+
+    **The rotation interaction is the subtle part.** A long-edge back pass
+    is turned a half turn, and a point reflection maps a translation to
+    its negation -- so a correction measured on the paper has to be
+    inverted in page space to survive the turn. Applied unchanged it would
+    move the back exactly twice as far wrong as leaving it alone.
+
+    :param dest_page: the composed back face.
+    :param offset_pt: the correction on the paper, ``(dx, dy)``.
+    :param rotate_180: whether this face will be turned a half turn.
+    :returns: nothing. A zero offset writes nothing at all, so an
+        uncalibrated printer produces byte-for-byte what it always did.
+    """
+    dx, dy = offset_pt
+    if rotate_180:
+        dx, dy = -dx, -dy
+    if dx == 0.0 and dy == 0.0:
+        return
+    dest_page.contents_add(f"q\n1 0 0 1 {dx:g} {dy:g} cm\n".encode("latin-1"), prepend=True)
+    dest_page.contents_add(b"Q\n")
 
 
 class ExportVerificationError(Exception):
@@ -568,6 +637,7 @@ def _export_batched(
     rule: bool = False,
     side: str | None = None,
     rotate_180: bool = False,
+    back_offset_pt: tuple[float, float] = (0.0, 0.0),
 ) -> None:
     """Assemble ``selected`` sheets into ``tmp_path``, saving/reopening in
     batches of ``_BATCH_SHEETS`` so source handles never accumulate across a
@@ -577,7 +647,8 @@ def _export_batched(
     source_cache: dict[str, pikepdf.Pdf] = {}
     try:
         for i, sheet in enumerate(selected, start=1):
-            for face in _sides(sheet, side):
+            faces = _sides(sheet, side)
+            for position, face in enumerate(faces):
                 dest_page = out.add_blank_page(page_size=plan.paper_pt)
                 # `None` is a face that does not exist on a sheet a pass
                 # still has to feed -- the blank page above is the whole
@@ -588,6 +659,8 @@ def _export_batched(
                     _draw_marks(dest_page, face.marks)
                 if rule:
                     _draw_proof_rule(dest_page, plan.paper_pt)
+                if _is_back_face(sheet, side, position):
+                    _apply_back_offset(dest_page, back_offset_pt, rotate_180)
 
             if i % _BATCH_SHEETS == 0 and i != len(selected):
                 _flush_batch(out, source_cache, tmp_path)

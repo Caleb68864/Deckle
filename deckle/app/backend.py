@@ -171,6 +171,7 @@ def _render_sheet_side(
     dpi: int,
     rotate_backs: bool,
     ignore_rotate: bool,
+    back_offset_pt: tuple[float, float] = (0.0, 0.0),
 ) -> RenderedPage:
     """Render one side of one sheet, applying back-side rotation if asked.
 
@@ -179,7 +180,12 @@ def _render_sheet_side(
     single-sheet PDF itself so pikepdf can rotate the page before pdfium
     rasterizes it -- ``render_sheet`` has no rotation hook.
     """
-    if not (side == "back" and rotate_backs):
+    corrected = side == "back" and back_offset_pt != (0.0, 0.0)
+    if not (side == "back" and rotate_backs) and not corrected:
+        # The shared preview cache is keyed on the plan alone, which
+        # knows nothing about a printer correction -- so anything
+        # carrying one exports for itself rather than risking a
+        # cached uncorrected render being sent to paper.
         return render_sheet(plan, sheet_index, side, dpi)
 
     by_index = {sheet.index: sheet for sheet in plan.sheets}
@@ -192,8 +198,11 @@ def _render_sheet_side(
     fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
     os.close(fd)
     try:
-        export.export(plan, tmp_path, sheets=[sheet_index])
-        _apply_rotate_backs(tmp_path, ignore_rotate)
+        export.export(
+            plan, tmp_path, sheets=[sheet_index], back_offset_pt=back_offset_pt
+        )
+        if side == "back" and rotate_backs:
+            _apply_rotate_backs(tmp_path, ignore_rotate)
 
         page_index = 1 if has_front else 0
         pdf = pdfium.PdfDocument(tmp_path)
@@ -452,6 +461,10 @@ class QtPrintBackend:
                     dpi,
                     rotate_backs,
                     printer_name in self._drivers_ignoring_rotate,
+                    back_offset_pt=(
+                        self.profile.back_offset_x_pt,
+                        self.profile.back_offset_y_pt,
+                    ),
                 )
                 self._paint_rendered_page(painter, printer, rendered)
         finally:

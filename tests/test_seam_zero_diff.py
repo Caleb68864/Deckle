@@ -30,7 +30,14 @@ from pathlib import Path
 # planner are untouched, and profiles.py still matches its original pin.
 PINNED_SHA256 = {
     "deckle/core/printing.py": "41a0d2ff4a3a9ad9a10ef1ef4b918c0c1656f774badc4bbd5757de6d27f07922",
-    "deckle/core/profiles.py": "390ebd76acd340aec2fd327d1edf3e7c01250026e6b35068d3c85e268c88ae95",
+# profiles.py re-pinned 2026-08-06: `back_offset_x_pt`/`back_offset_y_pt`
+# were added for the front/back registration correction, and `load` was
+# made tolerant of field drift in both directions. The tolerance is not
+# incidental to that change -- `cls(**data)` is a schema contract, and
+# adding a field is exactly what breaks it, as the 2026-08-04 entry for
+# `LayoutSettings` records. Deliberate, and outside the SS-04 seam this
+# test guards: the pass planner and `_hash_plan` are untouched.
+    "deckle/core/profiles.py": "eeef0cc989d24d3acd10e7fe05ce1c16e0d049ec2542fdca4d8d48ff3d8a9e62",
 }
 
 

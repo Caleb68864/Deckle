@@ -445,6 +445,49 @@ changed, versus Deckle's own session format changed. They need different
 answers, and conflating them would send you hunting for an edit you never
 made.
 
+### Front/back registration — making the back land behind the front
+
+Consumer printers do not put the second side exactly behind the first, and a
+manual-duplex reload is worse than a real duplexer because you re-register the
+stack by hand against the paper guides. Fold a folio sheet and the error
+doubles and becomes visible: the spine margin differs between recto and verso,
+and trimming the fore-edge leaves the text block off-centre on every other
+page. On a gutter-shift job one side of every leaf gets a narrower gutter, and
+a 3-hole punch eats into text on the tighter side.
+
+Deckle corrects it with two numbers per printer:
+
+```bash
+python -m deckle.cli export book.pdf -o out.pdf --back-offset 3,-2
+# registration: back faces moved +3, -2pt (--back-offset).
+```
+
+`X,Y` are in points unless you give a unit (`0.5mm,-1mm`, `-0.25in,0`), and
+they are the **correction** — how far the back-side content moves, `+x` right
+and `+y` up. Fronts are never touched: the front is the reference the back is
+being aligned to.
+
+Store them on the profile once you know them, as `back_offset_x_pt` and
+`back_offset_y_pt` in the printer's JSON file, and every `--pass back` and
+every desktop print run applies them without the flag. `--back-offset`
+overrides the stored value, which is what makes trial-and-error bearable.
+
+**Finding your two numbers.** The calibration wizard is not built, so this is
+currently iterative:
+
+1. Print one sheet, both sides, with a ruler on each face:
+   `--sheets 0 --rule`, once with `--pass front` and once with `--pass back`.
+2. Hold the sheet to a bright light. The two rules should sit exactly on top
+   of one another. Note which way the back is off, and by how much.
+3. Try that as `--back-offset`, reprint, and look again. If it got worse,
+   flip the sign — the through-the-paper view mirrors one axis, and one
+   reprint settles the direction faster than reasoning about it does.
+4. Two or three rounds is normal. Write the result into the profile.
+
+> **It corrects a constant offset.** It cannot correct rotational skew or a
+> scale error. If the two rules are not parallel, or differ in length, that is
+> a different problem and this will not fix it.
+
 ### Manual duplex from the CLI
 
 The desktop app drives the printer directly. The CLI writes each pass as its

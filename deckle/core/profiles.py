@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
@@ -48,6 +49,36 @@ class PrinterProfile:
     calibrated_at: str
     calibration_version: int
 
+    back_offset_x_pt: float = 0.0
+    back_offset_y_pt: float = 0.0
+    """How far to move back-side content so it lands behind the front.
+
+    Consumer printers do not put the second side exactly behind the first,
+    and a manual-duplex reload is worse than a real duplexer because the
+    stack is re-registered by hand against the paper guides. Fold a folio
+    sheet and the error doubles and becomes visible: the spine margin
+    differs between recto and verso, and trimming the fore-edge leaves the
+    text block off-centre on every other page. On a gutter-shift job one
+    side of every leaf ends up with a narrower gutter, and a 3-hole punch
+    eats into text on the tighter side.
+
+    No other imposition tool can correct this, because every one of them
+    ends at a PDF and cannot know what a particular printer does to the
+    second side. Deckle drives the printer, so it can.
+
+    **The stored numbers are the correction, not the error** -- the
+    distance the back-side content is moved when printing, in PDF points,
+    +x right and +y up. A target showing the back sitting 3pt left of
+    where it belongs is corrected with ``back_offset_x_pt = +3``.
+
+    Both default to ``0.0``: an uncalibrated printer behaves exactly as it
+    did before this existed. Zero is the identity here, never a guess.
+
+    **This corrects a constant translation only.** It cannot correct
+    rotational skew or a scale error, and anything surfacing it should say
+    so rather than implying it fixes all misregistration.
+    """
+
     def save(self, name: str) -> None:
         """Persist this profile as JSON, keyed by printer ``name``."""
         path = _profile_path(name)
@@ -58,11 +89,29 @@ class PrinterProfile:
 
     @classmethod
     def load(cls, name: str) -> "PrinterProfile":
-        """Load a previously-saved profile for printer ``name``."""
+        """Load a previously-saved profile for printer ``name``.
+
+        Tolerates field drift in both directions: keys this build does not
+        recognise are dropped, and keys it expects but does not find fall
+        back to the dataclass defaults.
+
+        That is not speculative hardening. ``cls(**data)`` is a schema
+        contract whether or not it was written as one, and the same latent
+        break was already found and fixed once for ``LayoutSettings`` --
+        see the 2026-08-04 decision-log entry, whose closing note is that
+        any ``Type(**stored_dict)`` breaks on the next field change.
+        Adding ``back_offset_x_pt``/``back_offset_y_pt`` is that change:
+        without this, a profile written by a build that has them cannot be
+        read by one that does not, and a calibration measured once would
+        be lost by a downgrade rather than ignored.
+        """
         path = _profile_path(name)
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["imageable_area_pt"] = tuple(data["imageable_area_pt"])
-        return cls(**data)
+        known = {field.name for field in dataclasses.fields(cls)}
+        kwargs = {key: value for key, value in data.items() if key in known}
+        if "imageable_area_pt" in kwargs:
+            kwargs["imageable_area_pt"] = tuple(kwargs["imageable_area_pt"])
+        return cls(**kwargs)
 
 
 def _config_dir() -> Path:

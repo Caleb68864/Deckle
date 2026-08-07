@@ -51,6 +51,20 @@ Everything else is weaker and is marked where it matters:
 
 ---
 
+## Status since this was written
+
+This is a point-in-time analysis and is not revised as work lands, so the
+ranking below still reads as though nothing has been built. What has:
+
+- **#1 front/back registration offset** — shipped 2026-08-06, CLI and desktop
+  print path. Measuring the two numbers is still manual; the calibration
+  wizard is what closes that.
+- **#5 grain direction** — shipped 2026-08-05 (`7d7b3a2`).
+- **#8 spine width in the binding schedule** — shipped 2026-08-05 (`7d7b3a2`).
+
+Everything else below is still open. The closing recommendation — *verify
+folio on paper* — is also still open, and still gates #3, #4 and #6.
+
 ## Recommended
 
 Ranked by value to one person, at home, on a duplexer-less printer, binding by

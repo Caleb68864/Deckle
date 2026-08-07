@@ -376,7 +376,7 @@ Not released. Expect breaking changes.
 | **Manual-duplex printing** | Works, on built-in printer presets. |
 | **Binding schedules** | Works. |
 | **Calibration wizard** | **Not built.** Printing uses two generic built-in presets rather than a profile measured from your own printer. |
-| **Front/back registration offset** | Not built. Nobody has it; it is the single clearest thing Deckle could add that no other tool can. |
+| **Front/back registration offset** | **Works, measured by hand.** Two numbers on the printer profile shift every back face so it lands behind its front — `--back-offset`, or `back_offset_x_pt`/`back_offset_y_pt` in the profile. Applied by both the CLI and the desktop print path. No other tool has this, because every other tool ends at a PDF and cannot know what your printer does to the second side. Corrects a **constant** offset only, not skew or scale. Finding your two numbers is currently trial-and-error against a printed proof; the calibration wizard is what will measure them in one pass. |
 | **Cut lines, quarto, octavo, French fold, source cropping** | Not built. See [the gap analysis](docs/research/2026-08-05-competitive-gaps.md) for what is worth building and in what order. |
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |

@@ -792,8 +792,12 @@ def _break_composition(export_mod, monkeypatch) -> None:
     """
     real_batched = export_mod._export_batched
 
-    def losing_a_page(plan, selected, path, rule=False, side=None):
-        real_batched(plan, selected, path, rule, side)
+    def losing_a_page(plan, selected, path, **kwargs):
+        # **kwargs rather than the real parameter list: this stub only
+        # needs to pass everything through, and spelling out the signature
+        # makes it break every time composition grows an option -- which
+        # it has twice already.
+        real_batched(plan, selected, path, **kwargs)
         with pikepdf.open(path, allow_overwriting_input=True) as pdf:
             del pdf.pages[-1]
             pdf.save(path)

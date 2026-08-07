@@ -234,6 +234,62 @@ def _report_missing_sheets(plan, selection: list[int], total: int) -> bool:
     return True
 
 
+_SIGNED_LENGTH_RE = re.compile(
+    r"^\s*([+-]?[0-9]*\.?[0-9]+)\s*(in|pt|mm|cm)?\s*$", re.IGNORECASE
+)
+
+
+def _parse_offset_pair(value: str) -> tuple[float, float]:
+    """A ``--back-offset`` value as ``(dx, dy)`` in points.
+
+    Signed, which is why this does not reuse :func:`_parse_length_pt`:
+    that one's pattern has no sign, because every length it was written
+    for -- a margin, a gutter, a paper edge -- is a magnitude. A
+    registration correction goes both ways by nature, and half of the
+    possible answers would be unsayable without a minus.
+
+    :param value: ``"dx,dy"``, each with an optional unit -- ``3,-2``,
+        ``0.5mm,-1mm``, ``-0.25in,0``.
+    :returns: the pair in points.
+    :raises argparse.ArgumentTypeError: not two values, or either
+        unparseable.
+    """
+    parts = value.split(",")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"invalid back-offset {value!r}: expected two values, x and y, "
+            "separated by a comma -- e.g. 3,-2 or 0.5mm,-1mm"
+        )
+    pair = []
+    for part in parts:
+        match = _SIGNED_LENGTH_RE.match(part)
+        if not match:
+            raise argparse.ArgumentTypeError(
+                f"invalid back-offset {value!r}: {part.strip()!r} is not a "
+                f"signed number with an optional unit "
+                f"({', '.join(_ACCEPTED_LENGTH_UNITS)})"
+            )
+        number, unit = match.groups()
+        pair.append(float(number) * (_UNIT_TO_PT[unit.lower()] if unit else 1.0))
+    return (pair[0], pair[1])
+
+
+def _report_registration(offset_pt: tuple[float, float], source: str) -> None:
+    """Say that back faces were moved, and by how much.
+
+    The correction usually comes from a saved profile rather than from
+    this invocation, so without this the geometry would change for
+    reasons nothing on screen mentions. It also cannot be seen in the
+    output: a shifted back looks exactly like an unshifted one until it
+    is printed and held up against its own front.
+    """
+    dx, dy = offset_pt
+    print(
+        f"registration: back faces moved {dx:+g}, {dy:+g}pt ({source}). "
+        "Corrects a constant offset only -- not skew or scale."
+    )
+
+
 def _resolve_profile(name: str):
     """The printer profile called ``name``: saved first, then built-in.
 
@@ -638,6 +694,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
     side = None
     rotate_180 = False
     print_pass = None
+    back_offset = (0.0, 0.0)
+    offset_source = ""
     if args.pass_side is not None:
         if args.profile is None:
             print(
@@ -652,10 +710,16 @@ def _cmd_export(args: argparse.Namespace) -> int:
         profile = _resolve_profile(args.profile)
         if profile is None:
             return 1
+        back_offset = (profile.back_offset_x_pt, profile.back_offset_y_pt)
+        offset_source = f"profile {args.profile!r}"
         print_pass = _pass_for(plan, args.pass_side, profile, selection)
         side = args.pass_side
         selection = print_pass.sheet_order
         rotate_180 = print_pass.side == "back" and print_pass.rotate_backs
+
+    if args.back_offset is not None:
+        back_offset = args.back_offset
+        offset_source = "--back-offset"
 
     try:
         export_plan(
@@ -665,6 +729,7 @@ def _cmd_export(args: argparse.Namespace) -> int:
             rule=args.rule,
             side=side,
             rotate_180=rotate_180,
+            back_offset_pt=back_offset,
         )
     except OSError as exc:
         _report_write_failure(args.output, exc)
@@ -677,6 +742,8 @@ def _cmd_export(args: argparse.Namespace) -> int:
         log_exception("export_failed", exc, path=args.output)
         return 1
     print(f"wrote {args.output}")
+    if back_offset != (0.0, 0.0):
+        _report_registration(back_offset, offset_source)
     if print_pass is not None:
         print(print_pass.reload_instruction)
     if args.rule:
@@ -829,6 +896,18 @@ def build_parser() -> argparse.ArgumentParser:
             "write one manual-duplex pass instead of both faces: every "
             "front, or every back in the order your printer's reload "
             "behaviour demands. Requires --profile"
+        ),
+    )
+    export_parser.add_argument(
+        "--back-offset",
+        type=_parse_offset_pair,
+        default=None,
+        metavar="X,Y",
+        help=(
+            "move back faces by X,Y so they land behind their fronts -- a "
+            "front/back registration correction, e.g. 3,-2 or 0.5mm,-1mm. "
+            "Overrides the value stored in --profile. Corrects a constant "
+            "offset only, not skew or scale"
         ),
     )
     export_parser.add_argument(
