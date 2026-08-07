@@ -108,9 +108,12 @@ def test_plan_hash_separates_pages_that_would_otherwise_concatenate():
     """
     first = SourceRef(path="a", page_index=0, sha256="s1", width_pt=1.0, height_pt=2.0)
     second = SourceRef(path="b", page_index=1, sha256="s2", width_pt=3.0, height_pt=4.0)
-    # Exactly `first`'s key text, then `second`'s leading path field.
+    # Exactly `first`'s key text, then `second`'s leading path field. The
+    # trailing `|None` is the crop, which is part of the key because a
+    # plan differing only by crop must not reuse another's render -- so
+    # the colliding path has to reproduce that field too.
     merged = SourceRef(
-        path="a:0:s1:1.0:2.0|1.0:1.0:0.0:0.0:0|Falseb",
+        path="a:0:s1:1.0:2.0|1.0:1.0:0.0:0.0:0|False|Noneb",
         page_index=1,
         sha256="s2",
         width_pt=3.0,

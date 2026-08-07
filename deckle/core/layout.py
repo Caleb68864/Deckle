@@ -125,10 +125,72 @@ def _pad_to_even(pages: list[SourcePage]) -> tuple[list[SourcePage | None], bool
     return slots, padded
 
 
-def _source_dims(page: SourcePage) -> tuple[float, float]:
-    """The upright (unrotated-by-us) width/height of a source page's content."""
+def crop_for(
+    page: SourcePage, settings: LayoutSettings
+) -> tuple[float, float, float, float] | None:
+    """The crop insets that apply to ``page``, or ``None``.
+
+    Odd and even are chosen by the page number a reader would say, so
+    ``page_index`` 0 is page 1 and odd. A scanned book alternates its
+    margins -- the gutter swaps sides on every leaf -- so a single
+    rectangle cannot fit both and the two are configured separately.
+
+    Setting only ``crop_odd_pt`` crops the whole document, which is the
+    common case and needs no second value.
+
+    :param page: the source page.
+    :param settings: supplies the two crop rectangles.
+    :returns: ``(left, bottom, right, top)`` insets, or ``None``.
+    """
+    is_even_page = (page.ref.page_index + 1) % 2 == 0
+    if is_even_page and settings.crop_even_pt is not None:
+        return settings.crop_even_pt
+    return settings.crop_odd_pt
+
+
+def _cropped_dims(
+    width: float, height: float, crop: tuple[float, float, float, float] | None
+) -> tuple[float, float]:
+    """``(width, height)`` after ``crop``, validating that anything remains.
+
+    :raises ValueError: an inset is negative -- which would *add* space and
+        place content outside its own page box -- or the opposing insets
+        meet, leaving no content to impose.
+    """
+    if crop is None:
+        return width, height
+    left, bottom, right, top = crop
+    if min(crop) < 0:
+        raise ValueError(
+            f"crop {crop} has a negative inset: a crop removes space, and "
+            "the margin settings are what add it"
+        )
+    cropped_w = width - left - right
+    cropped_h = height - bottom - top
+    if cropped_w <= 0 or cropped_h <= 0:
+        raise ValueError(
+            f"crop {crop} leaves nothing of a {width:g}x{height:g}pt page"
+        )
+    return cropped_w, cropped_h
+
+
+def _source_dims(
+    page: SourcePage, settings: LayoutSettings | None = None
+) -> tuple[float, float]:
+    """The upright (unrotated-by-us) width/height of a source page's content.
+
+    With ``settings``, this is the size *after* cropping -- the single
+    place the cropped size is derived, so ``document_scale`` and
+    ``_place_page`` cannot disagree about how big a page is.
+
+    The crop is applied before the rotation swap, because the insets are
+    named in the source page's own orientation: "left" is the left edge of
+    the page as it exists in the file, not of the cell Deckle puts it in.
+    """
     width = page.ref.width_pt
     height = page.ref.height_pt
+    if settings is not None:
+        width, height = _cropped_dims(width, height, crop_for(page, settings))
     if page.rotate_deg in (90, 270):
         width, height = height, width
     return width, height
@@ -229,7 +291,7 @@ def _rotates_to_portrait(src_w: float, src_h: float, settings: LayoutSettings) -
 
 def _fitted_dims(slot: SourcePage, settings: LayoutSettings) -> tuple[float, float]:
     """A page's upright dimensions after any landscape rotation."""
-    src_w, src_h = _source_dims(slot)
+    src_w, src_h = _source_dims(slot, settings)
     if _rotates_to_portrait(src_w, src_h, settings):
         src_w, src_h = src_h, src_w
     return src_w, src_h
@@ -305,7 +367,7 @@ def _place_page(
         placement = Placement(scale_x=1.0, scale_y=1.0, tx=cx0, ty=cy0, rotate_deg=0)
         return OutputPage(source_ref=None, placement=placement, is_filler=True)
 
-    src_w, src_h = _source_dims(slot)
+    src_w, src_h = _source_dims(slot, settings)
     rotate_deg = 0
 
     # Landscape content inside a portrait cell (or vice versa) under the
@@ -427,7 +489,12 @@ def _place_page(
         ty=ty,
         rotate_deg=rotate_deg,
     )
-    return OutputPage(source_ref=slot.ref, placement=placement, is_filler=False)
+    return OutputPage(
+        source_ref=slot.ref,
+        placement=placement,
+        is_filler=False,
+        crop_pt=crop_for(slot, settings),
+    )
 
 
 def content_box_rect_pt(

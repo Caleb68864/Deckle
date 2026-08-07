@@ -120,6 +120,20 @@ class OutputPage:
     source_ref: SourceRef | None
     placement: Placement
     is_filler: bool
+    crop_pt: tuple[float, float, float, float] | None = None
+    """Insets removed from the source page before placing it, or ``None``.
+
+    Carried here because the imposer decides it and the exporter only
+    reproduces it -- the exporter is never handed ``LayoutSettings``, and
+    working the crop out for itself would make it a second implementation
+    of a layout decision, free to disagree with the plan the preview and
+    the schedule were built from.
+
+    ``placement.scale_x`` and ``tx``/``ty`` already describe the *cropped*
+    content, so a consumer that ignores this field draws the whole source
+    page scaled as though it were cropped -- which is why it is part of
+    the export cache key.
+    """
 
 
 @dataclass(frozen=True)
@@ -395,6 +409,34 @@ class LayoutSettings:
     paper_thickness_pt: float = 0.0
     sewing_stations: int = 3
     blank_mode: Literal["end","balanced"] = "end"
+
+    crop_odd_pt: tuple[float, float, float, float] | None = None
+    crop_even_pt: tuple[float, float, float, float] | None = None
+    """Space removed from each source page before it is imposed.
+
+    ``(left, bottom, right, top)`` insets in points, or ``None`` for no
+    crop. Every other setting here *adds* space; this is the only one that
+    takes it away, and without it there is no way to remove whitespace
+    already baked into the source.
+
+    That matters more than it sounds. The usual source for a hand-bound
+    book is a scan or a public-domain PDF typeset for a different trim
+    size, carrying an inch or more of white on every edge. Scaling it into
+    a small cell scales the margins too, so the type comes out tiny and
+    the page mostly empty. Cropping first is the only way to get readable
+    type at a small trim size.
+
+    **Insets, not an absolute rectangle.** One document can hold pages of
+    different sizes -- the book that motivated ``document_scale`` has 264
+    pages at one width and two outliers -- and a fixed rectangle means
+    something different on each of them. "Half an inch off the left" means
+    the same thing on all of them.
+
+    ``crop_odd_pt`` applies to odd-numbered pages as a reader counts them
+    (page 1 is ``page_index`` 0), ``crop_even_pt`` to even. Setting only
+    ``crop_odd_pt`` crops the whole document; setting both handles a scan
+    whose gutter swaps sides every leaf, which one rectangle cannot fit.
+    """
 
     trim_pt: float = 0.0
     """How deep the finished block is trimmed on its three non-spine edges.

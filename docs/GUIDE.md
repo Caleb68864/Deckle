@@ -236,6 +236,31 @@ recto, right on the verso. That mirror is a real bug that once shipped —
 every test that existed asserted the gutter-left side, where the two modes
 agreed.
 
+**3b. Crop the source, if it came from a scan.** Every other setting adds
+space; `--crop` is the only one that removes it.
+
+```bash
+python -m deckle.cli export scan.pdf -o out.pdf --paper 5.5x8.5in     --gutter 0.5in --crop 1.5in,1.5in,1.5in,1.5in
+```
+
+Four insets — left, bottom, right, top — from each source page's own edges.
+Insets rather than a rectangle because one document can hold pages of
+different sizes, and a fixed rectangle would mean something different on each.
+
+This matters more than it sounds. A public-domain PDF typeset for a different
+trim size carries an inch or more of white on every edge, and scaling it into
+a small cell scales the *margins* too. On a 612×792 scan with 1.5in margins
+imposed into a 5.5×8.5 book, cropping takes the content scale from 0.59 to
+0.91 — 11pt body text lands at 10pt instead of an unreadable 6.5pt.
+
+Use `--crop-even` when the source is a scan whose gutter swaps sides every
+leaf; one rectangle cannot fit both. Without it, `--crop` applies to the whole
+document.
+
+There is no overlay preview yet, and no automatic "trim to content" — both are
+worth building and neither is here. For now, crop, export, and look at the
+result.
+
 **4. Proof one sheet.** Before committing a stack, print sheet 0 on its own.
 Sheets are numbered from 0, the same as everywhere else Deckle counts them.
 

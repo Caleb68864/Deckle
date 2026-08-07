@@ -157,6 +157,33 @@ def _reject_unprintable_paper(paper: tuple[float, float], typed: str) -> None:
             )
 
 
+def _parse_crop(value: str) -> tuple[float, float, float, float]:
+    """A ``--crop`` value as ``(left, bottom, right, top)`` insets in points.
+
+    Four lengths, comma-separated, each with an optional unit --
+    ``0.5in,0.25in,0.5in,0.25in`` or ``36,18,36,18``. Insets rather than a
+    rectangle because one document can hold pages of different sizes, and
+    a fixed rectangle would mean something different on each of them.
+
+    Unsigned on purpose: a crop removes space, and the margin settings are
+    what add it. A negative inset would place content outside its own page
+    box, so ``_parse_length_pt``'s refusal of a minus sign is correct here
+    rather than something to work around.
+
+    :param value: the raw flag text.
+    :returns: the four insets in points.
+    :raises argparse.ArgumentTypeError: not four values, or any of them
+        unparseable.
+    """
+    parts = value.split(",")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            f"invalid crop {value!r}: expected four insets -- left, bottom, "
+            "right, top -- e.g. 0.5in,0.25in,0.5in,0.25in"
+        )
+    return tuple(_parse_length_pt(part) for part in parts)
+
+
 def _parse_sheet_selection(value: str) -> list[int]:
     """A ``--sheets`` value as the sheet indices it names, in order.
 
@@ -556,6 +583,8 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         paper_thickness_pt=args.paper_thickness,
         grain=args.grain,
         trim_pt=args.trim_pt,
+        crop_odd_pt=args.crop,
+        crop_even_pt=args.crop_even,
     )
 
 
@@ -616,6 +645,23 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sewing-stations", type=int, default=3,
         help="number of sewing station marks per signature, under --fold-scheme folio (default: 3)",
+    )
+    parser.add_argument(
+        "--crop", type=_parse_crop, default=None, metavar="L,B,R,T",
+        help=(
+            "remove space from every source page before imposing -- insets "
+            "from the left, bottom, right and top, e.g. 0.5in,0.25in,"
+            "0.5in,0.25in. Cropping a scan's wide margins is what lets the "
+            "type stay readable at a small trim size"
+        ),
+    )
+    parser.add_argument(
+        "--crop-even", type=_parse_crop, default=None, metavar="L,B,R,T",
+        help=(
+            "a different crop for even-numbered pages, for a scan whose "
+            "gutter swaps sides every leaf. Without this, --crop applies "
+            "to the whole document"
+        ),
     )
     parser.add_argument(
         "--trim", dest="trim_pt", type=_parse_length_pt, default=0.0,

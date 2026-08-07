@@ -60,6 +60,10 @@ ranking below still reads as though nothing has been built. What has:
   print path. Measuring the two numbers is still manual; the calibration
   wizard is what closes that.
 - **#2 cut lines** — shipped 2026-08-06, `--trim`.
+- **#6 source cropping** — shipped 2026-08-06, `--crop`/`--crop-even`. The
+  briss-style overlay preview and krop's auto-derived "trim margins" are
+  both still open; Deckle's existing ink-bbox cache is the primitive for
+  the latter.
 - **#5 grain direction** — shipped 2026-08-05 (`7d7b3a2`).
 - **#8 spine width in the binding schedule** — shipped 2026-08-05 (`7d7b3a2`).
 

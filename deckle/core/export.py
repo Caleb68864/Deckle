@@ -116,7 +116,7 @@ def _output_page_key(page: OutputPage) -> str:
         f"{placement.scale_x}:{placement.scale_y}:{placement.tx}:"
         f"{placement.ty}:{placement.rotate_deg}"
     )
-    return f"{ref_key}|{placement_key}|{page.is_filler}"
+    return f"{ref_key}|{placement_key}|{page.is_filler}|{page.crop_pt}"
 
 
 def _scale_flags_for(scale: float) -> tuple[bool, bool]:
@@ -168,6 +168,40 @@ def _rotation_matrix(rotate_deg: int, cx: float, cy: float) -> str:
     return f"{cos_t} {sin_t} {-sin_t} {cos_t} {e} {f} cm"
 
 
+def _cropped_source_box(
+    src_page: pikepdf.Page,
+    crop_pt: tuple[float, float, float, float] | None,
+    ref,
+) -> tuple[float, float]:
+    """Apply ``crop_pt`` to ``src_page`` and return the resulting size.
+
+    The crop is enforced by setting the page's ``CropBox``, because
+    ``as_form_xobject()`` takes the form's ``BBox`` from it -- so the
+    cropped-away region is not merely covered up or placed off-sheet, it
+    is outside the form's own bounding box and cannot be drawn at all.
+    ``calc_form_xobject_placement`` then maps that BBox onto the
+    destination rect, which is how the crop's offset is accounted for
+    without any translation arithmetic here.
+
+    Mutating the source page is safe and local: ``source_cache`` is
+    created per export and closed with it, the source file is opened
+    read-only and never saved, and each page's box is set immediately
+    before its own form is built.
+
+    :param src_page: the page to crop, modified in place.
+    :param crop_pt: ``(left, bottom, right, top)`` insets, or ``None``.
+    :param ref: the ``SourceRef``, for the page's measured size.
+    :returns: the ``(width, height)`` the placement should be sized from.
+    """
+    if crop_pt is None:
+        return ref.width_pt, ref.height_pt
+    left, bottom, right, top = crop_pt
+    box = [float(v) for v in src_page.cropbox]
+    x0, y0, x1, y1 = min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])
+    src_page.cropbox = Rectangle(x0 + left, y0 + bottom, x1 - right, y1 - top)
+    return (x1 - x0) - left - right, (y1 - y0) - bottom - top
+
+
 def _place_output_page(
     sheet_pdf: pikepdf.Pdf,
     dest_page: pikepdf.Page,
@@ -186,6 +220,7 @@ def _place_output_page(
         source_cache[ref.path] = src_pdf
 
     src_page = src_pdf.pages[ref.page_index]
+    src_w, src_h = _cropped_source_box(src_page, output_page.crop_pt, ref)
     formx = sheet_pdf.copy_foreign(Page(src_page).as_form_xobject())
     name = dest_page.add_resource(formx, Name.XObject, prefix="Fx")
 
@@ -199,8 +234,8 @@ def _place_output_page(
         # rotate the whole thing about the footprint's center -- this keeps
         # the placement rect's own scale exact while the wrapping transform
         # supplies the rotation Imposer decided on.
-        scaled_w = ref.width_pt * placement.scale_x
-        scaled_h = ref.height_pt * placement.scale_y
+        scaled_w = src_w * placement.scale_x
+        scaled_h = src_h * placement.scale_y
         footprint_w, footprint_h = scaled_h, scaled_w
         cx = placement.tx + footprint_w / 2.0
         cy = placement.ty + footprint_h / 2.0
@@ -219,7 +254,7 @@ def _place_output_page(
         rotation = _rotation_matrix(rotate_deg, cx, cy)
         content_stream = f"q\n{rotation}\n{inner.decode('latin-1')}\nQ\n".encode("latin-1")
     else:
-        rect = _rect_for_placement(placement, ref.width_pt, ref.height_pt)
+        rect = _rect_for_placement(placement, src_w, src_h)
         allow_shrink, allow_expand = _scale_flags_for(placement.scale_x)
         content_stream = dest_page.calc_form_xobject_placement(
             formx,
