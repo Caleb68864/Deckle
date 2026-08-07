@@ -555,6 +555,7 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         sewing_stations=args.sewing_stations,
         paper_thickness_pt=args.paper_thickness,
         grain=args.grain,
+        trim_pt=args.trim_pt,
     )
 
 
@@ -615,6 +616,15 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sewing-stations", type=int, default=3,
         help="number of sewing station marks per signature, under --fold-scheme folio (default: 3)",
+    )
+    parser.add_argument(
+        "--trim", dest="trim_pt", type=_parse_length_pt, default=0.0,
+        metavar="LENGTH",
+        help=(
+            "draw cut lines this far in from head, tail and fore-edge -- "
+            "where the block is trimmed square after sewing, e.g. 0.25in. "
+            "The spine is never cut. Default 0, meaning no cut lines"
+        ),
     )
 
 

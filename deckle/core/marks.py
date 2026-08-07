@@ -12,6 +12,8 @@ meant to make very hard to reproduce here.
 
 from __future__ import annotations
 
+from typing import Sequence
+
 from deckle.core.models import Mark
 
 SEWING_MARGIN_PT = 36.0
@@ -83,6 +85,67 @@ def signature_order_mark(
     y0 = SEWING_MARGIN_PT + sig_index * step
     y1 = y0 + ORDER_BAR_PT
     return Mark(kind="signature_order", x0=fold_x, y0=y0, x1=fold_x, y1=y1)
+
+
+def cut_lines(
+    sheet_w: float,
+    sheet_h: float,
+    trim_pt: float,
+    fore_edges: Sequence[str],
+) -> tuple[Mark, ...]:
+    """Where the knife goes: the trim depth on every edge that is not the spine.
+
+    Cutting and folding are two different physical operations, and drawing
+    one as the other is actively wrong -- which is why this is a distinct
+    ``Mark`` kind and not a fold line at a different place. After sewing,
+    the block is trimmed square on head, tail and fore-edge; a line at the
+    trim depth tells you where the plough or knife goes, and shows you
+    before you cut whether any text is inside it. ``schedule`` already
+    estimates fore-edge creep, and this is that estimate made physical.
+
+    The spine is never included. It is the bound edge, and a cut there
+    takes the book apart.
+
+    :param sheet_w: the sheet width in points.
+    :param sheet_h: the sheet height in points.
+    :param trim_pt: how far in from each edge the cut falls. ``<= 0``
+        returns ``()``, which is how ``trim_pt = 0`` disables cut lines
+        without a second boolean -- the same shape as
+        ``settings.sewing_stations = 0``.
+    :param fore_edges: which vertical edges are fore-edges: ``("right",)``
+        or ``("left",)`` under gutter shift, and **both** under folio,
+        where the fold is in the middle and each leaf has its own.
+    :returns: the cut lines -- head and tail always, plus one per fore
+        edge. Each spans the whole sheet, so a straightedge can be laid
+        along it; a mark that stopped short would have to be extrapolated
+        by eye at the exact moment that is hardest to do accurately.
+    :raises ValueError: ``trim_pt`` is deep enough that opposing cuts meet
+        or cross. Two crossed lines describe no region to keep, and
+        drawing them would confidently instruct a cut that discards the
+        book.
+    """
+    if trim_pt <= 0:
+        return ()
+    if 2 * trim_pt >= min(sheet_w, sheet_h):
+        raise ValueError(
+            f"trim of {trim_pt}pt leaves nothing of a "
+            f"{sheet_w:g}x{sheet_h:g}pt sheet: opposing cuts meet or cross"
+        )
+
+    marks = [
+        Mark(kind="cut_line", x0=0.0, y0=trim_pt, x1=sheet_w, y1=trim_pt),
+        Mark(
+            kind="cut_line",
+            x0=0.0,
+            y0=sheet_h - trim_pt,
+            x1=sheet_w,
+            y1=sheet_h - trim_pt,
+        ),
+    ]
+    for edge in fore_edges:
+        x = trim_pt if edge == "left" else sheet_w - trim_pt
+        marks.append(Mark(kind="cut_line", x0=x, y0=0.0, x1=x, y1=sheet_h))
+    return tuple(marks)
 
 
 def fold_line(sheet_h: float, fold_x: float) -> Mark:

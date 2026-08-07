@@ -396,6 +396,25 @@ class LayoutSettings:
     sewing_stations: int = 3
     blank_mode: Literal["end","balanced"] = "end"
 
+    trim_pt: float = 0.0
+    """How deep the finished block is trimmed on its three non-spine edges.
+
+    ``0.0`` (the default) draws no cut lines at all -- the same shape as
+    ``sewing_stations = 0``, rather than a second boolean whose off-state
+    duplicates a number that can already say it.
+
+    Cutting and folding are different physical operations, so a cut line
+    is a distinct ``Mark`` kind and not a fold line somewhere else. After
+    sewing, the block is trimmed square on head, tail and fore-edge; a
+    line printed at the trim depth is where the plough goes, and it shows
+    you *before* cutting whether any text falls inside it.
+
+    The spine is never trimmed, and which edge that is changes per face:
+    the gutter alternates between recto and verso, so the fore-edge
+    alternates with it. Under ``fold_scheme="folio"`` the fold is in the
+    middle and **both** outer edges are fore-edges.
+    """
+
 
 @dataclass(frozen=True)
 class Project:

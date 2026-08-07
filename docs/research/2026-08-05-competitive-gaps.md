@@ -59,6 +59,7 @@ ranking below still reads as though nothing has been built. What has:
 - **#1 front/back registration offset** — shipped 2026-08-06, CLI and desktop
   print path. Measuring the two numbers is still manual; the calibration
   wizard is what closes that.
+- **#2 cut lines** — shipped 2026-08-06, `--trim`.
 - **#5 grain direction** — shipped 2026-08-05 (`7d7b3a2`).
 - **#8 spine width in the binding schedule** — shipped 2026-08-05 (`7d7b3a2`).
 

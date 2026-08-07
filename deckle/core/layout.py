@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from typing import Literal, Protocol, Sequence, runtime_checkable
 
-from deckle.core.marks import fold_line, sewing_stations, signature_order_mark
+from deckle.core.marks import (
+    cut_lines,
+    fold_line,
+    sewing_stations,
+    signature_order_mark,
+)
 from deckle.core.models import (
     LayoutSettings,
     LayoutWarning,
@@ -593,11 +598,24 @@ class GutterShiftStrategy:
             # ``Side``, not a bare ``OutputPage``. Every consumer downstream
             # of the imposer iterates ``side.pages``, and a 1-up sheet is
             # just the degenerate case of that, not a separate shape.
+            # The gutter alternates between recto and verso, so the
+            # fore-edge -- the only vertical edge that is ever cut --
+            # alternates with it. A cut fixed to one side of the sheet
+            # would fall on the SPINE for every other leaf.
+            paper_w, paper_h = settings.paper
+            front_fore = "right" if settings.binding_edge == "left" else "left"
+            back_fore = "left" if front_fore == "right" else "right"
+            front_cuts = cut_lines(paper_w, paper_h, settings.trim_pt, (front_fore,))
+            back_cuts = cut_lines(paper_w, paper_h, settings.trim_pt, (back_fore,))
             sheets.append(
                 Sheet(
                     index=sheet_index // 2,
-                    front=Side(pages=(front,)),
-                    back=None if back is None else Side(pages=(back,)),
+                    front=Side(pages=(front,), marks=front_cuts),
+                    back=(
+                        None
+                        if back is None
+                        else Side(pages=(back,), marks=back_cuts)
+                    ),
                 )
             )
 
@@ -835,6 +853,14 @@ class SaddleStitchStrategy:
 
                 front_marks: list = [fold_line(paper_h, fold_x)]
                 back_marks: list = [fold_line(paper_h, fold_x)]
+                # Folio folds down the middle, so each face carries two
+                # leaves and BOTH outer edges are fore-edges. The fold
+                # itself is never cut -- that is where the book bends.
+                folio_cuts = cut_lines(
+                    paper_w, paper_h, settings.trim_pt, ("left", "right")
+                )
+                front_marks.extend(folio_cuts)
+                back_marks.extend(folio_cuts)
                 if is_innermost:
                     back_marks.extend(
                         sewing_stations(paper_h, fold_x, settings.sewing_stations)

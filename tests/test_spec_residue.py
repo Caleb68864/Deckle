@@ -200,10 +200,15 @@ def test_fold_reading_order_works_with_saddle_order_disabled(monkeypatch):
 
 _MARKS_CALL_ARGS = {
     "sheet_h": 612.0,
+    "sheet_w": 792.0,
     "fold_x": 396.0,
     "count": 3,
     "sig_index": 1,
     "sig_count": 3,
+    # Non-zero, so `cut_lines` actually returns marks here -- a value that
+    # disables the function would let this test pass on an empty tuple.
+    "trim_pt": 18.0,
+    "fore_edges": ("left", "right"),
 }
 
 
@@ -223,6 +228,7 @@ def test_every_public_function_returns_only_Mark_values():
         "sewing_stations",
         "signature_order_mark",
         "fold_line",
+        "cut_lines",
     }, "marks.py lost a public geometry function -- this test would go vacuous"
 
     for func in functions:
