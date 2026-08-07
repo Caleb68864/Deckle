@@ -336,6 +336,37 @@ gatherings that get sewn through the fold.
 >
 > Two ways to close the question yourself, both cheap. Do one.
 
+**Check 0 — fold a numbered dummy.** Five minutes, and the only one of these
+that answers the question outright.
+
+```bash
+python -m deckle.cli dummy -o dummy.pdf --pages 8
+python -m deckle.cli export dummy.pdf -o dummy-folio.pdf     --fold-scheme folio --paper 11x8.5in
+```
+
+Print it on scrap, fold it in half, and read the numbers. They should run
+1, 2, 3… straight through. Every page carries an underline and a `HEAD`
+label, so a leaf that arrives upside down is obvious — a bare numeral cannot
+tell you, since 6 and 9 are each other rotated and 8 is its own rotation.
+
+The numbers go on a synthetic *source* which then runs through the ordinary
+import-impose-export path, so what you are checking is the real pipeline and
+not a parallel "test mode" that could disagree with it.
+
+For reference, the imposed faces of an eight-page folio come out:
+
+```
+face 0:  8 | 1        ← outermost
+face 1:  2 | 7
+face 2:  6 | 3
+face 3:  4 | 5        ← centre of the fold
+```
+
+That matches what every bookbinding manual prints. It is checked
+automatically in `tests/test_dummy.py` — but only against the manual's
+*arithmetic*. Software still cannot tell you which way paper folds, which is
+why the scrap print is the check that closes it.
+
 **Check 1 — read the schedule against a manual.** Thirty seconds.
 
 ```bash

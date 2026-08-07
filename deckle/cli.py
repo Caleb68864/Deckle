@@ -943,6 +943,26 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dummy(args: argparse.Namespace) -> int:
+    """Write a numbered document for checking how an imposition folds."""
+    from deckle.core.dummy import make_numbered_pdf
+
+    if _report_output_problem(args.output):
+        return 1
+    try:
+        make_numbered_pdf(args.output, args.pages, args.page_size)
+    except OSError as exc:
+        _report_write_failure(args.output, exc)
+        return 1
+    print(f"wrote {args.output} -- {args.pages} numbered page(s)")
+    print(
+        "Impose it, print it on scrap, fold it, and read the numbers. An "
+        "eight-page folio puts 8 and 1 on the outside of the sheet and 4 "
+        "and 5 at the centre."
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The full argument parser for ``deckle``.
 
@@ -1047,6 +1067,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(schedule_parser)
     schedule_parser.set_defaults(func=_cmd_schedule, _command="schedule")
+
+    dummy_parser = subparsers.add_parser(
+        "dummy",
+        help="write a numbered document for checking how an imposition folds",
+    )
+    dummy_parser.add_argument(
+        "-o", "--output", required=True, help="path to write the PDF"
+    )
+    dummy_parser.add_argument(
+        "--pages", type=int, default=16,
+        help="how many numbered pages (default: 16)",
+    )
+    dummy_parser.add_argument(
+        "--page-size", type=_parse_paper, default=LETTER_PT, metavar="WxH",
+        help=(
+            "page size of the numbered document, matching the source you "
+            "are standing in for (default: letter)"
+        ),
+    )
+    dummy_parser.set_defaults(func=_cmd_dummy, _command="dummy")
 
     return parser
 

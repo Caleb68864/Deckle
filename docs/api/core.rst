@@ -27,6 +27,7 @@ of it.
    core.marks
    core.export
    core.render
+   core.dummy
    core.locate
    core.project_io
    core.outputs

@@ -63,6 +63,9 @@ ranking below still reads as though nothing has been built. What has:
 - **#6 source cropping** — shipped 2026-08-06, `--crop`/`--crop-even`, plus
   `--auto-crop` for krop's "trim margins" equivalent, measured off the
   existing ink-bbox cache. The briss-style overlay preview is still open.
+- **#9 page-number stamping** — shipped 2026-08-06 as the small version the
+  analysis recommends: `deckle dummy` generates a numbered source rather
+  than stamping user content. Built to make the folio check cheap.
 - **#5 grain direction** — shipped 2026-08-05 (`7d7b3a2`).
 - **#8 spine width in the binding schedule** — shipped 2026-08-05 (`7d7b3a2`).
 
