@@ -277,9 +277,30 @@ Ink bounds come off a low-resolution raster, so the answer runs a point or two
 shy of the true edge — it errs toward keeping content. Use `--auto-crop-margin
 6pt` to keep more back for descenders and hairline rules.
 
-There is no overlay preview yet — briss shows all pages superimposed so you
-can see the real content extent before committing. That is still worth
-building and is not here.
+**Check it before you commit to it.** `deckle crop-preview` superimposes every
+page into one picture and draws the proposed crop on it in red:
+
+```bash
+python -m deckle.cli crop-preview scan.pdf -o overlay.png --auto-crop
+```
+
+Anything outside the red rectangle is what the crop would remove. This is what
+catches the outlier — a marginal note on one page in two hundred, a figure that
+runs wider than the text block — which a measurement reports as a number and a
+picture shows you instantly.
+
+Darkest pixel wins, so a mark present on a single page survives into the
+composite at full strength. Averaging would fade exactly the mark you need to
+see.
+
+Add `--parity odd` or `--parity even` to look at one side of a scan whose
+gutter alternates. Without it, both the picture and the rectangle cover every
+page — they always describe the same set of pages, because a rectangle
+measured from half of them and drawn over all of them would make a crop that
+clips look safe.
+
+There is no interactive crop editor in the desktop app; it has no crop controls
+at all. This is a picture you look at, then a `--crop` you type.
 
 **4. Proof one sheet.** Before committing a stack, print sheet 0 on its own.
 Sheets are numbered from 0, the same as everywhere else Deckle counts them.

@@ -62,7 +62,10 @@ ranking below still reads as though nothing has been built. What has:
 - **#2 cut lines** — shipped 2026-08-06, `--trim`.
 - **#6 source cropping** — shipped 2026-08-06, `--crop`/`--crop-even`, plus
   `--auto-crop` for krop's "trim margins" equivalent, measured off the
-  existing ink-bbox cache. The briss-style overlay preview is still open.
+  existing ink-bbox cache, and `deckle crop-preview` for the briss-style
+  overlay. The overlay is a written image, not an interactive in-app
+  editor -- the desktop app has no crop controls at all, so an in-app
+  preview would mean building those first.
 - **#9 page-number stamping** — shipped 2026-08-06 as the small version the
   analysis recommends: `deckle dummy` generates a numbered source rather
   than stamping user content. Built to make the folio check cheap.

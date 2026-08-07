@@ -393,6 +393,99 @@ def _scale_bbox_to_points(
 
 Insets = tuple[float, float, float, float]
 
+_CROP_RULE_RGB = (220, 40, 40)
+"""Red, and the only colour in an otherwise greyscale picture -- so the
+proposed crop cannot be mistaken for something the pages contain."""
+
+
+def composite_pages(
+    pages: Sequence[SourcePage],
+    *,
+    dpi: int = 72,
+    parity: str | None = None,
+    crop_pt: Insets | None = None,
+) -> RenderedPage:
+    """Every page's ink in one picture, with the proposed crop drawn on it.
+
+    briss's distinguishing feature is superimposing all pages so the real
+    content extent is visible before a crop is committed.
+    :func:`auto_crop_insets` now measures that extent, so what a picture is
+    still for is **verification**: would this crop cut anything off, on any
+    page?
+
+    **Darkest pixel wins.** A page contributes its ink and nothing else, so
+    the composite is the union of every page's content -- which is the
+    question being asked. Averaging would fade a mark appearing on one page
+    in two hundred into invisibility, and that mark is precisely the one
+    that gets clipped without anyone noticing.
+
+    :param pages: the document's pages. Skipped pages are excluded, since
+        a page not being imposed must not widen the extent the crop is
+        judged against.
+    :param dpi: rasterisation resolution. Higher than the ink-bbox default
+        because a person looks at this one.
+    :param parity: ``"odd"``, ``"even"``, or ``None`` for all. A scan's
+        margins alternate, so the two parities are different pictures and
+        compositing them together would answer neither.
+    :param crop_pt: insets to draw as a rectangle, or ``None`` to draw
+        none.
+    :returns: the composite as a :class:`RenderedPage`.
+    :raises ValueError: no page was left to composite -- an empty picture
+        would look like a document with no content, which is a different
+        and much more alarming answer than "you filtered everything out".
+    """
+    from PIL import Image, ImageChops, ImageDraw
+
+    selected = []
+    for page in pages:
+        if page.skipped or is_blank_page(page):
+            continue
+        if parity is not None:
+            is_odd = (page.ref.page_index + 1) % 2 == 1
+            if (parity == "odd") != is_odd:
+                continue
+        selected.append(page)
+    if not selected:
+        raise ValueError(
+            "nothing to composite: every page was skipped, blank, or "
+            "filtered out by parity"
+        )
+
+    scale = dpi / 72.0
+    width = max(int(round(page.ref.width_pt * scale)) for page in selected)
+    height = max(int(round(page.ref.height_pt * scale)) for page in selected)
+
+    canvas = Image.new("L", (width, height), 255)
+    for page in selected:
+        rendered = _rasterize_for_bbox(page.ref, dpi).convert("L")
+        if rendered.size != (width, height):
+            # Pages of differing sizes are aligned at the top-left, which
+            # is the PDF's own origin corner once the image is flipped.
+            # Arbitrary for mixed sizes, and correct for the scanned book
+            # this exists to serve, where every page is the same size.
+            sized = Image.new("L", (width, height), 255)
+            sized.paste(rendered, (0, 0))
+            rendered = sized
+        canvas = ImageChops.darker(canvas, rendered)
+
+    picture = canvas.convert("RGB")
+    if crop_pt is not None:
+        left, bottom, right, top = crop_pt
+        draw = ImageDraw.Draw(picture)
+        draw.rectangle(
+            [
+                left * scale,
+                top * scale,
+                width - right * scale - 1,
+                height - bottom * scale - 1,
+            ],
+            outline=_CROP_RULE_RGB,
+            width=max(1, int(round(scale))),
+        )
+
+    rgba = picture.convert("RGBA")
+    return RenderedPage(width=rgba.width, height=rgba.height, rgba=rgba.tobytes())
+
 
 def auto_crop_insets(
     pages: Sequence[SourcePage],

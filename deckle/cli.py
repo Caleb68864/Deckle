@@ -1021,6 +1021,70 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_crop_preview(args: argparse.Namespace) -> int:
+    """Write a composite of every page, with the proposed crop drawn on it."""
+    from PIL import Image
+
+    from deckle.core.render import auto_crop_insets, composite_pages
+
+    if _report_output_problem(args.output, args.source):
+        return 1
+    pages = _load_source_or_report(args.source)
+    if pages is None:
+        return 1
+
+    crop = args.crop
+    if args.auto_crop:
+        # The rectangle has to be measured over exactly the pages the
+        # picture shows. Measuring odd and even separately -- the
+        # default, and right when cropping -- and then drawing the odd
+        # answer over a composite of every page produces a confidently
+        # wrong picture: it shows the even pages' ink beside a
+        # rectangle never measured against it, so a crop that clips
+        # them looks safe.
+        odd, even = auto_crop_insets(
+            pages,
+            margin_pt=args.auto_crop_margin,
+            split_parity=args.parity is not None,
+        )
+        crop = even if args.parity == "even" else odd
+        if crop is None:
+            print(
+                "note: --auto-crop found no content to measure, so no crop "
+                "is drawn.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"auto-crop: --crop {_format_insets(crop)}")
+
+    try:
+        composite = composite_pages(
+            pages, dpi=args.dpi, parity=args.parity, crop_pt=crop
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        log_exception("composite_failed", exc)
+        return 1
+
+    image = Image.frombytes(
+        "RGBA", (composite.width, composite.height), composite.rgba
+    )
+    try:
+        image.save(args.output)
+    except (OSError, ValueError) as exc:
+        _report_write_failure(args.output, exc)
+        return 1
+
+    counted = sum(1 for page in pages if not page.skipped)
+    which = f" ({args.parity})" if args.parity else ""
+    print(f"wrote {args.output} -- {counted} page(s) superimposed{which}")
+    print(
+        "Every page's ink in one picture. Anything outside the red "
+        "rectangle is what the crop would remove."
+    )
+    return 0
+
+
 def _cmd_dummy(args: argparse.Namespace) -> int:
     """Write a numbered document for checking how an imposition folds."""
     from deckle.core.dummy import make_numbered_pdf
@@ -1145,6 +1209,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(schedule_parser)
     schedule_parser.set_defaults(func=_cmd_schedule, _command="schedule")
+
+    preview_parser = subparsers.add_parser(
+        "crop-preview",
+        help="write a composite of every page, to check a crop before using it",
+    )
+    preview_parser.add_argument("source", help="a PDF file or a directory of images")
+    preview_parser.add_argument(
+        "-o", "--output", required=True, help="image to write (e.g. overlay.png)"
+    )
+    preview_parser.add_argument(
+        "--crop", type=_parse_crop, default=None, metavar="L,B,R,T",
+        help="draw this crop on the composite",
+    )
+    preview_parser.add_argument(
+        "--auto-crop", action="store_true",
+        help="measure the crop and draw what it found",
+    )
+    preview_parser.add_argument(
+        "--auto-crop-margin", type=_parse_length_pt, default=0.0,
+        metavar="LENGTH", help="keep this much back from every measured edge",
+    )
+    preview_parser.add_argument(
+        "--parity", choices=("odd", "even"), default=None,
+        help=(
+            "composite only odd- or only even-numbered pages. A scan's "
+            "margins alternate, so the two are different pictures"
+        ),
+    )
+    preview_parser.add_argument(
+        "--dpi", type=int, default=72,
+        help="rasterisation resolution (default: 72)",
+    )
+    preview_parser.set_defaults(func=_cmd_crop_preview, _command="crop-preview")
 
     dummy_parser = subparsers.add_parser(
         "dummy",
