@@ -13,7 +13,7 @@ import logging
 import os
 import warnings
 
-from deckle.app.state import AppState
+from deckle.app.state import AppState, autosave_path_for
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
@@ -306,6 +306,48 @@ def _qt_vertical():
     return Qt.Orientation.Vertical
 
 
+def autosave_recovery_offer(project_path: str | None) -> str | None:
+    """The autosave worth offering back, or ``None`` to stay silent.
+
+    Autosave has been written on every edit and flushed on close since the
+    beginning, and nothing ever offered it back -- the file was a corpse.
+    This is the decision that changes that, kept pure and out of the
+    dialog so it can be tested without a display.
+
+    **Detection cannot be "does the file exist".** ``_on_close_event``
+    flushes the autosave, so it exists after every clean quit. It is
+    *mtime*: offer when the autosave is newer than the project.
+
+    That rule is chosen for the crash case and gets close-without-saving
+    right as a consequence -- those edits are real, the user declined to
+    save them, and offering them back is correct rather than a false
+    positive. Saving makes the project newer, which is what stops the
+    prompt appearing on every open.
+
+    Ties go to silence. A spurious prompt teaches someone to dismiss
+    prompts, which costs more than the rare recovery it would offer.
+
+    :param project_path: where the project lives, or ``None`` for one
+        that has never been saved and so has no autosave.
+    :returns: the autosave path, or ``None``.
+    """
+    autosave_path = autosave_path_for(project_path)
+    if autosave_path is None or not os.path.isfile(autosave_path):
+        return None
+    try:
+        autosave_time = os.path.getmtime(autosave_path)
+    except OSError:
+        return None
+    try:
+        project_time = os.path.getmtime(project_path)
+    except OSError:
+        # The project is gone and the autosave is not. That is the case
+        # where recovery matters most, not a reason to discard the only
+        # remaining copy of the work.
+        return autosave_path
+    return autosave_path if autosave_time > project_time else None
+
+
 def _recent_label(path: str) -> str:
     """A menu label for a recent project: its name, then its folder.
 
@@ -321,6 +363,13 @@ def _new_menu(parent):
     from PySide6.QtWidgets import QMenu
 
     return QMenu(parent)
+
+
+def _qt_message_box():
+    """``QMessageBox``. Patchable seam, like :func:`_new_thread`."""
+    from PySide6.QtWidgets import QMessageBox
+
+    return QMessageBox
 
 
 def _qt_widgets():
@@ -518,6 +567,9 @@ class MainWindow:
         # an undefined attribute if the user clicks Print immediately.
         self._printers: list[str] = []
         self._printer_thread = None
+        # Injected so the recovery prompt can be driven headlessly, the
+        # way `print_dialog` injects `_confirm_resume`.
+        self.confirm_recovery = self._default_confirm_recovery
         self._printer_query: _PrinterQuery | None = None
         #: A printer fault worth showing, or "" when there is none.
         #: Held rather than written straight to the status bar so the
@@ -787,6 +839,61 @@ class MainWindow:
         self.undo_button.setEnabled(self.state.can_undo)
         self.redo_button.setEnabled(self.state.can_redo)
 
+    def _recover_autosave_if_offered(self, path: str, project: Project) -> Project:
+        """Offer a newer autosave in place of the project just loaded.
+
+        Autosave was written on every edit and flushed on close and never
+        offered back. This is where it stops being a corpse.
+
+        Declining **deletes** the autosave. Leaving it would bring the
+        prompt back on every subsequent open, which trains someone to
+        dismiss it -- and the one that matters is the one they then
+        dismiss without reading.
+
+        A failure to load the autosave leaves the project as it was: the
+        recovery file is the damaged one by definition here, so falling
+        back to the saved project is the safe direction.
+
+        :param path: the project file just opened.
+        :param project: what was loaded from it.
+        :returns: the recovered project, or ``project`` unchanged.
+        """
+        autosave_path = autosave_recovery_offer(path)
+        if autosave_path is None:
+            return project
+        if not self.confirm_recovery(os.path.basename(path)):
+            try:
+                os.remove(autosave_path)
+            except OSError as exc:  # noqa: BLE001 -- declined, never fatal
+                log_exception("autosave_discard_failed", exc, path=autosave_path)
+            return project
+        try:
+            recovered = load_project(
+                autosave_path, allowed_roots=(os.path.dirname(path),)
+            )
+        except Exception as exc:  # noqa: BLE001 -- reported, never a crash
+            self.status_bar.showMessage(
+                f"Could not read the recovered changes for "
+                f"{os.path.basename(path)}: {exc}"
+            )
+            log_exception("autosave_recovery_failed", exc, path=autosave_path)
+            return project
+        log_event("autosave_recovered", path=path, pages=len(recovered.pages))
+        return recovered
+
+    def _default_confirm_recovery(self, project_name: str) -> bool:
+        """Ask whether to take the autosave. Replaceable for tests."""
+        QMessageBox = _qt_message_box()
+        answer = QMessageBox.question(
+            self.window,
+            "Recover unsaved changes?",
+            f"{project_name} has changes that were never saved -- Deckle "
+            "either closed unexpectedly or was closed without saving.\n\n"
+            "Recover them?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
     def _refresh_recent_menu(self) -> None:
         """Rebuild the Recent projects menu from the store.
 
@@ -883,6 +990,8 @@ class MainWindow:
             self.status_bar.showMessage(f"Cannot open {os.path.basename(path)}: {exc}")
             log_exception("project_open_failed", exc, path=path)
             return False
+
+        project = self._recover_autosave_if_offered(path, project)
 
         recent.record(path)
         self._refresh_recent_menu()

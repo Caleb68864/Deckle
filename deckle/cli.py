@@ -30,6 +30,9 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.core.paper import (
+    GRADE_BASIS_SIZES_IN, PAPER_BULK, caliper_pt_from_gsm, gsm_from_pounds,
+)
 from deckle.core.paths import atomic_output, write_text_atomic
 from deckle.core.schedule import build_schedule, format_schedule_text
 from deckle.core.project_io import (
@@ -157,6 +160,72 @@ def _reject_unprintable_paper(paper: tuple[float, float], typed: str) -> None:
                 f"({MIN_PAPER_PT / 72:.2g}in to {MAX_PAPER_PT / 72:g}in) on "
                 f"each side; that is {paper[0]:g}x{paper[1]:g}pt"
             )
+
+
+def _paper_thickness_from_args(args) -> float:
+    """One sheet's caliper, from whichever way the user stated the paper.
+
+    Two ways to say one thing is fine; a silent precedence between them is
+    not, so giving both is refused rather than resolved. Someone who sets
+    a weight and forgets an old `--paper-thickness` in a script would
+    otherwise get a book bound to a number they did not give.
+
+    :param args: the parsed arguments.
+    :returns: the caliper in points, or ``0.0`` when unset.
+    :raises ValueError: both forms were given, or pounds without a grade.
+    """
+    weight = getattr(args, "paper_weight", None)
+    thickness = getattr(args, "paper_thickness", 0.0)
+    if weight is None:
+        return thickness
+    if thickness:
+        raise ValueError(
+            "give either --paper-weight or --paper-thickness, not both: "
+            "they are two ways to describe the same sheet, and there is no "
+            "sensible rule for which one wins"
+        )
+    value, unit = weight
+    if unit == "lb":
+        grade = getattr(args, "paper_grade", None)
+        if grade is None:
+            raise ValueError(
+                "--paper-weight in pounds also needs --paper-grade: a US "
+                "basis weight means nothing without one, and 20lb is 75gsm "
+                "as bond but 54gsm as cover. Expected one of "
+                + ", ".join(sorted(GRADE_BASIS_SIZES_IN))
+            )
+        value = gsm_from_pounds(value, grade)
+    return caliper_pt_from_gsm(value, args.paper_type)
+
+
+def _parse_paper_weight(text: str) -> tuple[float, str]:
+    """A ream-wrapper weight, as ``(number, "gsm"|"lb")``.
+
+    Deliberately does not convert here. Pounds need a grade to mean
+    anything, and the grade is a separate argument, so this parses the
+    shape and leaves the arithmetic to `_settings_from_args` where both
+    are in hand.
+
+    :param text: e.g. ``80gsm``, ``100 gsm``, ``24lb``.
+    :returns: the number and its unit.
+    :raises argparse.ArgumentTypeError: anything else, naming the forms
+        that are accepted.
+    """
+    cleaned = text.strip().lower().replace(" ", "")
+    for suffix in ("gsm", "lb", "lbs", "#"):
+        if cleaned.endswith(suffix):
+            number = cleaned[: -len(suffix)]
+            try:
+                value = float(number)
+            except ValueError:
+                break
+            if value <= 0:
+                break
+            return (value, "gsm" if suffix == "gsm" else "lb")
+    raise argparse.ArgumentTypeError(
+        f"invalid paper weight {text!r}: expected a positive number with a "
+        "unit, such as 80gsm or 24lb"
+    )
 
 
 def _parse_signature_lengths(value: str) -> tuple[int, ...]:
@@ -580,7 +649,16 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
     pages = _load_source_or_report(args.source)
     if pages is None:
         return None
-    settings = _build_layout_settings(args)
+    try:
+        settings = _build_layout_settings(args)
+    except ValueError as exc:
+        # How the paper was stated is the user's problem to fix, not a bug
+        # report -- two conflicting ways to give a thickness, or pounds
+        # without the grade that makes them mean anything. The messages
+        # already name the remedy; only their presentation was missing.
+        print(f"error: {exc}", file=sys.stderr)
+        log_exception("layout_settings_rejected", exc)
+        return None
     if getattr(args, "auto_crop", False):
         settings = _apply_auto_crop(pages, settings, args)
     return pages, settings
@@ -636,6 +714,7 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         # instead of being flipped back.
         short, long = sorted(paper)
         paper = (long, short)
+    thickness_pt = _paper_thickness_from_args(args)
     return LayoutSettings(
         paper=paper,
         gutter_pt=args.gutter,
@@ -644,7 +723,7 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         sheets_per_signature=args.sheets_per_signature,
         blank_mode=args.blank_mode,
         sewing_stations=args.sewing_stations,
-        paper_thickness_pt=args.paper_thickness,
+        paper_thickness_pt=thickness_pt,
         grain=args.grain,
         trim_pt=args.trim_pt,
         crop_odd_pt=args.crop,
@@ -706,6 +785,24 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
         "--paper-thickness", type=_parse_length_pt, default=0.0,
         help="caliper of one sheet, e.g. 0.004in or 0.1mm. Used to estimate "
         "fore-edge creep and spine thickness (default: 0, unset)",
+    )
+    parser.add_argument(
+        "--paper-weight", type=_parse_paper_weight, default=None,
+        metavar="WEIGHT",
+        help="what the ream wrapper says, e.g. 80gsm or 24lb -- an "
+        "alternative to --paper-thickness for anyone without calipers. "
+        "Pounds also need --paper-grade, because a US basis weight means "
+        "nothing without one",
+    )
+    parser.add_argument(
+        "--paper-type", choices=sorted(PAPER_BULK), default="offset",
+        help="how bulky the stock is, which is what separates two papers "
+        "of the same weight (default: offset)",
+    )
+    parser.add_argument(
+        "--paper-grade", choices=sorted(GRADE_BASIS_SIZES_IN), default=None,
+        help="which basis size a pound weight is quoted against. Required "
+        "with a lb --paper-weight: 20lb is 75gsm as bond and 54gsm as cover",
     )
     parser.add_argument(
         "--signatures", dest="signature_lengths",

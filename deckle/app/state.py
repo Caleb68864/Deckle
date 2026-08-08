@@ -43,7 +43,18 @@ DEFAULT_AUTOSAVE_DELAY_S = 0.5
 
 
 
-def _autosave_path_for(project_path: str | None) -> str | None:
+def autosave_path_for(project_path: str | None) -> str | None:
+    """Where a project's autosave lives, or ``None`` if it has never been
+    saved.
+
+    Public because the recovery prompt needs the same answer before an
+    ``AppState`` exists -- it is deciding whether to build one from the
+    autosave in the first place. Two spellings of `<project>.autosave`
+    would be a rule expressed twice.
+
+    :param project_path: the project file, or ``None``.
+    :returns: the autosave path, or ``None``.
+    """
     if project_path is None:
         return None
     return f"{project_path}.autosave"
@@ -191,7 +202,7 @@ class AppState:
     ) -> None:
         self._project = project
         self.project_path = project_path
-        self.autosave_path = _autosave_path_for(project_path)
+        self.autosave_path = autosave_path_for(project_path)
         self._undo_stack: deque[Project] = deque(maxlen=undo_depth)
         self._redo_stack: deque[Project] = deque(maxlen=undo_depth)
         self._autosave_delay_s = autosave_delay_s
