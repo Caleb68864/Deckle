@@ -151,6 +151,16 @@ def write_text_atomic(path: str | os.PathLike[str], text: str, *,
     and the target's own name, so debris from a hard kill is at least
     identifiable as Deckle's.
 
+    **This makes a write safe against failure, not against a second
+    writer.** ``os.replace`` is ``MoveFileEx`` on Windows, which fails with
+    ``PermissionError: [WinError 5]`` when another handle holds the target
+    -- so two callers renaming onto one path at the same moment do not
+    quietly pick a winner, they make one of them raise. The file is never
+    corrupted either way, which is what this function promises; but a
+    caller with more than one writer must serialise them itself, as
+    :class:`deckle.app.state.AppState` does for autosave, where the
+    debounce timer and ``flush_autosave`` both write during shutdown.
+
     :param path: the file to end up with.
     :param text: its complete new content. This is a whole-document write;
         there is no append form, because every store that uses it is a
@@ -159,7 +169,8 @@ def write_text_atomic(path: str | os.PathLike[str], text: str, *,
         platform default, matching what these files have always contained.
     :returns: nothing.
     :raises OSError: the directory does not exist, is not writable, or the
-        write or rename fails. The temporary file is removed first, so a
+        write or rename fails -- including a concurrent rename onto the
+        same target on Windows. The temporary file is removed first, so a
         caller that retries does not accumulate debris.
     """
     target = Path(path)

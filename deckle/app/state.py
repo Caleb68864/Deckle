@@ -198,6 +198,8 @@ class AppState:
         self._timer_factory = timer_factory
         self._timer: threading.Timer | None = None
         self._lock = threading.RLock()
+        # Guards the autosave file, not the project -- see `_do_autosave`.
+        self._save_lock = threading.Lock()
 
     @property
     def project(self) -> Project:
@@ -285,11 +287,27 @@ class AppState:
             timer.start()
 
     def _do_autosave(self) -> None:
-        project = self._project
         path = self.autosave_path
         if path is None:
             return
-        save_project(project, path)
+        # Serialised against other autosaves, because there are two writers
+        # and `cancel` is not a join: a debounce timer that has already
+        # fired is inside `save_project` when `flush_autosave` starts, so
+        # both write this path at once. Shutdown is exactly when that
+        # happens -- the window flushes while the last debounce is in
+        # flight, which is the case flush exists for.
+        #
+        # On Windows the loser of that race does not lose quietly.
+        # `os.replace` is `MoveFileEx`, which fails with `PermissionError:
+        # [WinError 5]` when another handle holds the target, so one of the
+        # two saves raises: on the timer thread that kills the autosave
+        # silently, and on the flush it surfaces during shutdown.
+        #
+        # A separate lock from `self._lock` on purpose -- holding the state
+        # lock across disk I/O would block every mutation for the length of
+        # a write, and the UI thread is what does the mutating.
+        with self._save_lock:
+            save_project(self._project, path)
 
     def flush_autosave(self) -> None:
         """Cancel any pending debounce timer and save immediately.
