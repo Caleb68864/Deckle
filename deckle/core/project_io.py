@@ -315,8 +315,32 @@ def _check_layout_values(kwargs: dict[str, Any]) -> None:
     :param kwargs: stored values, already filtered to known field names.
     :returns: nothing.
     :raises StoredValueError: a value does not satisfy its field.
+    :raises ValueError: ``paper`` is two numbers but not a sheet.
     """
     check_values(LayoutSettings, kwargs, subject="layout setting")
+
+    # `check_values` asks whether `paper` is two numbers. It is not asking
+    # whether those numbers describe a sheet, and `[-792, -612]` is two
+    # perfectly good numbers -- which the imposer turns into a placement
+    # with a scale of -1.98, i.e. a mirror, while `[0, 0]` gives a scale of
+    # exactly zero and blank paper. Positive scale is already an invariant
+    # asserted for the neighbouring case (margins larger than the sheet,
+    # which warns and falls back "rather than a negative-size box and a
+    # nonsense scale"); non-positive paper walked past it.
+    #
+    # Only `paper` is bounded here, and the omissions are deliberate:
+    # negative margins and gutters are clamped to zero *by the imposer, on
+    # purpose*, with a test pinning it, so rejecting them would contradict
+    # a decision already made; and `sheets_per_signature` and
+    # `signature_lengths` are already validated where they are used, with
+    # messages naming the numbers involved.
+    paper = kwargs.get("paper")
+    if paper is not None and not all(value > 0 for value in paper):
+        width, height = paper
+        raise ValueError(
+            f"layout setting 'paper' is {width:g}x{height:g}pt, but a sheet "
+            "must have a positive width and height"
+        )
 
 
 def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
