@@ -362,7 +362,41 @@ class QtPrintBackend:
             )
             return PrintResult(submitted=0, job_id=None, error=str(exc))
 
-        log_print_job(printer_name, self.profile, sheets, dpi, pass_index)
+        # The paper is already out by this point, so a logging failure is a
+        # different animal from a print failure and has to be reported as
+        # one. `log_print_job` raises rather than swallowing, on purpose --
+        # the session log is a hard constraint, not a best-effort trace --
+        # but the raise used to escape `submit` entirely: past this method's
+        # promise that failures come back through `error`, out of
+        # `session.start()`, and into a print dialog that does not catch it.
+        # Three sheets would physically print, the user would get a
+        # traceback, and the session cursor would still read 0, so a resume
+        # reprinted every one of them.
+        #
+        # Reported rather than swallowed, so the constraint still holds: the
+        # user is told, `log_exception` records it, and the run stops exactly
+        # as it did before. `submitted` counts the sheets because they
+        # printed -- that number describes paper, not bookkeeping.
+        try:
+            log_print_job(printer_name, self.profile, sheets, dpi, pass_index)
+        except OSError as exc:
+            log_exception(
+                "print_session_log_failed",
+                exc,
+                printer=printer_name,
+                sheets=list(sheets),
+                side=side,
+                pass_index=pass_index,
+            )
+            return PrintResult(
+                submitted=len(sheets),
+                job_id=None,
+                error=(
+                    f"{len(sheets)} sheet(s) printed, but the print could "
+                    f"not be recorded in the session log ({exc}). The paper "
+                    "is correct; the record of it is missing."
+                ),
+            )
         return PrintResult(submitted=len(sheets), job_id=None, error=None)
 
     def submit_pass(

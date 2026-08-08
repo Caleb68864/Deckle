@@ -1,0 +1,178 @@
+"""A print that reached paper but could not be written down.
+
+``log_print_job`` is deliberately not best-effort. Its docstring says so:
+unlike :mod:`deckle.core.diagnostics`, the session log is a hard
+constraint -- print failures are the least reproducible class of bug in
+this program, so a submitted chunk that goes unrecorded is not something
+to shrug at. Raising rather than swallowing is the right instinct.
+
+The call sat **outside** the ``try`` that turns print failures into a
+``PrintResult``, and that produced three separate wrongs from one
+unguarded line. Measured on a three-sheet plan with a log that raises
+``OSError(28)``:
+
+- **The paper had already come out.** All three sheets were painted
+  before the log was touched.
+- **The exception escaped ``session.start()``** and reached the print
+  dialog, which does not catch it -- so a traceback, from a program whose
+  CLI docstring draws exactly this line. ``submit``'s own docstring
+  promises "a print failure is reported through ``error`` rather than
+  raised", and this walked past that promise.
+- **The session cursor stayed at 0**, because nothing extended
+  ``submitted_sheets``. Resume would reprint all three: a second stack of
+  paper, and a mis-collated one if the operator had already reloaded.
+
+The fix keeps the constraint and drops the traceback. A logging failure
+is reported through ``PrintResult.error`` -- visible, logged, and it
+still stops the run -- with ``submitted`` counting the sheets that
+physically printed, because they did.
+
+**What is deliberately unchanged: a logging failure still stops the
+run.** That was the previous behaviour (by exception) and it stays the
+behaviour (by error). Whether it *should* is a policy question about the
+Intent doc's constraint, not something to settle while fixing a
+traceback.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+from dataclasses import dataclass, field
+
+import pytest
+
+from deckle.app import backend as backend_mod
+from deckle.app.backend import QtPrintBackend
+from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side
+from deckle.core.print_session import PrintSession
+from deckle.core.profiles import BUILTIN_PRESETS
+
+
+@pytest.fixture(autouse=True)
+def _isolated_state_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("DECKLE_SESSION_STATE_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(backend_mod, "printer_is_available", lambda name: True)
+
+
+def _plan(n=3) -> SheetPlan:
+    blank = OutputPage(
+        source_ref=None,
+        placement=Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0),
+        is_filler=True,
+    )
+    return SheetPlan(
+        sheets=[Sheet(index=i, front=Side(pages=(blank,)), back=Side(pages=(blank,)))
+                for i in range(n)],
+        paper_pt=(612.0, 792.0), warnings=[],
+    )
+
+
+@pytest.fixture
+def backend(monkeypatch):
+    """A backend that records what reached paper and never touches Qt."""
+    printed: list[int] = []
+
+    class Recording(QtPrintBackend):
+        def _submit_chunk(self, plan, sheets, printer_name, copies, dpi,
+                          side, rotate_backs):
+            printed.extend(sheets)
+
+    instance = Recording(BUILTIN_PRESETS["generic_face_down_reversed"])
+    instance.printed = printed
+    return instance
+
+
+@pytest.fixture
+def failing_log(monkeypatch):
+    def explode(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(backend_mod, "log_print_job", explode)
+
+
+def test_a_logging_failure_is_reported_not_raised(backend, failing_log):
+    """``submit`` promises errors come back through ``error``."""
+    result = backend.submit(
+        _plan(), [0, 1, 2], "P", copies=1, dpi=300,
+        side="front", rotate_backs=False, pass_index=0,
+    )
+
+    assert result.error is not None
+
+
+def test_the_message_says_the_sheets_did_print(backend, failing_log):
+    """The single most important thing to tell someone standing at a
+    printer: this is not "the print failed", it is "the print worked and
+    the record did not"."""
+    result = backend.submit(
+        _plan(), [0, 1, 2], "P", copies=1, dpi=300,
+        side="front", rotate_backs=False, pass_index=0,
+    )
+
+    assert "printed" in result.error.lower()
+    assert "record" in result.error.lower() or "log" in result.error.lower()
+
+
+def test_the_sheets_that_printed_are_counted_as_submitted(backend, failing_log):
+    """``submitted`` describes paper, and the paper came out."""
+    result = backend.submit(
+        _plan(), [0, 1, 2], "P", copies=1, dpi=300,
+        side="front", rotate_backs=False, pass_index=0,
+    )
+
+    assert backend.printed == [0, 1, 2]
+    assert result.submitted == 3
+
+
+def test_nothing_escapes_the_print_session(backend, failing_log):
+    """The end-to-end shape: the dialog calls ``session.start()`` with no
+    ``try`` around it, so anything escaping here is a traceback in the
+    user's face."""
+    session = PrintSession(_plan(), backend.profile, backend,
+                           printer_name="P", chunk_size=10)
+
+    session.start()
+
+    assert session.last_error is not None
+
+
+def test_a_working_log_still_records_and_reports_success(backend, monkeypatch):
+    """The guard must not turn every print into a failure."""
+    recorded: list[tuple] = []
+    monkeypatch.setattr(
+        backend_mod, "log_print_job",
+        lambda printer, profile, sheets, dpi, pass_index:
+            recorded.append((printer, list(sheets), dpi, pass_index)),
+    )
+
+    result = backend.submit(
+        _plan(), [0, 1, 2], "P", copies=1, dpi=300,
+        side="front", rotate_backs=False, pass_index=0,
+    )
+
+    assert result.error is None
+    assert result.submitted == 3
+    assert recorded == [("P", [0, 1, 2], 300, 0)]
+
+
+def test_a_real_print_failure_still_reports_nothing_submitted(backend, monkeypatch):
+    """The other branch must keep its own meaning: when painting fails,
+    no paper came out and ``submitted`` is 0. A fix that reported the
+    sheet count unconditionally would break this."""
+    def explode(*args, **kwargs):
+        raise RuntimeError("printer offline")
+
+    # Patched on the fixture's own class, not on ``QtPrintBackend``: the
+    # fixture overrides ``_submit_chunk`` to record what reached paper, so
+    # patching the base class would be shadowed and the test would assert
+    # against an ordinary successful print.
+    monkeypatch.setattr(type(backend), "_submit_chunk", explode)
+
+    result = backend.submit(
+        _plan(), [0, 1, 2], "P", copies=1, dpi=300,
+        side="front", rotate_backs=False, pass_index=0,
+    )
+
+    assert result.submitted == 0
+    assert "offline" in result.error
