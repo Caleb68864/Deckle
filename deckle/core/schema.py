@@ -84,6 +84,13 @@ def describes(value: Any, hint: Any) -> bool:
         return value in typing.get_args(hint)
     if origin in (typing.Union, types.UnionType):
         return any(describes(value, arm) for arm in typing.get_args(hint))
+    if origin is list:
+        # `isinstance(value, list[int])` raises -- a parameterized generic
+        # is not a class -- so this branch has to come before the
+        # `isinstance` fallback rather than being left to it.
+        return isinstance(value, list) and all(
+            describes(item, typing.get_args(hint)[0]) for item in value
+        )
     if origin is tuple:
         if not isinstance(value, (list, tuple)):
             return False
@@ -120,6 +127,8 @@ def describe(hint: Any) -> str:
         return "one of " + ", ".join(repr(arg) for arg in typing.get_args(hint))
     if origin in (typing.Union, types.UnionType):
         return " or ".join(describe(arm) for arm in typing.get_args(hint))
+    if origin is list:
+        return f"a list of {describe(typing.get_args(hint)[0])}"
     if origin is tuple:
         args = typing.get_args(hint)
         if len(args) == 2 and args[1] is Ellipsis:

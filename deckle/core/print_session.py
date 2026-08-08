@@ -30,6 +30,7 @@ import os
 import tempfile
 import time
 import uuid
+import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
@@ -38,6 +39,7 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.paths import write_text_atomic
 from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_passes
+from deckle.core.schema import StoredValueError, check_values
 from deckle.core.profiles import PrinterProfile
 
 try:
@@ -79,11 +81,13 @@ class StaleSessionError(Exception):
     at the printer rather than for a log.
 
     :param session_id: the session that was refused.
-    :param reason: ``"plan"`` or ``"version"``.
+    :param reason: ``"plan"``, ``"version"`` or ``"state"``.
     :param detail: the user-facing explanation.
     :ivar session_id: the session that was refused.
-    :ivar reason: ``"plan"`` -- the document's layout changed; or
-        ``"version"`` -- the state file came from an incompatible build.
+    :ivar reason: ``"plan"`` -- the document's layout changed;
+        ``"version"`` -- the state file came from an incompatible build;
+        or ``"state"`` -- the state file's own numbers cannot drive this
+        plan (see :func:`_check_state`).
     :ivar detail: a user-facing explanation ending in what to do next.
     """
 
@@ -202,6 +206,73 @@ class _SessionState:
             dpi=data["dpi"],
             copies=data["copies"],
         )
+
+
+def _check_state(session_id: str, data: dict, plan: SheetPlan) -> None:
+    """Refuse a state file that would drive the printer somewhere real.
+
+    The fourth reader of stored data to get this check, and the only one
+    at the end of a wire. ``version`` and ``plan_hash`` were already
+    guarded, and both are about the *document*; nothing looked at the
+    numbers that decide what actually gets fed. A state file naming sheet
+    99 of a three-sheet plan, or sheet ``-1``, or the string ``"a"``,
+    passed both existing guards and was handed straight to the backend --
+    as were ``copies: -3`` and ``dpi: "high"``, which go on to a printer
+    driver that has no reason to expect either.
+
+    Every bound here is checkable because ``load`` holds the plan, which
+    is the whole difference from the readers that can only check types:
+    "is 99 a sheet" has an answer at this point, and it is no.
+
+    Raised as :class:`StaleSessionError`, the way this method already
+    refuses a stale plan or a foreign format version, so the print dialog
+    needs no new branch. The trade it records there applies unchanged:
+    refusing costs a reprint the user was about to do anyway, continuing
+    can cost the whole book.
+
+    :param session_id: the session being loaded, for the message.
+    :param data: the decoded state file.
+    :param plan: the plan being resumed onto.
+    :returns: nothing.
+    :raises StaleSessionError: the state cannot drive this plan.
+    """
+    def refuse(detail: str) -> None:
+        log_event("session_state_invalid", session_id=session_id, detail=detail)
+        raise StaleSessionError(
+            session_id=session_id, reason="state",
+            detail=f"{detail}; start a new print run",
+        )
+
+    known = {f.name for f in dataclasses.fields(_SessionState)}
+    missing = sorted(known - set(data))
+    if missing:
+        refuse(
+            "this session's saved state is missing "
+            + ", ".join(repr(name) for name in missing)
+        )
+    try:
+        check_values(_SessionState, {k: data[k] for k in known}, subject="session field")
+    except StoredValueError as exc:
+        refuse(str(exc))
+
+    valid_sheets = {sheet.index for sheet in plan.sheets}
+    unknown = [index for index in data["sheets"] if index not in valid_sheets]
+    if unknown:
+        refuse(
+            f"this session names sheet(s) {unknown} that the document does "
+            f"not have (it has {len(plan.sheets)})"
+        )
+    if not 0 <= data["sheet_cursor"] <= len(data["sheets"]):
+        refuse(
+            f"this session's position ({data['sheet_cursor']}) is outside its "
+            f"own list of {len(data['sheets'])} sheet(s)"
+        )
+    if data["pass_index"] < 0:
+        refuse(f"this session's pass number ({data['pass_index']}) is negative")
+    if data["copies"] < 1:
+        refuse(f"this session asks for {data['copies']} copies")
+    if data["dpi"] <= 0:
+        refuse(f"this session asks for {data['dpi']} dpi")
 
 
 class PrintSession:
@@ -386,6 +457,7 @@ class PrintSession:
         """
         path = _state_dir() / f"{session_id}.json"
         data = json.loads(path.read_text(encoding="utf-8"))
+        _check_state(session_id, data, plan)
         state = _SessionState.from_json(data)
 
         if state.version != STATE_VERSION:
