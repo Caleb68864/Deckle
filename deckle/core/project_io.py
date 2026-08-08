@@ -24,6 +24,8 @@ import hashlib
 import io
 import json
 import os
+import types
+import typing
 import warnings
 import dataclasses
 from dataclasses import asdict
@@ -233,6 +235,102 @@ class UnknownLayoutFieldsWarning(UserWarning):
     """
 
 
+def _describes(value: Any, hint: Any) -> bool:
+    """Whether ``value``, as JSON decoded it, satisfies the annotation ``hint``.
+
+    Reads ``LayoutSettings``' own resolved annotations rather than a
+    hand-written schema, so a field added to the dataclass is checked
+    without anyone remembering to register it here -- the same reasoning as
+    the exhaustive round-trip test, and against the same failure.
+
+    Two places where JSON's type system is coarser than Python's, and both
+    have to be allowed or Deckle would reject documents it wrote itself:
+
+    - **A whole number decodes as ``int``.** ``36`` and ``36.0`` are the
+      same number in JSON, so an ``int`` satisfies a ``float`` field. The
+      reverse is not true: ``4.5`` is not a sheet count.
+    - **A tuple decodes as a list.** Every tuple field arrives as a list
+      and is converted back afterwards, so a list has to satisfy a
+      ``tuple`` annotation here.
+
+    ``bool`` is checked before ``int`` throughout, because it is a subclass
+    of ``int`` and ``True`` would otherwise pass for a page count.
+    """
+    origin = typing.get_origin(hint)
+    if origin is typing.Literal:
+        return value in typing.get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        return any(_describes(value, arm) for arm in typing.get_args(hint))
+    if origin is tuple:
+        if not isinstance(value, (list, tuple)):
+            return False
+        args = typing.get_args(hint)
+        if len(args) == 2 and args[1] is Ellipsis:
+            return all(_describes(item, args[0]) for item in value)
+        return len(value) == len(args) and all(
+            _describes(item, arm) for item, arm in zip(value, args)
+        )
+    if hint is bool:
+        return isinstance(value, bool)
+    if hint is int:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if hint is float:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if hint is type(None):
+        return value is None
+    return isinstance(value, hint)
+
+
+def _describe_hint(hint: Any) -> str:
+    """Name what a field will accept, in the terms the file's author sees.
+
+    A ``Literal`` is spelled out in full. That is the whole value of this
+    function: the remedy for ``binding_edge: "middle"`` *is* the list of
+    accepted values, and withholding it turns a one-line fix into a search
+    through the source.
+    """
+    origin = typing.get_origin(hint)
+    if origin is typing.Literal:
+        return "one of " + ", ".join(repr(arg) for arg in typing.get_args(hint))
+    if origin in (typing.Union, types.UnionType):
+        return " or ".join(_describe_hint(arm) for arm in typing.get_args(hint))
+    if origin is tuple:
+        args = typing.get_args(hint)
+        if len(args) == 2 and args[1] is Ellipsis:
+            return f"a list of {_describe_hint(args[0])}"
+        return f"a list of {len(args)} {_describe_hint(args[0])}"
+    return {
+        bool: "true or false", int: "a whole number",
+        float: "a number", str: "a piece of text", type(None): "null",
+    }.get(hint, getattr(hint, "__name__", str(hint)))
+
+
+def _check_layout_values(kwargs: dict[str, Any]) -> None:
+    """Reject a stored layout value this build cannot honour.
+
+    Deliberately harsher than the treatment of an unknown *key*, which is
+    dropped with a warning so a project stays openable across field drift.
+    A key this build does not know is a setting it can ignore; a value
+    outside a field's allowed set is the document asking for something this
+    build cannot do, and guessing is how ``binding_edge: "middle"`` came to
+    impose a book bound on the right -- the opposite of the default --
+    while ``deckle info`` reported no warnings at all.
+
+    :param kwargs: stored values, already filtered to known field names.
+    :returns: nothing.
+    :raises ValueError: a value does not satisfy its field's annotation.
+        Named per field, with what was found and what would be accepted.
+    """
+    hints = typing.get_type_hints(LayoutSettings)
+    for name, value in kwargs.items():
+        hint = hints[name]
+        if not _describes(value, hint):
+            raise ValueError(
+                f"layout setting {name!r} is {value!r}, but this build of "
+                f"Deckle accepts {_describe_hint(hint)}"
+            )
+
+
 def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
     """Build ``LayoutSettings`` from stored JSON, tolerating field drift.
 
@@ -241,6 +339,13 @@ def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
     in both directions: a file written by an older build (missing fields) and
     one written by a newer build (extra fields) both open, which is what the
     ``version`` integer was reserved for.
+
+    Tolerant about *keys*, strict about *values* -- see
+    :func:`_check_layout_values` for why those pull in opposite directions.
+
+    :param data: the stored ``layout`` object.
+    :returns: the settings.
+    :raises ValueError: a stored value does not satisfy its field's type.
     """
     known = {f.name for f in dataclasses.fields(LayoutSettings)}
     kwargs = {k: v for k, v in data.items() if k in known}
@@ -252,6 +357,11 @@ def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
             UnknownLayoutFieldsWarning,
             stacklevel=2,
         )
+    # Before the tuple conversion below, not after: `tuple("big")` succeeds
+    # and yields `('b', 'i', 'g')`, so checking afterwards would let a
+    # string through as a three-element tuple and move the failure further
+    # from its cause rather than closer.
+    _check_layout_values(kwargs)
     # JSON has one sequence type and Python has two, so every tuple field
     # comes back as a list unless something converts it. This used to name
     # `paper` specifically, which was right while `paper` was the only

@@ -29,6 +29,7 @@ import json
 import os
 import tempfile
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
@@ -257,8 +258,18 @@ class PrintSession:
         )
         plan_hash = _hash_plan(plan)
         started_at = time.time()
+        # `uuid4` because the other three ingredients do not distinguish two
+        # sessions and were never going to. `time.time()` on Windows moves
+        # in ~15ms steps, so 200 sessions of one plan to one printer
+        # produced *five* distinct ids, one group of them 70 deep -- and a
+        # shared id means a shared state file, so one job silently
+        # overwrites another's resume point and `list_resumable` reports one
+        # where there are two. Nothing derives this id from a plan; it is
+        # handed out by `list_resumable` and passed back to `load`, which
+        # checks `plan_hash` separately, so uniqueness is the only property
+        # it ever needed.
         session_id = hashlib.sha256(
-            f"{plan_hash}:{printer_name}:{started_at}".encode("utf-8")
+            f"{plan_hash}:{printer_name}:{started_at}:{uuid.uuid4()}".encode("utf-8")
         ).hexdigest()[:16]
 
         self._state = _SessionState(

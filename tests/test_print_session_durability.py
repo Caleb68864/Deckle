@@ -161,20 +161,26 @@ def test_a_failed_save_leaves_no_scratch_file_beside_the_state(torn_write):
     assert [p.name for p in directory.iterdir()] == [session.state_path.name]
 
 
-def test_two_sessions_for_one_plan_are_one_job():
-    """Written to record why the scratch-path collision this file first
-    went looking for is not a defect.
+def test_every_session_gets_its_own_state_file():
+    """This assertion was written backwards first, and finding out why is
+    what turned up the defect.
 
-    The temp name was derived from the state name by a fixed suffix, so
-    two sessions saving at once would have used the same scratch path.
-    They also use the same *state* path, because the session id is a hash
-    of the plan -- two sessions of one document are deliberately one
-    resumable job, which is what makes resume find it. A shared scratch
-    path adds no collision that the design does not already intend.
+    The guess was that two sessions of one plan are deliberately one
+    resumable job. They are not: ``session_id`` hashed
+    ``plan_hash:printer:time.time()``, and ``time.time()`` moves in ~15ms
+    steps on Windows -- so the id was neither unique nor stable. Two
+    hundred sessions of one plan to one printer produced **five** distinct
+    ids, one group of them seventy deep. A shared id is a shared state
+    file: one job overwrites another's resume point, and
+    ``list_resumable`` reports one job where there are two.
+
+    Two hundred rather than two, because two collide only if the clock
+    happens not to tick between them -- which is exactly why the original
+    version of this test passed alone and failed in a full run.
     """
-    first, second = _session(), _session()
+    paths = {_session().state_path for _ in range(200)}
 
-    assert first.state_path == second.state_path
+    assert len(paths) == 200
 
 
 def test_a_completed_run_removes_its_state_file():
