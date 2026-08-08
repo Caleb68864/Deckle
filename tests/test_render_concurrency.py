@@ -168,3 +168,60 @@ def test_rasterizing_is_serialised(pages, monkeypatch):
     _run(lambda i: render_mod.ink_bbox(refs[i % len(refs)]))
 
     assert peak == 1, f"{peak} rasterizations overlapped"
+
+
+def test_every_pdfium_document_open_is_guarded():
+    """A structural floor, because the runtime tests can only cover the
+    call sites that exist today.
+
+    pdfium's state is process-global, so the rule cannot be per-module:
+    the sites that hold the guard gain nothing from the ones that do not.
+    Three modules outside ``render`` open documents -- the printing
+    backend, the importer, and ``render`` itself -- and the printing one
+    is the sharpest, because the print dialog runs no thread of its own,
+    so a print rasterizes on the GUI thread while a preview worker may be
+    mid-render.
+
+    Asserted by reading the source rather than by importing, so a new
+    call site is caught whether or not any test exercises it.
+    """
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    unguarded: list[str] = []
+    for folder, _, names in os.walk(os.path.join(root, "deckle")):
+        if "__pycache__" in folder:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(folder, name)
+            with open(path, encoding="utf-8") as handle:
+                lines = handle.readlines()
+            for number, line in enumerate(lines, start=1):
+                code = line.split("#", 1)[0]
+                if not re.search(r"pdfium\.PdfDocument\s*\(", code):
+                    continue
+                # The guard is held across the document's life, so it
+                # opens somewhere above this line at a shallower indent.
+                indent = len(code) - len(code.lstrip())
+                guarded = False
+                for previous in reversed(lines[: number - 1]):
+                    stripped = previous.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    previous_indent = len(previous) - len(previous.lstrip())
+                    if previous_indent >= indent:
+                        continue
+                    if "pdfium_guard()" in previous or "_PDFIUM_LOCK" in previous:
+                        guarded = True
+                        break
+                    if stripped.startswith("def ") or stripped.startswith("class "):
+                        break
+                if not guarded:
+                    unguarded.append(f"{os.path.relpath(path, root)}:{number}")
+
+    assert unguarded == [], (
+        "pdfium documents opened without holding render.pdfium_guard(): "
+        f"{unguarded}"
+    )

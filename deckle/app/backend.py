@@ -40,7 +40,9 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.printing import PrintPass, PrintResult
 from deckle.core.profiles import PrinterProfile
-from deckle.core.render import rasterize_page, RenderedPage, render_sheet
+from deckle.core.render import (
+    pdfium_guard, rasterize_page, RenderedPage, render_sheet,
+)
 
 try:
     from deckle.core.session_log import log_print_job
@@ -205,18 +207,24 @@ def _render_sheet_side(
             _apply_rotate_backs(tmp_path, ignore_rotate)
 
         page_index = 1 if has_front else 0
-        pdf = pdfium.PdfDocument(tmp_path)
-        try:
-            if page_index >= len(pdf):
-                return RenderedPage(width=0, height=0, rgba=b"")
-            # rasterize_page closes pdfium's page and bitmap eagerly; see
-            # its docstring for why leaving them to the GC produces
-            # "Exception ignored in: <finalize object...>" on the console.
-            pil_image = rasterize_page(pdf, page_index, scale=dpi / 72).convert("RGBA")
-            width, height = pil_image.size
-            return RenderedPage(width=width, height=height, rgba=pil_image.tobytes())
-        finally:
-            pdf.close()
+        # Held across the document's whole life, not just the render.
+        # pdfium is process-global and this path rasterizes on the GUI
+        # thread -- the print dialog runs no thread of its own -- so a
+        # print issued while the preview is still drawing puts two threads
+        # in pdfium at once, which faults natively rather than raising.
+        with pdfium_guard():
+            pdf = pdfium.PdfDocument(tmp_path)
+            try:
+                if page_index >= len(pdf):
+                    return RenderedPage(width=0, height=0, rgba=b"")
+                # rasterize_page closes pdfium's page and bitmap eagerly;
+                # see its docstring for why leaving them to the GC produces
+                # "Exception ignored in: <finalize object...>" on the console.
+                pil_image = rasterize_page(pdf, page_index, scale=dpi / 72).convert("RGBA")
+                width, height = pil_image.size
+                return RenderedPage(width=width, height=height, rgba=pil_image.tobytes())
+            finally:
+                pdf.close()
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)

@@ -91,7 +91,42 @@ An ``RLock`` rather than a ``Lock`` because these regions nest:
 The cost is that renders no longer overlap. They contended for the same
 cores anyway, and a superseded render drops out at its next checkpoint --
 against a fault that ends the process, this is not a close trade.
+
+**Every module that touches pdfium must hold this**, not only this one --
+see :func:`pdfium_guard`. Guarding rasterization alone is not enough: an
+*open* racing another thread's render faults just as readily.
 """
+
+
+def pdfium_guard():
+    """Hold while touching pdfium from anywhere in Deckle.
+
+    pdfium is a single global library and its state is process-wide, so
+    the rule cannot be per-module: every document open, page render and
+    close has to be inside this, or the ones that are gain nothing from
+    the ones that are not.
+
+    Three callers outside this module need it, and the *printing* one is
+    the reason it is public rather than private. The print dialog runs no
+    thread of its own, so a print rasterizes **on the GUI thread** -- and
+    printing while the preview is still drawing is an entirely ordinary
+    thing to do, with a background render in flight the whole time.
+
+    Usable as a context manager::
+
+        with pdfium_guard():
+            doc = pdfium.PdfDocument(path)
+            ...
+            doc.close()
+
+    Reentrant, so a guarded region may call another one on the same
+    thread. Hold it across the document's whole life rather than around
+    the render alone: opening while another thread renders faults too --
+    measured, not assumed.
+
+    :returns: the process-wide pdfium lock.
+    """
+    return _PDFIUM_LOCK
 
 
 def rasterize_page(doc, page_index: int, *, scale: float, rotation: int = 0):
@@ -280,34 +315,40 @@ def thumbnails(
 
     result: list[RenderedPage] = []
     open_docs: dict[str, pdfium.PdfDocument] = {}
-    try:
-        for source_page in window:
-            if cancel is not None and cancel.is_set():
-                break
-            ref = source_page.ref
-            if is_blank_page(source_page):
-                # A blank references no file. Opening its empty path raised
-                # FileNotFoundError, which failed the WHOLE window -- one
-                # inserted blank left every thumbnail beside it missing too.
-                result.append(_blank_thumbnail(ref, dpi))
-                continue
-            doc = open_docs.get(ref.path)
-            if doc is None:
-                doc = pdfium.PdfDocument(ref.path)
-                open_docs[ref.path] = doc
-            result.append(
-                _pil_to_rendered_page(
-                    rasterize_page(
-                        doc,
-                        ref.page_index,
-                        scale=dpi / 72,
-                        rotation=_rotation_quarter_turns(source_page.rotate_deg),
+    # Held across the whole window rather than per page: `open_docs` keeps
+    # documents alive between iterations, so the guard has to span every
+    # open, every render and every close -- otherwise a document opened
+    # under it is rendered outside it on the next page.
+    with _PDFIUM_LOCK:
+        try:
+            for source_page in window:
+                if cancel is not None and cancel.is_set():
+                    break
+                ref = source_page.ref
+                if is_blank_page(source_page):
+                    # A blank references no file. Opening its empty path
+                    # raised FileNotFoundError, which failed the WHOLE
+                    # window -- one inserted blank left every thumbnail
+                    # beside it missing too.
+                    result.append(_blank_thumbnail(ref, dpi))
+                    continue
+                doc = open_docs.get(ref.path)
+                if doc is None:
+                    doc = pdfium.PdfDocument(ref.path)
+                    open_docs[ref.path] = doc
+                result.append(
+                    _pil_to_rendered_page(
+                        rasterize_page(
+                            doc,
+                            ref.page_index,
+                            scale=dpi / 72,
+                            rotation=_rotation_quarter_turns(source_page.rotate_deg),
+                        )
                     )
                 )
-            )
-    finally:
-        for doc in open_docs.values():
-            doc.close()
+        finally:
+            for doc in open_docs.values():
+                doc.close()
     return result
 
 
