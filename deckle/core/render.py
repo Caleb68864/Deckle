@@ -65,6 +65,35 @@ class RenderedPage:
     rgba: bytes
 
 
+_PDFIUM_LOCK = threading.RLock()
+"""Serialises every pdfium call in the process.
+
+**pdfium rendering is not thread-safe, and it does not fail politely.**
+Two threads rasterizing at once produce ``OSError: exception: access
+violation reading 0x0`` -- a native fault, not a Python exception -- which
+takes the whole application down with no traceback and nothing in the log.
+Measured at roughly one in thirty concurrent renders here, which is
+exactly the frequency that reads to a user as "Deckle randomly closes".
+
+Deckle reaches that state through ordinary use, not through an unusual
+one. Both views that render do it on a background ``QThread``, and both
+supersede a running job by setting its ``cancel`` flag and starting the
+next thread **without waiting for the old one to stop**. The flag is
+cooperative and is checked between steps, never inside a pdfium call, so
+the outgoing render is still inside pdfium when the incoming one begins.
+Scrubbing the preview does it; so does scrolling thumbnails while a
+preview renders, since the two views hold independent threads.
+
+An ``RLock`` rather than a ``Lock`` because these regions nest:
+``render_sheet`` holds it across a document's lifetime and calls
+``rasterize_page``, which takes it again on the same thread.
+
+The cost is that renders no longer overlap. They contended for the same
+cores anyway, and a superseded render drops out at its next checkpoint --
+against a fault that ends the process, this is not a close trade.
+"""
+
+
 def rasterize_page(doc, page_index: int, *, scale: float, rotation: int = 0):
     """Render one page to a PIL image, closing pdfium's children eagerly.
 
@@ -96,17 +125,18 @@ def rasterize_page(doc, page_index: int, *, scale: float, rotation: int = 0):
     closes the children in the order pdfium expects, so the caller is free
     to close the document whenever it likes.
     """
-    page = doc[page_index]
-    try:
-        bitmap = page.render(scale=scale, rotation=rotation)
+    with _PDFIUM_LOCK:
+        page = doc[page_index]
         try:
-            # to_pil() copies the pixels out, so the result does not alias
-            # the bitmap's buffer and stays valid after it closes.
-            return bitmap.to_pil()
+            bitmap = page.render(scale=scale, rotation=rotation)
+            try:
+                # to_pil() copies the pixels out, so the result does not
+                # alias the bitmap's buffer and stays valid after it closes.
+                return bitmap.to_pil()
+            finally:
+                bitmap.close()
         finally:
-            bitmap.close()
-    finally:
-        page.close()
+            page.close()
 
 
 def _pil_to_rendered_page(pil_image) -> RenderedPage:
@@ -194,17 +224,18 @@ def render_sheet(
                 return _empty_rendered_page()
             page_index = 1 if has_front else 0
 
-        pdf = pdfium.PdfDocument(tmp_path)
-        try:
-            if page_index >= len(pdf):
-                return _empty_rendered_page()
-            if cancel is not None and cancel.is_set():
-                return _empty_rendered_page()
-            return _pil_to_rendered_page(
-                rasterize_page(pdf, page_index, scale=dpi / 72)
-            )
-        finally:
-            pdf.close()
+        with _PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(tmp_path)
+            try:
+                if page_index >= len(pdf):
+                    return _empty_rendered_page()
+                if cancel is not None and cancel.is_set():
+                    return _empty_rendered_page()
+                return _pil_to_rendered_page(
+                    rasterize_page(pdf, page_index, scale=dpi / 72)
+                )
+            finally:
+                pdf.close()
     finally:
         # Deliberately no cleanup: the path belongs to the sheet cache, and
         # deleting it here would evict an entry the cache still believes it
@@ -317,11 +348,12 @@ def _rasterize_for_bbox(ref: SourceRef, dpi: int):
     Split out from ``ink_bbox`` so tests can patch this single choke point
     and count how many times an actual rasterization happens.
     """
-    doc = pdfium.PdfDocument(ref.path)
-    try:
-        return rasterize_page(doc, ref.page_index, scale=dpi / 72).convert("RGB")
-    finally:
-        doc.close()
+    with _PDFIUM_LOCK:
+        doc = pdfium.PdfDocument(ref.path)
+        try:
+            return rasterize_page(doc, ref.page_index, scale=dpi / 72).convert("RGB")
+        finally:
+            doc.close()
 
 
 def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]:
