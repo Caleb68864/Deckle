@@ -289,8 +289,28 @@ def _place_output_page(
             "been replaced with a shorter document since the project was saved."
         )
     src_page = src_pdf.pages[ref.page_index]
-    src_w, src_h = _cropped_source_box(src_page, output_page.crop_pt, ref)
-    formx = sheet_pdf.copy_foreign(Page(src_page).as_form_xobject())
+    # The crop is applied by mutating the page's CropBox, and `source_cache`
+    # hands out the *same* page object every time a document reuses it --
+    # which `deckle.core.locate` says outright is supported ("a document may
+    # use the same source page twice"). Each insets were subtracted from the
+    # box left behind by the previous one, so the second copy of a page was
+    # cropped twice and the fourth four times: measured on a page repeated
+    # four times with a 50pt left crop, the ink came out 71, 71, 61 and 35
+    # pixels wide, the last one clipped through the middle of the numeral.
+    #
+    # Restoring the box makes the operation idempotent without keeping a
+    # cache of original boxes: `copy_foreign` has already materialised the
+    # form into `sheet_pdf` by then, so the source page is free to go back
+    # to how it was found.
+    original_box = None
+    if output_page.crop_pt is not None:
+        original_box = Rectangle(*(float(v) for v in src_page.cropbox))
+    try:
+        src_w, src_h = _cropped_source_box(src_page, output_page.crop_pt, ref)
+        formx = sheet_pdf.copy_foreign(Page(src_page).as_form_xobject())
+    finally:
+        if original_box is not None:
+            src_page.cropbox = original_box
     name = dest_page.add_resource(formx, Name.XObject, prefix="Fx")
 
     placement = output_page.placement
