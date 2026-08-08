@@ -106,6 +106,30 @@ Defects found during development, each with a full write-up in
 - 25 acceptance criteria described behaviour that no test asserted,
   including the front/back page-index mapping — nothing would have caught a
   transposition, the failure that ruins a manual-duplex print run.
+- **`--crop` cut the wrong edge of any page a scanner had straightened.**
+  A `/Rotate` flag means the stored left edge may be what you see at the
+  top, and the exporter was the one layer working in stored rather than
+  displayed coordinates — so it took the inset off the wrong side and
+  scaled the placement from a width and height the wrong way round.
+  `--auto-crop` measured in the displayed frame, so it was guaranteed to
+  produce numbers that would be applied to the wrong edges.
+- **A saved layout could ask for something this build cannot do, and get
+  it.** `binding_edge: "middle"` is outside its declared `Literal` and
+  nothing enforced it, so it imposed a book bound on the *right* — the
+  opposite of the default — while `deckle info` reported no warnings.
+  `flip_axis: "diagonal"` planned the back pass unturned, printing every
+  back side upside down on a long-edge printer. `page_index: -2` is a
+  valid Python index and printed the second-from-last page instead.
+- Every JSON store — project files, printer profiles, the recent list, the
+  print session — was written by truncating the target first, so a write
+  that died partway destroyed the previous copy. Worst for autosave, whose
+  whole promise is surviving a killed process, and for a calibration, which
+  is measured by hand and derived from nothing.
+- A `.deckle` that was valid JSON but not a project object printed a
+  traceback rather than a message, on a file type that may be shared.
+- Print sessions hashed `time.time()` into their id, which steps ~15ms on
+  Windows, so runs of one document to one printer collided and shared a
+  state file — one job silently overwriting another's resume point.
 
 ### Removed
 
