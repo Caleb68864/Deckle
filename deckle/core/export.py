@@ -168,6 +168,33 @@ def _rotation_matrix(rotate_deg: int, cx: float, cy: float) -> str:
     return f"{cos_t} {sin_t} {-sin_t} {cos_t} {e} {f} cm"
 
 
+def _insets_in_stored_space(
+    crop_pt: tuple[float, float, float, float], rotate_deg: int
+) -> tuple[float, float, float, float]:
+    """Re-label displayed-frame insets as stored-frame ones.
+
+    ``/Rotate`` turns the page clockwise for display, so under 90 degrees
+    the stored left edge is what the reader sees at the top. The insets
+    arrive named for what the *user* can see -- that is the frame the
+    loader measures in, the preview rasterises in, ``--auto-crop`` reports
+    in, and therefore the only frame the number on the command line can
+    mean -- so each one has to be re-labelled before it is subtracted from
+    a stored coordinate.
+
+    :param crop_pt: ``(left, bottom, right, top)`` as displayed.
+    :param rotate_deg: the page's ``/Rotate``, normalised to 0/90/180/270.
+    :returns: the same four insets, named for the stored edges.
+    """
+    left, bottom, right, top = crop_pt
+    if rotate_deg == 90:
+        return top, left, bottom, right
+    if rotate_deg == 180:
+        return right, top, left, bottom
+    if rotate_deg == 270:
+        return bottom, right, top, left
+    return left, bottom, right, top
+
+
 def _cropped_source_box(
     src_page: pikepdf.Page,
     crop_pt: tuple[float, float, float, float] | None,
@@ -183,23 +210,50 @@ def _cropped_source_box(
     destination rect, which is how the crop's offset is accounted for
     without any translation arithmetic here.
 
+    **The two frames are the whole difficulty.** A page carrying
+    ``/Rotate`` -- which is how every scanner and every "rotate and save"
+    records a sideways page, so not an exotic input -- stores its box
+    unrotated and is displayed turned. Every other layer of Deckle is
+    already in the displayed frame: ``loader`` measures through pdfium,
+    which applies ``/Rotate``; the preview rasterises through the same
+    renderer; ``--auto-crop`` reports insets measured there; and the user
+    types a number against what they saw. This function is the one place
+    that touches the stored frame, so it is the one place that has to
+    convert, and it converts in both directions: the insets are re-labelled
+    on the way in, and the size is transposed on the way out.
+
+    Getting only one of those right still fails. ``as_form_xobject`` puts
+    the rotation in a ``/Matrix`` rather than in the ``BBox``, so the
+    form's effective extent is the rotated box -- a size describing the
+    stored box scales the placement by a width and height the wrong way
+    round, while a cut on the stored edge removes the wrong margin. Both
+    produce a confident, plausible sheet that is wrong by inches.
+
     Mutating the source page is safe and local: ``source_cache`` is
     created per export and closed with it, the source file is opened
     read-only and never saved, and each page's box is set immediately
     before its own form is built.
 
     :param src_page: the page to crop, modified in place.
-    :param crop_pt: ``(left, bottom, right, top)`` insets, or ``None``.
-    :param ref: the ``SourceRef``, for the page's measured size.
-    :returns: the ``(width, height)`` the placement should be sized from.
+    :param crop_pt: ``(left, bottom, right, top)`` insets as displayed, or
+        ``None``.
+    :param ref: the ``SourceRef``, for the page's measured size -- which is
+        already the displayed size.
+    :returns: the ``(width, height)`` the placement should be sized from,
+        in the same frame as ``ref``.
     """
     if crop_pt is None:
         return ref.width_pt, ref.height_pt
-    left, bottom, right, top = crop_pt
+    rotate_deg = int(src_page.rotation or 0) % 360
+    left, bottom, right, top = _insets_in_stored_space(crop_pt, rotate_deg)
     box = [float(v) for v in src_page.cropbox]
     x0, y0, x1, y1 = min(box[0], box[2]), min(box[1], box[3]), max(box[0], box[2]), max(box[1], box[3])
     src_page.cropbox = Rectangle(x0 + left, y0 + bottom, x1 - right, y1 - top)
-    return (x1 - x0) - left - right, (y1 - y0) - bottom - top
+    width = (x1 - x0) - left - right
+    height = (y1 - y0) - bottom - top
+    if rotate_deg in (90, 270):
+        width, height = height, width
+    return width, height
 
 
 def _place_output_page(
