@@ -149,7 +149,18 @@ Defects found during development, each with a full write-up in
   picking a winner.
 - `schedule -o` and `crop-preview -o` truncated their output before
   writing, so a failed write destroyed the previous file. `export` had
-  always written to a scratch file and renamed it; now all three do.
+  always written to a scratch file and renamed it; now all five commands
+  that take `-o` do, and all five validate the path before doing any work
+  and report a write failure rather than raising it.
+- The single-sheet render cache grew without limit in the system temp
+  directory — 8,297 files on one development machine — because its
+  in-memory bound governs what it hands back, not what a killed process
+  leaves behind, and the cleanup function its own docstring told callers
+  to use had no callers.
+- `deckle dummy --pages 0` answered a typo with a traceback, wrapping a
+  message that already said exactly what was wrong.
+- Resuming a print run with a negative sheet count silently reprinted one
+  sheet and treated the rest of the pass as finished.
 
 ### Removed
 

@@ -54,10 +54,16 @@ def visible_range(scroll_index: int, viewport_count: int, total: int) -> tuple[i
     :param scroll_index: the first page currently in view.
     :param viewport_count: how many pages the viewport shows.
     :param total: the document's page count.
-    :returns: ``(start, count)``, clamped to the document and widened by
-        :data:`THUMBNAIL_PREFETCH` on each side so a small scroll does not
-        immediately trigger another fetch. ``(0, 0)`` for an empty
-        document or a zero-height viewport.
+    :returns: ``(start, count)``, widened by :data:`THUMBNAIL_PREFETCH` on
+        each side so a small scroll does not immediately trigger another
+        fetch. ``(0, 0)`` for an empty document or a zero-height viewport.
+
+        ``count`` is clamped to the document; ``start`` is not, so a
+        ``scroll_index`` past the end returns a start beyond the last page
+        with a count of ``0``. That is inert -- the caller places an empty
+        result at an offset nothing reads -- but the previous wording said
+        both were clamped, and only one is. Reachable transiently when
+        pages are deleted while the view is scrolled to the end.
     """
     if total <= 0 or viewport_count <= 0:
         return (0, 0)
