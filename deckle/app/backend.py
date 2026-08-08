@@ -518,13 +518,33 @@ class QtPrintBackend:
     ) -> PrintResult:
         """Submit fronts and backs as one hardware-duplex Qt job.
 
-        Only used when ``duplex_modes(printer_name).single_pass_duplex``
-        is True. Chunking still applies -- one job per chunk of sheets,
-        each job interleaving front/back pages for QPrinter's own duplex
-        unit to reassemble.
+        **Nothing calls this yet.** It is written and complete, and
+        ``duplex_modes(printer_name).single_pass_duplex`` reports whether
+        it would apply, but no path in Deckle reaches it: the print dialog
+        and :class:`~deckle.core.print_session.PrintSession` both drive
+        manual duplex unconditionally. Said outright because the previous
+        wording -- "only used when ``single_pass_duplex`` is True" --
+        described a condition on something that never happens, which is
+        the same shape as ``Mark.cut_line``'s declared-but-unproduced kind
+        and ``Sheet.back``'s old docstring: a sentence asserting a
+        capability the program does not have.
 
-        Tracks the same submitted/uncertain/unsubmitted split as
-        :meth:`submit_pass`.
+        Chunking still applies -- one job per chunk of sheets, each job
+        interleaving front/back pages for QPrinter's own duplex unit to
+        reassemble. Tracks the same submitted/uncertain/unsubmitted split
+        as :meth:`submit_pass`.
+
+        **The registration correction is applied here too**, as it is on
+        the manual path. It was omitted, which cost nothing while nothing
+        called this and would have cost a calibration the moment something
+        did: a user who measured their printer's back-side offset would
+        have had it silently ignored on exactly the printers good enough
+        to have a duplexer. Whether a *hardware* duplexer deserves the
+        offset measured for a hand reload is a real question and not
+        settled here -- but discarding a measured number without saying so
+        is not the answer to it, and if the answer turns out to be "a
+        duplexer needs no correction" then the profile should record that
+        rather than this method deciding it in silence.
 
         :param plan: the imposed sheets.
         :param sheets: the sheet indices to print.
@@ -573,7 +593,13 @@ class QtPrintBackend:
                             if not first:
                                 printer.newPage()
                             first = False
-                            rendered = _render_sheet_side(plan, sheet_index, side, dpi, False, False)
+                            rendered = _render_sheet_side(
+                                plan, sheet_index, side, dpi, False, False,
+                                back_offset_pt=(
+                                    self.profile.back_offset_x_pt,
+                                    self.profile.back_offset_y_pt,
+                                ),
+                            )
                             self._paint_rendered_page(painter, printer, rendered)
                 finally:
                     painter.end()
