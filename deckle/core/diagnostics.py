@@ -15,7 +15,8 @@ This module is that trace. It follows the conventions already established by
 * :class:`~logging.handlers.RotatingFileHandler`, capped and with a bounded
   number of generations -- an append-only log that grows forever is a
   support problem, not an observability feature;
-* the same OS-appropriate data directory, resolved once in :func:`data_dir`.
+* the same OS-appropriate data directory as the session log, resolved
+  once in :func:`deckle.core.paths.data_dir`.
 
 **Logging must never become a failure mode of its own.** A diagnostic
 subsystem that raises while reporting a problem turns a degraded app into a
@@ -39,6 +40,8 @@ import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
+
+from deckle.core.paths import data_dir as app_data_dir
 
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB, matching session_log
 _BACKUP_COUNT = 3
@@ -68,13 +71,12 @@ def data_dir() -> Path:
     override = os.environ.get("DECKLE_LOG_DIR")
     if override:
         return Path(override)
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "Deckle"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Deckle"
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "deckle"
+    # The platform answer comes from `paths`, which exists to hold it once.
+    # This was the *fourth* copy of that ladder -- profiles, the recent
+    # list, the session log and here -- and the fourth is the one that
+    # shows the pattern: each was added by someone who needed a directory
+    # and wrote the obvious thing, none of them wrong on its own.
+    return app_data_dir()
 
 
 def diagnostics_log_path() -> Path:

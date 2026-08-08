@@ -27,7 +27,7 @@ import pytest
 
 hypothesis = pytest.importorskip("hypothesis")
 
-from hypothesis import HealthCheck, assume, given, settings  # noqa: E402
+from hypothesis import HealthCheck, given, settings  # noqa: E402
 from hypothesis import strategies as st  # noqa: E402
 
 from deckle.core.layout import (  # noqa: E402
@@ -242,12 +242,20 @@ def test_lengths_that_do_not_add_up_are_refused(lengths, delta):
 
 
 @SLOW
-@given(count=st.integers(min_value=4, max_value=24),
+@given(count=st.integers(min_value=1, max_value=6).map(lambda n: n * 4),
        crop=crops, trim=trims)
 def test_crop_trim_and_folio_together_keep_content_on_the_sheet(count, crop, trim):
     """The combination no example test covers, and the reason these are
-    properties: each of the three was verified alone."""
-    assume(count % 4 == 0)
+    properties: each of the three was verified alone.
+
+    The page count is *generated* as a multiple of four rather than
+    filtered with ``assume``. Filtering discarded three examples in four,
+    which trips Hypothesis's ``filter_too_much`` health check -- and it
+    trips it *sometimes*, depending on how the draws happen to fall, so
+    the test failed once in a full-suite run and passed on every rerun.
+    A flaky property test is worse than no property test: it teaches
+    people to rerun rather than to look.
+    """
     plan, _ = _impose(
         _pages(count), fold_scheme="folio", trim_pt=trim,
         crop_odd_pt=crop, crop_even_pt=crop,
