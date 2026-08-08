@@ -31,7 +31,9 @@ import dataclasses
 from dataclasses import asdict
 from typing import Any, Callable
 
-from deckle.core.models import is_blank_page, LayoutSettings, Project, SourcePage, SourceRef
+from deckle.core.models import (
+    BLANK_SOURCE_PATH, is_blank_page, LayoutSettings, Project, SourcePage, SourceRef
+)
 from deckle.core.paths import write_text_atomic
 
 FORMAT_VERSION = 1
@@ -195,6 +197,76 @@ def _page_to_dict(page: SourcePage) -> dict[str, Any]:
         "rotate_deg": page.rotate_deg,
         "skipped": page.skipped,
     }
+
+
+_PAGE_FIELD_TYPES = {
+    "path": str,
+    "page_index": int,
+    "sha256": str,
+    "width_pt": float,
+    "height_pt": float,
+    "rotate_deg": int,
+    "skipped": bool,
+}
+
+
+def _check_page_entry(index: int, data: dict[str, Any]) -> None:
+    """Reject a stored page entry that names no page, or names it wrongly.
+
+    Same reasoning as :func:`_check_layout_values`, and the consequences
+    here are worse: what a bad layout value corrupts is the geometry, and
+    what a bad page entry corrupts is *which page gets printed*.
+
+    ``page_index: -2`` was the one that mattered. It is a perfectly good
+    Python index, so it reached ``src_pdf.pages[-2]`` and exported the
+    second-from-last page -- verified on the numbered dummy, where an
+    eight-page source with an entry naming page -2 produced a sheet
+    reading **7**, with no warning anywhere and nothing in the output to
+    say it was not what was asked for.
+
+    ``-1`` stays legal for a blank, because that is the sentinel
+    :func:`deckle.app.state.make_blank_page` writes. It is allowed only
+    together with ``BLANK_SOURCE_PATH``, so it means something exactly
+    where the format intends it and nowhere else -- accepting a bare
+    ``-1`` on a real source would reopen the wrapping bug for the last
+    page of every document.
+
+    Only the *sign* is checkable here. Whether an index is past the end
+    depends on the source, which may not even be present at load time --
+    see :mod:`deckle.core.export` for the other half.
+
+    :param index: which entry, for the message.
+    :param data: the stored page object.
+    :returns: nothing.
+    :raises ValueError: the entry cannot describe a page.
+    """
+    for name, expected in _PAGE_FIELD_TYPES.items():
+        if not _describes(data[name], expected):
+            raise ValueError(
+                f"page {index}: {name!r} is {data[name]!r}, but a page's "
+                f"{name!r} must be {_describe_hint(expected)}"
+            )
+
+    is_blank = data["path"] == BLANK_SOURCE_PATH
+    if data["page_index"] < 0 and not (is_blank and data["page_index"] == -1):
+        raise ValueError(
+            f"page {index}: 'page_index' is {data['page_index']}, but a page "
+            "index counts from 0. A negative index is a valid Python index, "
+            "so this would have printed a different page rather than failing."
+        )
+    for name in ("width_pt", "height_pt"):
+        if data[name] <= 0:
+            raise ValueError(
+                f"page {index}: {name!r} is {data[name]!r}, but a page must "
+                "have a positive size"
+            )
+    if data["rotate_deg"] % 90 != 0:
+        raise ValueError(
+            f"page {index}: 'rotate_deg' is {data['rotate_deg']}, but a page "
+            "rotation must be a multiple of 90. The exporter applies 90 and "
+            "270 and treats everything else as upright, so an oblique value "
+            "would be dropped rather than honoured."
+        )
 
 
 def _page_from_dict(data: dict[str, Any]) -> SourcePage:
@@ -498,6 +570,10 @@ def load_project(
                 f"page {index} is {_shape_of(entry)}, not a page object, so "
                 "this is not a Deckle project"
             )
+        missing = sorted(set(_PAGE_FIELD_TYPES) - set(entry))
+        if missing:
+            raise KeyError(", ".join(repr(name) for name in missing))
+        _check_page_entry(index, entry)
     stored_layout = payload["layout"]
     if not isinstance(stored_layout, dict):
         raise ValueError(

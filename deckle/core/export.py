@@ -273,6 +273,21 @@ def _place_output_page(
         src_pdf = pikepdf.open(ref.path)
         source_cache[ref.path] = src_pdf
 
+    # The other half of the page-index check. `project_io` refuses a
+    # negative index, which it can judge from the entry alone; whether an
+    # index is past the end depends on the source, which may not even have
+    # been present at load time. Raised as a `ValueError` naming all three
+    # numbers the remedy needs -- which file, which page was asked for, how
+    # many it has -- rather than surfacing pikepdf's `IndexError:
+    # Accessing nonexistent PDF page number` as a traceback out of
+    # `deckle export`.
+    page_count = len(src_pdf.pages)
+    if not 0 <= ref.page_index < page_count:
+        raise ValueError(
+            f"{os.path.basename(ref.path)} has {page_count} page(s), but the "
+            f"project asks for page {ref.page_index}. The source has probably "
+            "been replaced with a shorter document since the project was saved."
+        )
     src_page = src_pdf.pages[ref.page_index]
     src_w, src_h = _cropped_source_box(src_page, output_page.crop_pt, ref)
     formx = sheet_pdf.copy_foreign(Page(src_page).as_form_xobject())
