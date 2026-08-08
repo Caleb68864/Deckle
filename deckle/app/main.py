@@ -20,7 +20,7 @@ from deckle.app.views.import_view import ImportView
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.print_dialog import PrintDialog
-from deckle.core.export import export
+from deckle.core.export import clear_sheet_cache, export
 from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
 from deckle.core.outputs import describe_write_failure, output_path_problem
@@ -886,6 +886,12 @@ class MainWindow:
 
         recent.record(path)
         self._refresh_recent_menu()
+        # The outgoing project's cached sheet renders are unreachable the
+        # moment the plan changes -- their key is the plan hash -- so they
+        # are dead weight in temp until something removes them. Removed
+        # here rather than only at exit, because scrubbing one long
+        # document and then opening another is an ordinary session.
+        clear_sheet_cache()
         self.state = AppState(project, project_path=path)
         self.import_view.state = self.state
         self.arrange_view.state = self.state

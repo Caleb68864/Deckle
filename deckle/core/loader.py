@@ -23,6 +23,7 @@ from PIL import Image
 
 from deckle.core.diagnostics import log_exception
 from deckle.core.models import LayoutWarning, SourcePage, SourceRef
+from deckle.core.paths import evict_lru_files
 from deckle.core.render import pdfium_guard
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -49,47 +50,17 @@ def _evict_lru_cache_entries(cache_dir: str, max_bytes: int) -> None:
     Runs at the start of every ``load_image_dir`` call -- the only place
     that touches this cache -- so the bound is enforced "on startup" of the
     next import rather than requiring a separate app-lifecycle hook.
-    Recency is each file's last-access time (falling back to modification
-    time on filesystems that don't track atime), so a file that was merely
-    read still counts as recently used.
+
+    The implementation moved to :func:`deckle.core.paths.evict_lru_files`
+    when the *export* cache turned out to need the same rule and had none:
+    its in-memory LRU bounds what it hands back and does nothing about
+    files a killed process left behind. Measured at 8,297 files and 50 MB
+    on one development machine.
     """
-    if not os.path.isdir(cache_dir):
-        return
-
-    entries: list[tuple[float, int, str]] = []
-    total = 0
-    for entry in os.scandir(cache_dir):
-        if not entry.is_file():
-            continue
-        try:
-            stat = entry.stat()
-        except OSError as exc:
-            # A file that vanished or is unreadable simply does not count
-            # toward the cache budget. Recorded because a cache that will
-            # not shrink is otherwise a mystery.
-            log_exception("cache_entry_stat_failed", exc, path=entry.path)
-            continue
-        total += stat.st_size
-        recency = getattr(stat, "st_atime", None) or stat.st_mtime
-        entries.append((recency, stat.st_size, entry.path))
-
-    if total <= max_bytes:
-        return
-
-    entries.sort(key=lambda item: item[0])  # oldest-accessed first
-    for _recency, size, file_path in entries:
-        if total <= max_bytes:
-            break
-        try:
-            os.remove(file_path)
-        except OSError as exc:
-            # Undeletable entry -- skip it and keep evicting others. Note
-            # `total` is deliberately NOT decremented here: the bytes are
-            # still on disk, so pretending otherwise would end eviction
-            # early and leave the cache over budget.
-            log_exception("cache_eviction_failed", exc, path=file_path)
-            continue
-        total -= size
+    evict_lru_files(
+        cache_dir, max_bytes,
+        on_error=lambda event, exc, path: log_exception(event, exc, path=path),
+    )
 
 
 class SourceLoadError(Exception):

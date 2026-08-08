@@ -37,9 +37,15 @@ from pikepdf.canvas import ContentStreamBuilder
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
+from deckle.core.paths import evict_lru_files
 from deckle.core.printing import duplex_flip_edge
 
 _CACHE_DIR_NAME = "deckle_export_cache"
+
+# Disk budget for the single-sheet cache directory, mirroring the import
+# cache's 2 GB (loader._CACHE_MAX_BYTES). Smaller because these are single
+# imposed sheets rather than normalised scans: 512 MB is thousands of them.
+_CACHE_MAX_BYTES = 512 * 1024 ** 2
 
 # Default bound on the number of cached single-sheet exports kept on disk.
 _DEFAULT_CACHE_SIZE = 200
@@ -964,6 +970,21 @@ _call_count_lock = threading.Lock()
 def _cache_dir() -> str:
     directory = os.path.join(tempfile.gettempdir(), _CACHE_DIR_NAME)
     os.makedirs(directory, exist_ok=True)
+    # The in-memory LRU bounds what this cache will hand back. It does
+    # nothing about the *directory*, which keeps every file a killed
+    # process left behind and every file whose deletion failed -- and
+    # `clear_sheet_cache`, whose docstring says to call it on project
+    # close, had no callers at all. Measured at 8,297 files and 50 MB in
+    # one development machine's temp directory.
+    #
+    # Bounded here rather than at shutdown for the reason the import cache
+    # already is (red-team A-7): a budget enforced by the next writer
+    # survives a crash, and a cleanup call at exit is exactly what a crash
+    # skips.
+    evict_lru_files(
+        directory, _CACHE_MAX_BYTES,
+        on_error=lambda event, exc, path: log_exception(event, exc, path=path),
+    )
     return directory
 
 
@@ -1019,8 +1040,12 @@ def export_sheet_cached(plan: SheetPlan, sheet_index: int) -> str:
 def clear_sheet_cache() -> None:
     """Evict every cached single-sheet export and remove its temp file.
 
-    Call on project close so scrubbing a large document doesn't leak temp
-    files across sessions.
+    Called when a project is replaced, so scrubbing a large document does
+    not leave a session's worth of sheets behind. It **said** that before
+    anything called it, which is why the directory is also bounded by a
+    disk budget in :func:`_cache_dir`: a cleanup hook only runs on the
+    exits that reach it, and the leak this addresses is largest on the
+    ones that do not.
 
     :returns: nothing. A temp file that cannot be deleted is logged and
         skipped -- cleanup failing must not fail the close.

@@ -96,6 +96,81 @@ def data_dir(*parts: str) -> Path:
     return _root("XDG_DATA_HOME", Path.home() / ".local" / "share").joinpath(*parts)
 
 
+def evict_lru_files(directory: str | os.PathLike[str], max_bytes: int,
+                    on_error=None) -> None:
+    """Delete least-recently-used files until ``directory`` fits ``max_bytes``.
+
+    Deckle keeps two on-disk caches in the system temp directory -- the
+    img2pdf import normalisation cache and the single-sheet export cache --
+    and neither is emptied by an ordinary exit. The in-memory LRU that the
+    export cache keeps bounds what it will *hand back*; it does nothing
+    about files a killed process left behind, or ones whose deletion
+    failed. So the bound has to be on the directory, enforced by whoever
+    next writes to it, rather than on a cleanup call at shutdown that a
+    crash skips.
+
+    Recency is each file's last-access time, falling back to modification
+    time on filesystems that do not track atime, so a file that was merely
+    read still counts as recently used.
+
+    :param directory: the cache directory. A missing one is not an error.
+    :param max_bytes: the budget. Eviction stops as soon as the total is
+        at or under it.
+    :param on_error: called with ``(event, exception, path)`` when a file
+        cannot be measured or deleted. A callback rather than logging
+        here, so this module keeps its "imports nothing from deckle"
+        property -- the diagnostics logger depends on *this* module for
+        its own directory.
+    :returns: nothing, and raises nothing. A cache that cannot be pruned
+        must not be what stops an import or an export.
+    """
+    def report(event, exc, path):
+        if on_error is not None:
+            on_error(event, exc, path)
+
+    if not os.path.isdir(directory):
+        return
+
+    entries: list[tuple[float, int, str]] = []
+    total = 0
+    try:
+        scanned = list(os.scandir(directory))
+    except OSError as exc:
+        report("cache_scan_failed", exc, str(directory))
+        return
+    for entry in scanned:
+        try:
+            if not entry.is_file():
+                continue
+            stat = entry.stat()
+        except OSError as exc:
+            # A file that vanished or is unreadable simply does not count
+            # toward the budget. Reported because a cache that will not
+            # shrink is otherwise a mystery.
+            report("cache_entry_stat_failed", exc, entry.path)
+            continue
+        total += stat.st_size
+        entries.append((getattr(stat, "st_atime", None) or stat.st_mtime,
+                        stat.st_size, entry.path))
+
+    if total <= max_bytes:
+        return
+
+    entries.sort(key=lambda item: item[0])  # oldest-accessed first
+    for _recency, size, file_path in entries:
+        if total <= max_bytes:
+            break
+        try:
+            os.remove(file_path)
+        except OSError as exc:
+            # `total` is deliberately NOT decremented: the bytes are still
+            # on disk, so pretending otherwise would end eviction early and
+            # leave the cache over budget.
+            report("cache_eviction_failed", exc, file_path)
+            continue
+        total -= size
+
+
 @contextlib.contextmanager
 def atomic_output(path: str | os.PathLike[str]):
     """Yield a scratch path to write, renamed over ``path`` on success.
