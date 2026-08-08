@@ -247,6 +247,14 @@ Four insets — left, bottom, right, top — from each source page's own edges.
 Insets rather than a rectangle because one document can hold pages of
 different sizes, and a fixed rectangle would mean something different on each.
 
+The edges are the ones **you can see**, not the ones the file stores. A page a
+scanner straightened carries a `/Rotate` flag: the content is left alone and
+the page records which way up to display it, so its stored left edge may be
+what you see at the top. `--crop 100pt,0,0,0` takes 100pt off the left of the
+page as it appears in a viewer, at any rotation — which is also the frame
+`--auto-crop` measures in and the preview renders in, so the number you read
+off one is the number the other applies.
+
 This matters more than it sounds. A public-domain PDF typeset for a different
 trim size carries an inch or more of white on every edge, and scaling it into
 a small cell scales the *margins* too. On a 612×792 scan with 1.5in margins
