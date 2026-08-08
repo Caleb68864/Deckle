@@ -30,6 +30,7 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.core.paths import atomic_output, write_text_atomic
 from deckle.core.schedule import build_schedule, format_schedule_text
 from deckle.core.project_io import (
     PathOutsideRootsAdvisory,
@@ -1011,8 +1012,11 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        with open(args.output, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        # Atomic, so a failed write leaves the previous schedule intact --
+        # the same guarantee `export` already gives for a PDF. Two commands
+        # of one program writing a file the user named should not differ on
+        # whether a full disk destroys what was there.
+        write_text_atomic(args.output, text)
     except OSError as exc:
         print(f"error: {describe_write_failure(args.output, exc)}", file=sys.stderr)
         log_exception("output_write_failed", exc, path=args.output)
@@ -1070,7 +1074,10 @@ def _cmd_crop_preview(args: argparse.Namespace) -> int:
         "RGBA", (composite.width, composite.height), composite.rgba
     )
     try:
-        image.save(args.output)
+        # Written beside the target and renamed, so an encoder that fails
+        # partway leaves the previous overlay rather than a truncated PNG.
+        with atomic_output(args.output) as scratch:
+            image.save(scratch)
     except (OSError, ValueError) as exc:
         _report_write_failure(args.output, exc)
         return 1

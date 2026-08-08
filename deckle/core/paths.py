@@ -29,6 +29,7 @@ This module must not import any Qt binding -- see
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -93,6 +94,45 @@ def data_dir(*parts: str) -> Path:
         their own parents.
     """
     return _root("XDG_DATA_HOME", Path.home() / ".local" / "share").joinpath(*parts)
+
+
+@contextlib.contextmanager
+def atomic_output(path: str | os.PathLike[str]):
+    """Yield a scratch path to write, renamed over ``path`` on success.
+
+    For output written by something that wants a filename of its own --
+    an image encoder, a serialiser -- where :func:`write_text_atomic` does
+    not fit because the caller, not this module, produces the bytes.
+
+    The scratch file keeps the target's **extension**, because the writer
+    usually infers its format from it: a PIL ``Image.save`` handed a
+    ``.tmp`` path cannot tell what it is being asked to encode.
+
+    The guarantee is the one :func:`deckle.core.export.export` already
+    gives for PDFs -- a write that fails partway leaves whatever was at
+    ``path`` untouched -- so every output Deckle names behaves the same
+    way rather than depending on which command produced it.
+
+    :param path: the file to end up with.
+    :returns: a context manager yielding the scratch path to write to.
+    :raises OSError: the scratch file cannot be created, or the rename
+        fails. The scratch file is removed first either way.
+    """
+    target = Path(path)
+    directory = target.parent if str(target.parent) else Path(".")
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(directory), prefix=f".{target.stem}.", suffix=target.suffix
+    )
+    os.close(fd)
+    try:
+        yield tmp_name
+        os.replace(tmp_name, target)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 def write_text_atomic(path: str | os.PathLike[str], text: str, *,
