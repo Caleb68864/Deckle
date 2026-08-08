@@ -21,6 +21,7 @@ This module must not import Qt bindings -- see ``tests/test_core_purity.py``.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import warnings
@@ -29,6 +30,7 @@ from dataclasses import asdict
 from typing import Any, Callable
 
 from deckle.core.models import is_blank_page, LayoutSettings, Project, SourcePage, SourceRef
+from deckle.core.paths import write_text_atomic
 
 FORMAT_VERSION = 1
 
@@ -182,9 +184,13 @@ def _page_from_dict(data: dict[str, Any]) -> SourcePage:
 
 
 def _layout_to_dict(layout: LayoutSettings) -> dict[str, Any]:
-    data = asdict(layout)
-    data["paper"] = list(layout.paper)
-    return data
+    # No per-field conversion on the way out, deliberately mirroring
+    # `_layout_from_dict`: `json` serialises a tuple as an array already,
+    # so naming `paper` here achieved nothing that the encoder was not
+    # doing for every other tuple field anyway. Naming one field was how
+    # the read side came to be wrong; leaving the same shape here would
+    # invite someone to "fix" the asymmetry by adding the other three.
+    return asdict(layout)
 
 
 class UnknownLayoutFieldsWarning(UserWarning):
@@ -244,12 +250,21 @@ def save_project(project: Project, path: str) -> None:
     Only references (path/page_index/sha256) and per-page overrides are
     written -- never page content.
 
+    The write is atomic (see :func:`deckle.core.paths.write_text_atomic`):
+    a save that fails partway leaves the previous file intact. That matters
+    most for the copy nobody is watching. Autosave runs unattended on a
+    daemon timer thread, and its whole promise is that a killed process
+    loses at most the last half-second of edits -- but a truncating write
+    killed mid-flight destroyed the recovery file itself, so the one
+    failure autosave exists to survive was the one it could not.
+
     :param project: the project to serialize.
     :param path: the ``.deckle`` file to write.
     :returns: nothing.
-    :raises OSError: the path cannot be opened for writing (missing
-        directory, read-only file, absent drive). Not caught here: the
-        caller owns the message, and it names the path the user typed.
+    :raises OSError: the path cannot be written (missing directory,
+        read-only file, absent drive). Not caught here: the caller owns the
+        message, and it names the path the user typed. The previous
+        contents of ``path`` are still there.
     """
     payload = {
         "version": FORMAT_VERSION,
@@ -257,8 +272,9 @@ def save_project(project: Project, path: str) -> None:
         "layout": _layout_to_dict(project.layout),
         "printer": project.printer,
     }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    buffer = io.StringIO()
+    json.dump(payload, buffer, indent=2)
+    write_text_atomic(path, buffer.getvalue())
 
 
 def load_project(

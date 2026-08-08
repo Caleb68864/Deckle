@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-from deckle.core.paths import config_dir
+from deckle.core.paths import config_dir, write_text_atomic
 
 
 @dataclass(frozen=True)
@@ -80,12 +80,29 @@ class PrinterProfile:
     """
 
     def save(self, name: str) -> None:
-        """Persist this profile as JSON, keyed by printer ``name``."""
+        """Persist this profile as JSON, keyed by printer ``name``.
+
+        Written atomically, because this is the most expensive data Deckle
+        holds: a calibration is not derived from anything, it comes from
+        printing a target, measuring it by hand, and reprinting when the
+        numbers are wrong. A truncating write killed partway destroyed it,
+        and :meth:`load` has no tolerance for a corrupt file -- so a torn
+        write did not degrade the printer to "uncalibrated", it made that
+        printer unusable until the user found and deleted a file in a
+        directory they have never opened.
+
+        :param name: the printer this profile describes.
+        :returns: nothing.
+        :raises OSError: the config directory cannot be written. The
+            previously stored calibration is still there.
+        """
         path = _profile_path(name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        data = asdict(self)
-        data["imageable_area_pt"] = list(self.imageable_area_pt)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        # No per-field conversion: `json` serialises a tuple as an array
+        # already, so naming `imageable_area_pt` here did nothing the
+        # encoder was not doing anyway -- and naming one field on the way
+        # out is what made it look correct to name one field on the way in.
+        write_text_atomic(path, json.dumps(asdict(self), indent=2))
 
     @classmethod
     def load(cls, name: str) -> "PrinterProfile":
@@ -104,13 +121,26 @@ class PrinterProfile:
         without this, a profile written by a build that has them cannot be
         read by one that does not, and a calibration measured once would
         be lost by a downgrade rather than ignored.
+
+        :param name: the printer whose profile to read.
+        :returns: the profile.
+        :raises OSError: no profile is stored for that printer.
+        :raises json.JSONDecodeError: the stored file is not valid JSON.
         """
         path = _profile_path(name)
         data = json.loads(path.read_text(encoding="utf-8"))
         known = {field.name for field in dataclasses.fields(cls)}
         kwargs = {key: value for key, value in data.items() if key in known}
-        if "imageable_area_pt" in kwargs:
-            kwargs["imageable_area_pt"] = tuple(kwargs["imageable_area_pt"])
+        # Every list back to a tuple, not just `imageable_area_pt`. That
+        # entry's own lesson -- any `Type(**stored_dict)` breaks on the next
+        # field change -- was applied here only to unknown keys; the tuple
+        # half was fixed in the layout loader alone, and naming one field
+        # is exactly how `crop_odd_pt` came back as a list. No
+        # `PrinterProfile` field is genuinely a list.
+        kwargs = {
+            key: tuple(value) if isinstance(value, list) else value
+            for key, value in kwargs.items()
+        }
         return cls(**kwargs)
 
 

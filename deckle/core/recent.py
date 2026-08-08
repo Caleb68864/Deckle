@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 from deckle.core.diagnostics import log_exception
-from deckle.core.paths import config_dir
+from deckle.core.paths import config_dir, write_text_atomic
 
 MAX_ENTRIES = 10
 """How many projects to remember.
@@ -68,7 +68,12 @@ def load() -> list[str]:
 def _write(entries: list[str]) -> None:
     path = _store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
+    # Atomic, so a write that dies partway leaves yesterday's list rather
+    # than a truncated file. `load` reads a malformed store as empty by
+    # design, which means a torn write would not fail loudly -- it would
+    # silently erase the history, which is the one thing `existing` and
+    # `forget` are carefully arranged not to do.
+    write_text_atomic(path, json.dumps(entries, indent=2))
 
 
 def record(path: str) -> None:
