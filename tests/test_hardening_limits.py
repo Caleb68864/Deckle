@@ -123,14 +123,22 @@ def test_plan_hash_separates_pages_that_would_otherwise_concatenate():
     two_pages = _one_side_plan((first, second))
     one_page = _one_side_plan((merged,))
 
-    # Precondition: these really are the colliding inputs -- the raw
-    # per-page key text is identical once concatenated.
+    # This crafted path used to reproduce, byte for byte, the two real
+    # pages' concatenated key text -- that assertion stood here as a
+    # precondition, and it no longer holds: `_output_page_key` now
+    # length-prefixes the path, so a path can no longer impersonate the
+    # fields that follow it. Recorded rather than deleted, because the
+    # collision it describes is the reason both framings exist.
     assert export._output_page_key(
         two_pages.sheets[0].front.pages[0]
-    ) + export._output_page_key(two_pages.sheets[0].front.pages[1]) == (
+    ) + export._output_page_key(two_pages.sheets[0].front.pages[1]) != (
         export._output_page_key(one_page.sheets[0].front.pages[0])
     )
 
+    # The conclusion is unchanged and now holds for two independent
+    # reasons: the per-page keys are length-prefixed into the digest, and
+    # the path is length-prefixed within its own key. Either alone is
+    # sufficient; the test passes if either survives a refactor.
     assert export._plan_hash(two_pages) != export._plan_hash(one_page)
 
 
@@ -685,3 +693,55 @@ def test_no_render_path_leaves_pdfium_children_to_the_collector():
                     f"{module.__name__} line {node.lineno} renders a pdfium page "
                     "outside rasterize_page, so its children outlive the document"
                 )
+
+def test_a_crafted_source_path_cannot_forge_a_cache_key_boundary():
+    """The plan hash must not confuse two different pages.
+
+    ``_update_delimited`` already length-prefixes each page's whole
+    contribution, and its docstring explains why: a cache that returns the
+    wrong page is worse than no cache at all. Inside that contribution the
+    fields were joined with bare colons, and no collision was constructible
+    -- but only because every field after the path is an integer, a hex
+    digest, a float repr or a bool, none of which can contain a colon.
+
+    That is safety by field type, not by framing. This pins the framing,
+    so a ``SourceRef`` gaining a second free-text field cannot remove it
+    silently. ``.deckle`` files carry these paths and may be shared, which
+    is the reason red-team A-3 treats them as untrusted.
+    """
+    from deckle.core.export import _output_page_key
+    from deckle.core.models import OutputPage, Placement, SourceRef
+
+    def page(path: str, index: int) -> OutputPage:
+        return OutputPage(
+            source_ref=SourceRef(path=path, page_index=index, sha256="0" * 64,
+                                 width_pt=400.0, height_pt=600.0),
+            placement=Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0,
+                                rotate_deg=0),
+            is_filler=False,
+        )
+
+    # The second path is the first one with the next field's text appended,
+    # which is the shape a bare join is vulnerable to.
+    assert _output_page_key(page("a", 1)) != _output_page_key(page("a:1", 1))
+    assert _output_page_key(page("a", 12)) != _output_page_key(page("a:1", 2))
+
+
+def test_the_page_key_still_separates_ordinary_pages():
+    """The framing change must not make two distinct pages collide, nor
+    two identical ones differ."""
+    from deckle.core.export import _output_page_key
+    from deckle.core.models import OutputPage, Placement, SourceRef
+
+    def page(path: str, index: int) -> OutputPage:
+        return OutputPage(
+            source_ref=SourceRef(path=path, page_index=index, sha256="0" * 64,
+                                 width_pt=400.0, height_pt=600.0),
+            placement=Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0,
+                                rotate_deg=0),
+            is_filler=False,
+        )
+
+    assert _output_page_key(page("book.pdf", 0)) == _output_page_key(page("book.pdf", 0))
+    assert _output_page_key(page("book.pdf", 0)) != _output_page_key(page("book.pdf", 1))
+    assert _output_page_key(page("a.pdf", 0)) != _output_page_key(page("b.pdf", 0))

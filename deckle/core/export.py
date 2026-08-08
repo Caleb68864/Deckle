@@ -111,11 +111,30 @@ def _plan_hash(plan: SheetPlan) -> str:
 
 
 def _output_page_key(page: OutputPage) -> str:
+    """One page's contribution to the plan hash.
+
+    The **path is length-prefixed** and everything else is joined plainly.
+    That asymmetry is the point: `_update_delimited` explains why running
+    variable-length keys together lets content forge a field boundary, and
+    the path is the only free-text field here -- the rest are an integer, a
+    64-character hex digest, two float reprs and a bool, none of which can
+    contain the separator.
+
+    So no collision was constructible before this, and that was **a
+    property of the field types rather than of the framing**: a
+    `SourceRef` gaining any second string field would have removed it
+    silently. The framing now does not depend on what the other fields
+    happen to be, which matters because `.deckle` files carry these paths
+    and may be shared (red-team A-3).
+    """
     ref = page.source_ref
     ref_key = (
         "none"
         if ref is None
-        else f"{ref.path}:{ref.page_index}:{ref.sha256}:{ref.width_pt}:{ref.height_pt}"
+        else (
+            f"path[{len(ref.path.encode('utf-8'))}]:{ref.path}"
+            f":{ref.page_index}:{ref.sha256}:{ref.width_pt}:{ref.height_pt}"
+        )
     )
     placement = page.placement
     placement_key = (
