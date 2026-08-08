@@ -30,6 +30,7 @@ of it.
    core.dummy
    core.locate
    core.paths
+   core.schema
    core.project_io
    core.outputs
    core.printing

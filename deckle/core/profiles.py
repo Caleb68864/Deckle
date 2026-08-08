@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Literal
 
 from deckle.core.paths import config_dir, write_text_atomic
+from deckle.core.schema import check_values
 
 
 @dataclass(frozen=True)
@@ -122,15 +123,30 @@ class PrinterProfile:
         read by one that does not, and a calibration measured once would
         be lost by a downgrade rather than ignored.
 
+        Tolerant about keys and **strict about values**, which pull in
+        opposite directions on purpose. A key this build does not know is
+        a setting it can safely ignore. A value outside a field's declared
+        set is a profile asking for behaviour this build cannot produce,
+        and guessing wastes paper: ``flip_axis`` is
+        ``Literal["long", "short"]`` and nothing enforced it, so
+        ``"diagonal"`` loaded happily and planned the back pass as though
+        the operator flips on the short edge -- meaning on a printer that
+        flips long-edge, **every back side prints upside down**, for a
+        whole stack, with nothing on screen to suggest it.
+
         :param name: the printer whose profile to read.
         :returns: the profile.
         :raises OSError: no profile is stored for that printer.
         :raises json.JSONDecodeError: the stored file is not valid JSON.
+        :raises deckle.core.schema.StoredValueError: a stored value is not
+            one this build can honour. A ``ValueError``, so a caller with
+            a ``ValueError`` branch already reports it cleanly.
         """
         path = _profile_path(name)
         data = json.loads(path.read_text(encoding="utf-8"))
         known = {field.name for field in dataclasses.fields(cls)}
         kwargs = {key: value for key, value in data.items() if key in known}
+        check_values(cls, kwargs, subject="printer profile field")
         # Every list back to a tuple, not just `imageable_area_pt`. That
         # entry's own lesson -- any `Type(**stored_dict)` breaks on the next
         # field change -- was applied here only to unknown keys; the tuple

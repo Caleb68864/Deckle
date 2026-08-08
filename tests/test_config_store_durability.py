@@ -25,6 +25,7 @@ profile would come back as a list, exactly as ``crop_odd_pt`` did.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 
@@ -183,6 +184,70 @@ def test_a_reloaded_profile_is_still_hashable():
     _calibrated().save("ink")
 
     hash(PrinterProfile.load("ink"))
+
+
+# -- values a profile cannot honour -------------------------------------
+#
+# The third loader with this defect, after `LayoutSettings` and a
+# project's page entries. Here it wastes paper rather than merely
+# misreporting: the profile is what `plan_passes` reads to decide whether
+# the back sides need turning.
+
+BAD_VALUES = [
+    pytest.param("flip_axis", "diagonal", id="flip-axis"),
+    pytest.param("output_face", "sideways", id="output-face"),
+    pytest.param("feed_edge", "middle", id="feed-edge"),
+    pytest.param("reverse_stack", "yes", id="reverse-stack"),
+    pytest.param("imageable_area_pt", [18.0, 18.0], id="area-has-two-numbers"),
+    pytest.param("imageable_area_pt", "wide", id="area-is-text"),
+    pytest.param("back_offset_x_pt", "left a bit", id="offset-is-text"),
+    pytest.param("version", "one", id="version-is-text"),
+]
+
+
+def _store(tmp_path, **over) -> None:
+    data = dataclasses.asdict(_calibrated())
+    data["imageable_area_pt"] = list(data["imageable_area_pt"])
+    data.update(over)
+    path = tmp_path / "config" / "deckle" / "printer_profiles" / "ink.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+@pytest.mark.parametrize("field,value", BAD_VALUES)
+def test_a_profile_value_this_build_cannot_honour_is_refused(tmp_path, field, value):
+    _store(tmp_path, **{field: value})
+
+    with pytest.raises(ValueError) as caught:
+        PrinterProfile.load("ink")
+
+    assert field in str(caught.value)
+
+
+def test_a_bad_flip_axis_no_longer_plans_the_back_pass_unturned(tmp_path):
+    """The one that costs a stack of paper.
+
+    ``flip_axis`` is ``Literal["long", "short"]`` and nothing enforced it,
+    so ``"diagonal"`` loaded happily and planned the back pass as though
+    the operator flips on the short edge -- ``rotate_backs=False``. On a
+    printer that flips long-edge that turns every back side upside down,
+    for the whole run, with nothing on screen to suggest it.
+    """
+    _store(tmp_path, flip_axis="diagonal")
+
+    with pytest.raises(ValueError) as caught:
+        PrinterProfile.load("ink")
+
+    assert "'long'" in str(caught.value) and "'short'" in str(caught.value)
+
+
+def test_an_unknown_profile_key_is_still_tolerated(tmp_path):
+    """Unchanged and deliberately opposite: a key this build does not know
+    is a setting it can ignore, so a calibration written by a newer build
+    still opens. A *value* it does not know is not the same thing."""
+    _store(tmp_path, some_future_axis="skew")
+
+    assert PrinterProfile.load("ink").flip_axis == "long"
 
 
 def test_no_profile_field_round_trips_as_a_list():
