@@ -28,6 +28,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Sequence
 
+from deckle.core.paths import data_dir
 from deckle.core.profiles import PrinterProfile
 
 # A5: the session log is append-only, but an append-only log that grows
@@ -38,17 +39,22 @@ _BACKUP_COUNT = 3
 
 
 def _data_dir() -> Path:
-    """The OS-appropriate data directory for Deckle's session log."""
+    """The OS-appropriate data directory for Deckle's session log.
+
+    The platform answer comes from :func:`deckle.core.paths.data_dir`
+    rather than being decided here. This module carried its own copy of
+    that three-way ladder -- the third in the codebase -- which is exactly
+    the duplication `paths` was extracted to end. The *data* root rather
+    than the config one: on Linux XDG separates settings a user might edit
+    from data an application accumulates, and a log is the second kind.
+
+    ``DECKLE_SESSION_LOG_DIR`` still wins, so tests and support requests
+    can put the log anywhere without touching the platform question.
+    """
     override = os.environ.get("DECKLE_SESSION_LOG_DIR")
     if override:
         return Path(override)
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        return Path(base) / "Deckle"
-    if sys.platform == "darwin":
-        return Path.home() / "Library" / "Application Support" / "Deckle"
-    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
-    return Path(base) / "deckle"
+    return data_dir()
 
 
 def session_log_path() -> Path:

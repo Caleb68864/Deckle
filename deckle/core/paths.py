@@ -1,10 +1,17 @@
 """Where Deckle keeps the state that outlives a project, and how it is written.
 
-Printer profiles and the recent-projects list both live under the OS
-config directory, and both need the same three-way answer about where
-that is. This module is the one place that decides, so the two cannot
-drift apart and leave a user's profiles somewhere their recent list is
-not.
+Printer profiles, the recent-projects list and the session log all live
+under an OS-appropriate directory, and all three need the same three-way
+platform answer about where that is. This module is the one place that
+decides, so they cannot drift apart and leave a user's profiles somewhere
+their recent list is not.
+
+Two roots, not one: :func:`config_dir` for settings and :func:`data_dir`
+for what the application accumulates. On Windows and macOS they are the
+same directory; on Linux XDG separates them, and the session log belongs
+on the data side. The platform ladder is written once even so -- the
+session log used to carry its own copy, which is the third copy of a
+decision this module exists to hold.
 
 It also owns *how* that state reaches disk. Every store Deckle keeps --
 project files, profiles, the recent list -- is a small JSON document
@@ -28,29 +35,64 @@ import tempfile
 from pathlib import Path
 
 
+def _root(xdg_variable: str, xdg_fallback: Path) -> Path:
+    """The platform's application directory, given the Linux answer.
+
+    Written once for both roots. Windows and macOS put settings and data
+    in the same place, so the only thing that varies between
+    :func:`config_dir` and :func:`data_dir` is which XDG variable Linux
+    consults -- and duplicating the whole three-way ladder to express that
+    one difference is what this module was extracted to stop.
+
+    :param xdg_variable: the environment variable Linux should honour.
+    :param xdg_fallback: where Linux goes when it is unset.
+    :returns: the application's root directory on this platform.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "Deckle"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Deckle"
+    base = os.environ.get(xdg_variable) or str(xdg_fallback)
+    # Lowercase on Linux and capitalised elsewhere: each is that
+    # platform's convention, not an inconsistency.
+    return Path(base) / "deckle"
+
+
 def config_dir(*parts: str) -> Path:
     """The OS-appropriate config directory, plus any sub-path given.
 
     Windows uses ``%APPDATA%\\Deckle``, macOS
     ``~/Library/Application Support/Deckle``, and everything else honours
-    ``XDG_CONFIG_HOME`` and falls back to ``~/.config/deckle``. The
-    lowercase name on Linux and the capitalised one elsewhere are each
-    that platform's convention, not an inconsistency.
+    ``XDG_CONFIG_HOME`` and falls back to ``~/.config/deckle``.
 
     :param parts: sub-directories or a filename below the config root.
     :returns: the path. Nothing is created -- callers that write make
         their own parents, and callers that only read must tolerate the
         directory not existing yet.
     """
-    if sys.platform == "win32":
-        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
-        root = Path(base) / "Deckle"
-    elif sys.platform == "darwin":
-        root = Path.home() / "Library" / "Application Support" / "Deckle"
-    else:
-        base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-        root = Path(base) / "deckle"
-    return root.joinpath(*parts)
+    return _root("XDG_CONFIG_HOME", Path.home() / ".config").joinpath(*parts)
+
+
+def data_dir(*parts: str) -> Path:
+    """The OS-appropriate *data* directory, plus any sub-path given.
+
+    Distinct from :func:`config_dir` on one platform only. Windows and
+    macOS keep both under the same root, so the two answers are identical
+    there. Linux is where the split is real: XDG separates settings a user
+    might edit or copy between machines (``XDG_CONFIG_HOME``) from data an
+    application accumulates (``XDG_DATA_HOME``), and the session log is
+    squarely the second kind.
+
+    A second function rather than an argument to the first, because the
+    answer genuinely differs and a caller has to say which it wants --
+    "profiles" versus "log" is not a judgement this module can make.
+
+    :param parts: sub-directories or a filename below the data root.
+    :returns: the path. Nothing is created -- callers that write make
+        their own parents.
+    """
+    return _root("XDG_DATA_HOME", Path.home() / ".local" / "share").joinpath(*parts)
 
 
 def write_text_atomic(path: str | os.PathLike[str], text: str, *,
