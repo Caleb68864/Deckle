@@ -147,6 +147,33 @@ def _path_within_roots(candidate: str, roots: tuple[str, ...]) -> bool:
     return False
 
 
+_JSON_SHAPE_NAMES = {
+    type(None): "null",
+    bool: "a true/false value",
+    int: "a number",
+    float: "a number",
+    str: "a piece of text",
+    list: "a list",
+    dict: "an object",
+}
+
+
+def _shape_of(value: Any) -> str:
+    """Name a JSON value's type the way the file's author would recognise it.
+
+    ``"<class 'dict'>"`` describes Python; someone looking at a ``.deckle``
+    in a text editor sees an object, a list or a piece of text. The message
+    has to name the thing they can see, because the remedy is to compare
+    the file against one Deckle wrote.
+    """
+    # `bool` before `int`: it is a subclass, and "a number" for `true` would
+    # send someone looking for a digit that is not there.
+    for kind, name in _JSON_SHAPE_NAMES.items():
+        if type(value) is kind:
+            return name
+    return "not what this format expects"
+
+
 def _sha256_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:
@@ -319,7 +346,12 @@ def load_project(
     :returns: the loaded project.
     :raises OSError: ``path`` cannot be read.
     :raises json.JSONDecodeError: ``path`` is not valid JSON.
-    :raises KeyError: the file is JSON but not a ``.deckle`` document.
+    :raises KeyError: the file is JSON but not a ``.deckle`` document --
+        either an object missing a key this format requires, or a top
+        level that is not an object at all (an array, string, number,
+        ``null`` or ``true``). Both are the same problem to a user and get
+        the same answer, rather than the second one arriving as a
+        ``TypeError`` nothing catches.
     :raises PathOutsideRootsWarning: a source resolves outside every
         allowed root and ``on_outside_roots`` vetoed it.
     :raises SourceMissingError: a referenced source is gone, carrying
@@ -333,7 +365,37 @@ def load_project(
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
 
-    pages = [_page_from_dict(p) for p in payload["pages"]]
+    if not isinstance(payload, dict):
+        # `KeyError` rather than the `TypeError` that `payload["pages"]`
+        # would raise a line later, because "JSON but not a `.deckle`
+        # document" is what this function already documents `KeyError` to
+        # mean -- and both callers have a branch for it that names the
+        # remedy. Without this, an array, string, number, `null` or `true`
+        # at the top level got a `TypeError` that nothing caught: the CLI
+        # printed a traceback and the desktop app told the user "list
+        # indices must be integers or slices, not str".
+        raise KeyError("pages")
+
+    stored_pages = payload["pages"]
+    if not isinstance(stored_pages, list):
+        raise ValueError(
+            f"'pages' is {_shape_of(stored_pages)}, not a list of pages, so "
+            "this is not a Deckle project"
+        )
+    for index, entry in enumerate(stored_pages):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"page {index} is {_shape_of(entry)}, not a page object, so "
+                "this is not a Deckle project"
+            )
+    stored_layout = payload["layout"]
+    if not isinstance(stored_layout, dict):
+        raise ValueError(
+            f"'layout' is {_shape_of(stored_layout)}, not a set of layout "
+            "settings, so this is not a Deckle project"
+        )
+
+    pages = [_page_from_dict(p) for p in stored_pages]
 
     project_dir = os.path.dirname(os.path.realpath(path))
     roots = (project_dir, *(allowed_roots or ()))
