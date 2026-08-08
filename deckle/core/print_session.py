@@ -655,11 +655,33 @@ class PrintSession:
         interrupted, since software cannot observe that count directly and
         must take it as caller-supplied ground truth.
 
+        A count at or beyond the pass length means the pass finished, and
+        advances to the next one. A **negative** count means nothing at
+        all and is refused: it used to be written straight into
+        ``sheet_cursor``, where `-1` made `_submit_chunk` slice
+        ``sheet_order[-1:]`` and resubmit exactly one sheet -- so a
+        three-sheet back pass reprinted one sheet, treated the other two
+        as done, and said nothing. `load` already rejects a cursor outside
+        its own sheet list; this is the same bound on the path that
+        *writes* the cursor rather than the one that reads it.
+
+        The default dialog cannot produce a negative -- its spin box
+        starts at zero -- but ``ask_resume_count`` is an injected seam, so
+        the rule belongs with the state it protects rather than with one
+        of its callers.
+
         :param sheets_completed: sheets that emerged **during the
             interrupted pass**, not cumulative across the job.
         :returns: nothing. Submission resumes immediately, or the pass
             advances if the count already covers it.
+        :raises ValueError: ``sheets_completed`` is negative.
         """
+        if sheets_completed < 0:
+            raise ValueError(
+                f"sheets_completed must be 0 or more, got {sheets_completed}: "
+                "it counts the sheets that physically emerged during the "
+                "interrupted pass"
+            )
         pass_ = self._current_pass()
         if pass_ is None:
             return

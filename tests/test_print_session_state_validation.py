@@ -166,3 +166,45 @@ def test_a_cursor_at_the_very_end_is_valid(saved):
     session = saved(sheet_cursor=3)
 
     assert session is not None
+
+
+# -- the bound on the path that writes the cursor ------------------------
+
+
+def test_resuming_with_a_negative_count_is_refused(saved):
+    """``load`` already rejects a cursor outside its own sheet list, and
+    ``resume`` wrote one straight past that check.
+
+    ``-1`` made ``_submit_chunk`` slice ``sheet_order[-1:]`` and resubmit
+    exactly one sheet, so a three-sheet back pass reprinted one, treated
+    the other two as done, and said nothing.
+    """
+    session = saved()
+
+    with pytest.raises(ValueError) as caught:
+        session.resume(-1)
+
+    assert "-1" in str(caught.value)
+
+
+def test_resuming_from_zero_reprints_the_whole_pass(saved):
+    """Zero means "nothing came out", which is a real answer and must not
+    be caught by the guard on negatives."""
+    session = saved()
+    session.backend.calls.clear()
+
+    session.resume(0)
+
+    assert session.backend.calls, "a resume from zero submitted nothing"
+
+
+def test_a_count_beyond_the_pass_advances_rather_than_slicing(saved):
+    """Over-reporting is treated as "this pass finished". Pinned because
+    the negative guard must not turn into a two-sided range check that
+    refuses it -- the operator's count is ground truth, and they may well
+    say 99 for a pass of 3."""
+    session = saved()
+
+    session.resume(99)
+
+    assert session is not None
