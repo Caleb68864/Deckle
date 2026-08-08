@@ -23,6 +23,17 @@ from deckle.core.layout import GutterShiftStrategy, SaddleStitchStrategy
 import os
 
 from deckle.core.diagnostics import log_event, log_exception
+# Aliased on import. `PAPER_PRESETS` in this module has meant sheet
+# *sizes* (A4, Letter) since it was written, and the new list is paper
+# *stock* (80gsm copier). Two meanings of "paper" in one file is how a
+# reader ends up wiring a dropdown to the wrong one.
+from deckle.core.paper import PT_PER_MM
+from deckle.core.paper import PAPER_PRESETS as PAPER_STOCKS
+from deckle.core.paper import (
+    caliper_pt_from_gsm,
+    gsm_from_pounds,
+    suggest_sheets_per_signature,
+)
 from deckle.core.models import Project, SheetPlan
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.schedule import build_schedule, format_schedule_text
@@ -347,6 +358,217 @@ def set_paper_thickness_pt(project: Project, paper_thickness_pt: float) -> Proje
     )
 
 
+CUSTOM_STOCK_LABEL = "Custom (set thickness below)"
+"""The stock dropdown's escape hatch.
+
+Anyone whose paper is not on the list, or who owns calipers, sets the
+thickness directly and the dropdown says so rather than showing a
+preset that is not what they have.
+"""
+
+
+def set_trim(project: Project, trim_pt: float) -> Project:
+    """Set how deep the fore-edge, head and tail will be ploughed.
+
+    Two effects, and the second is easy to miss: it draws the cut lines,
+    and it is the tolerance the gathering-size suggestion works to,
+    because creep is absorbed by trimming.
+
+    :param project: the project to derive a new one from.
+    :param trim_pt: depth in points. ``0`` disables the marks, exactly as
+        ``sewing_stations = 0`` does, rather than adding a boolean a
+        number could already express.
+    :returns: a new project.
+    """
+    return replace(project, layout=replace(project.layout, trim_pt=trim_pt))
+
+
+def set_crop(
+    project: Project, parity: str, insets_pt: tuple[float, float, float, float] | None
+) -> Project:
+    """Set the crop applied to odd or even source pages.
+
+    Odd and even are separate because a scan's gutter swaps sides every
+    leaf, and one rectangle cannot fit both.
+
+    The insets are measured against the page **as displayed** -- a scan a
+    viewer has straightened carries a ``/Rotate`` flag, and the exporter
+    converts. See ``export._cropped_source_box``.
+
+    :param project: the project to derive a new one from.
+    :param parity: ``"odd"`` or ``"even"``.
+    :param insets_pt: ``(left, bottom, right, top)``, or ``None`` to
+        remove the crop.
+    :returns: a new project.
+    :raises ValueError: an unknown parity.
+    """
+    if parity == "odd":
+        field = "crop_odd_pt"
+    elif parity == "even":
+        field = "crop_even_pt"
+    else:
+        raise ValueError(f"unknown parity {parity!r}: expected odd or even")
+    return replace(project, layout=replace(project.layout, **{field: insets_pt}))
+
+
+def set_signature_lengths(project: Project, text: str) -> Project:
+    """State each gathering's sheet count outright, as ``10,10,8``.
+
+    The setting a binder reaches for when a page count divides badly --
+    ``7,7,6,6`` beats ``4,4,4,4,4,4,2`` and six blank leaves -- or to land
+    a chapter break on a signature boundary.
+
+    Only the *shape* is checked here. Whether the lengths add up to the
+    sheet count cannot be known until the document is imposed, and
+    ``signatures.split_signatures_at`` already refuses a mismatch with a
+    message naming both numbers. Repeating that check here would be a
+    second implementation free to disagree with the first.
+
+    :param project: the project to derive a new one from.
+    :param text: the field's contents. Empty clears the setting and
+        returns to a uniform ``sheets_per_signature``.
+    :returns: a new project.
+    :raises ValueError: the text is not a comma-separated list of
+        positive whole numbers.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return replace(project, layout=replace(project.layout, signature_lengths=None))
+    lengths = []
+    for part in stripped.split(","):
+        part = part.strip()
+        try:
+            value = int(part)
+        except ValueError:
+            raise ValueError(
+                f"{part!r} is not a whole number: give each gathering's "
+                "sheet count, such as 10,10,8"
+            ) from None
+        if value < 1:
+            raise ValueError(
+                f"every gathering must hold at least one sheet, got {value}"
+            )
+        lengths.append(value)
+    return replace(
+        project, layout=replace(project.layout, signature_lengths=tuple(lengths))
+    )
+
+
+def set_paper_stock(project: Project, stock_name: str) -> Project:
+    """Set the stock thickness from a named paper.
+
+    The dropdown's whole purpose: nobody knows their paper's caliper and
+    everybody has its weight on the ream wrapper. The caliper is derived
+    from the preset's weight and type rather than stored beside it, so
+    this cannot drift from what the CLI computes for the same paper.
+
+    :param project: the project to derive a new one from.
+    :param stock_name: a name from :data:`deckle.core.paper.PAPER_PRESETS`,
+        which this module imports as ``PAPER_STOCKS``.
+    :returns: a new project.
+    :raises ValueError: no preset by that name, naming the known ones.
+    """
+    for stock in PAPER_STOCKS:
+        if stock.name == stock_name:
+            return set_paper_thickness_pt(project, stock.caliper_pt)
+    raise ValueError(
+        f"unknown paper stock {stock_name!r}: expected one of "
+        + ", ".join(stock.name for stock in PAPER_STOCKS)
+    )
+
+
+def set_paper_from_weight(
+    project: Project, weight: float, unit: str, paper_type: str,
+    grade: str | None = None,
+) -> Project:
+    """Set the stock thickness from a weight off the ream wrapper.
+
+    The escape hatch behind ``Custom...``, for a paper the preset list
+    does not carry.
+
+    :param project: the project to derive a new one from.
+    :param weight: the number on the wrapper.
+    :param unit: ``"gsm"`` or ``"lb"``.
+    :param paper_type: which bulk to apply.
+    :param grade: the basis size, required for ``"lb"`` -- 20lb is 75gsm
+        as bond and 54gsm as cover, so guessing would be wrong by half.
+    :returns: a new project.
+    :raises ValueError: an unknown unit, type or grade, or pounds without
+        a grade.
+    """
+    if unit == "lb":
+        if grade is None:
+            raise ValueError(
+                "a weight in pounds also needs a paper grade: 20lb is "
+                "75gsm as bond but 54gsm as cover"
+            )
+        weight = gsm_from_pounds(weight, grade)
+    elif unit != "gsm":
+        raise ValueError(f"unknown weight unit {unit!r}: expected gsm or lb")
+    return set_paper_thickness_pt(project, caliper_pt_from_gsm(weight, paper_type))
+
+
+def signature_suggestion(layout: LayoutSettings):
+    """The gathering size this paper suggests, or ``None``.
+
+    A thin wrapper that decides *what to ask*: the planned trim is part of
+    the answer, because creep is absorbed by trimming, and the panel holds
+    both numbers while :mod:`deckle.core.paper` holds neither.
+
+    :param layout: the current settings.
+    :returns: a :class:`~deckle.core.paper.SignatureSuggestion`, or
+        ``None`` when no thickness is set.
+    """
+    return suggest_sheets_per_signature(
+        layout.paper_thickness_pt, trim_pt=layout.trim_pt
+    )
+
+
+def signature_suggestion_text(layout: LayoutSettings) -> str | None:
+    """The sentence shown under *Sheets per signature*, or ``None``.
+
+    Names **which constraint bound the answer**, because the remedy
+    differs and a number the binder cannot act on is not advice: creep
+    means plan a trim, fold means this paper is thick. Says nothing at all
+    when the suggestion matches what is already set -- advice that repeats
+    the current state back is noise.
+
+    :param layout: the current settings.
+    :returns: the sentence, or ``None`` to show nothing.
+    """
+    suggestion = signature_suggestion(layout)
+    if suggestion is None or suggestion.sheets == layout.sheets_per_signature:
+        return None
+    if suggestion.limited_by == "creep":
+        because = (
+            f"beyond that the fore-edge creeps more than the "
+            f"{layout.trim_pt:g}pt trim will remove"
+            if layout.trim_pt > 0
+            else "beyond that the fore-edge creep starts to show; a trim "
+                 "would allow more"
+        )
+    else:
+        because = "beyond that the gathering is too thick to fold cleanly"
+    return (
+        f"{suggestion.sheets} sheets ({suggestion.pages} pages) suits this "
+        f"paper -- {because}."
+    )
+
+
+def apply_suggested_sheets(project: Project) -> Project:
+    """Take the suggested gathering size.
+
+    :param project: the project to derive a new one from.
+    :returns: a new project, or the same one when there is nothing to
+        suggest -- the button is only offered alongside a suggestion, and
+        a no-op is safer than a guess if that ever stops being true.
+    """
+    suggestion = signature_suggestion(project.layout)
+    if suggestion is None:
+        return project
+    return set_sheets_per_signature(project, suggestion.sheets)
+
+
 def recompute_plan(project: Project) -> SheetPlan:
     """Re-run the imposer over every (non-skipped) page. Arithmetic only.
 
@@ -429,6 +651,7 @@ def _qt_widgets():
         QDoubleSpinBox,
         QFormLayout,
         QLabel,
+        QLineEdit,
         QPushButton,
         QRadioButton,
         QSpinBox,
@@ -439,8 +662,8 @@ def _qt_widgets():
 
     return (
         QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-        QLabel, QPushButton, QRadioButton, QSpinBox, QTabWidget,
-        QVBoxLayout, QWidget,
+        QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
+        QTabWidget, QVBoxLayout, QWidget,
     )
 
 
@@ -468,18 +691,9 @@ class LayoutPanel:
         self.profile = profile
         QObject, Signal = _qt_core()
         (
-            QButtonGroup,
-            QCheckBox,
-            QComboBox,
-            QDoubleSpinBox,
-            QFormLayout,
-            QLabel,
-            QPushButton,
-            QRadioButton,
-            QSpinBox,
-            QTabWidget,
-            QVBoxLayout,
-            QWidget,
+            QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
+            QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
+            QTabWidget, QVBoxLayout, QWidget,
         ) = _qt_widgets()
 
         class _Signals(QObject):
@@ -633,7 +847,63 @@ class LayoutPanel:
             "the number you cut boards against.\n\n"
             "Leave at 0 and neither is estimated."
         )
+        self.paper_stock_combo = QComboBox(self.widget)
+        self.paper_stock_combo.addItem(CUSTOM_STOCK_LABEL)
+        for stock in PAPER_STOCKS:
+            self.paper_stock_combo.addItem(
+                f"{stock.name}  ({stock.caliper_pt / PT_PER_MM:.3f} mm)"
+            )
+        self.paper_stock_combo.setToolTip(
+            "Pick the paper off the ream wrapper and Deckle works out the "
+            "caliper. The thickness below is an estimate -- bulk varies "
+            "about 10% between manufacturers -- and is used only to predict "
+            "fore-edge creep and spine width, never to place a page."
+        )
+        self.paper_stock_combo.currentTextChanged.connect(self._on_paper_stock_changed)
+        form.addRow("Paper stock:", self.paper_stock_combo)
+
         form.addRow("Paper thickness:", self.paper_thickness_spinbox)
+
+        self.trim_spinbox = QDoubleSpinBox(self.widget)
+        self.trim_spinbox.setDecimals(3)
+        self.trim_spinbox.setRange(0.0, from_points(144.0, self._unit))
+        self.trim_spinbox.setValue(
+            from_points(state.project.layout.trim_pt, self._unit)
+        )
+        self.trim_spinbox.setToolTip(
+            "How deep the fore-edge, head and tail will be ploughed after "
+            "sewing. Draws the cut lines, and gives the gathering-size "
+            "suggestion room to work with -- creep is absorbed by trimming. "
+            "0 draws none."
+        )
+        self.trim_spinbox.valueChanged.connect(self._on_trim_changed)
+        form.addRow("Trim depth:", self.trim_spinbox)
+
+        # Eight boxes rather than four: a scan's gutter swaps sides every
+        # leaf, so one rectangle cannot fit both parities. Built in a loop
+        # because they differ only by which field they write.
+        self.crop_spinboxes: dict[tuple[str, str], object] = {}
+        for parity in ("odd", "even"):
+            for edge in ("left", "bottom", "right", "top"):
+                box = QDoubleSpinBox(self.widget)
+                box.setDecimals(3)
+                box.setRange(0.0, from_points(720.0, self._unit))
+                box.valueChanged.connect(
+                    lambda _value, p=parity: self._on_crop_changed(p)
+                )
+                self.crop_spinboxes[(parity, edge)] = box
+                form.addRow(f"Crop {parity} {edge}:", box)
+
+        self.auto_crop_button = QPushButton("Measure crop from the ink", self.widget)
+        self.auto_crop_button.setToolTip(
+            "Rasterise every page, find where the ink actually is, and fill "
+            "the boxes above. Measures odd and even separately, which is "
+            "what a scan whose gutter alternates needs. Check the result "
+            "before printing -- a marginal note on one page in two hundred "
+            "is what a number cannot show you."
+        )
+        self.auto_crop_button.clicked.connect(self._on_auto_crop)
+        form.addRow("", self.auto_crop_button)
         self.unit_combo.setToolTip(
             "The unit every length on this tab is typed in. Values are "
             "stored in points regardless, so switching units re-displays "
@@ -802,6 +1072,35 @@ class LayoutPanel:
         )
         signature_form.addRow("Sheets per signature:", self.sheets_per_signature_spinbox)
 
+        # The suggestion sits directly under the control it is about, and
+        # says nothing at all when the setting already matches -- advice
+        # that repeats the current state back is what teaches people to
+        # stop reading advisories.
+        self.suggestion_label = QLabel("", self.widget)
+        self.suggestion_label.setWordWrap(True)
+        self.suggestion_button = QPushButton("Use it", self.widget)
+        self.suggestion_button.clicked.connect(self._on_apply_suggestion)
+        signature_form.addRow(self.suggestion_label)
+        signature_form.addRow("", self.suggestion_button)
+
+        self.signature_lengths_edit = QLineEdit(self.widget)
+        self.signature_lengths_edit.setPlaceholderText("e.g. 10,10,8")
+        lengths = state.project.layout.signature_lengths
+        self.signature_lengths_edit.setText(
+            ",".join(str(n) for n in lengths) if lengths else ""
+        )
+        self.signature_lengths_edit.setToolTip(
+            "State each gathering's sheet count outright, instead of one "
+            "uniform size. For a page count that divides badly -- 7,7,6,6 "
+            "beats 4,4,4,4,4,4,2 and six blank leaves -- or to land a "
+            "chapter break on a signature boundary. Leave empty to use "
+            "Sheets per signature."
+        )
+        self.signature_lengths_edit.editingFinished.connect(
+            self._on_signature_lengths_changed
+        )
+        signature_form.addRow("Gatherings:", self.signature_lengths_edit)
+
         self.blank_mode_combo = QComboBox(self.widget)
         self.blank_mode_combo.addItems(list(BLANK_MODES))
         self.blank_mode_combo.setCurrentText(state.project.layout.blank_mode)
@@ -930,6 +1229,21 @@ class LayoutPanel:
             self.sheets_per_signature_spinbox.setValue(layout.sheets_per_signature)
             self.blank_mode_combo.setCurrentText(layout.blank_mode)
             self.sewing_stations_spinbox.setValue(layout.sewing_stations)
+            self.trim_spinbox.setValue(from_points(layout.trim_pt, self._unit))
+            for parity, insets in (("odd", layout.crop_odd_pt),
+                                   ("even", layout.crop_even_pt)):
+                for index, edge in enumerate(("left", "bottom", "right", "top")):
+                    self.crop_spinboxes[(parity, edge)].setValue(
+                        from_points(insets[index], self._unit) if insets else 0.0
+                    )
+            self.signature_lengths_edit.setText(
+                ",".join(str(n) for n in layout.signature_lengths)
+                if layout.signature_lengths else ""
+            )
+            # A thickness that came from a saved project has no preset
+            # behind it, so the dropdown says Custom rather than naming a
+            # paper the binder may not be using.
+            self.paper_stock_combo.setCurrentText(CUSTOM_STOCK_LABEL)
             self.tabs.setCurrentIndex(
                 self._signature_tab_index
                 if layout.fold_scheme == "folio"
@@ -941,6 +1255,7 @@ class LayoutPanel:
 
         self._sync_margin_enabled()
         self._sync_signature_tab()
+        self._refresh_suggestion()
         self._refresh_binding_readout(recompute_plan(self.state.project))
 
     def set_document_loaded(self, loaded: bool) -> None:
@@ -1240,6 +1555,115 @@ class LayoutPanel:
         self._refresh_binding_readout(plan)
         self._sync_signature_tab()
         self.layout_changed.emit(plan)
+
+    def _on_paper_stock_changed(self, label: str) -> None:
+        if label == CUSTOM_STOCK_LABEL:
+            return
+        name = label.split("  (")[0]
+        plan = apply_layout_change(
+            self.state, lambda project: set_paper_stock(project, name)
+        )
+        self.paper_thickness_spinbox.blockSignals(True)
+        self.paper_thickness_spinbox.setValue(
+            from_points(self.state.project.layout.paper_thickness_pt, self._unit)
+        )
+        self.paper_thickness_spinbox.blockSignals(False)
+        self._refresh_suggestion()
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _crop_from_boxes(self, parity: str):
+        values = tuple(
+            to_points(self.crop_spinboxes[(parity, edge)].value(), self._unit)
+            for edge in ("left", "bottom", "right", "top")
+        )
+        return None if not any(values) else values
+
+    def _on_crop_changed(self, parity: str) -> None:
+        insets = self._crop_from_boxes(parity)
+        try:
+            plan = apply_layout_change(
+                self.state, lambda project: set_crop(project, parity, insets)
+            )
+        except ValueError as exc:
+            # A crop that consumes the page is refused by the imposer with
+            # a message naming both numbers. Reported rather than raised:
+            # it is a number the user can correct, in the box they are
+            # already looking at.
+            self.schedule_saved.emit(f"Crop: {exc}")
+            return
+        self.layout_changed.emit(plan)
+
+    def _on_auto_crop(self) -> None:
+        """Fill the crop boxes from where the ink actually is."""
+        from deckle.core.render import auto_crop_insets
+
+        try:
+            odd, even = auto_crop_insets(self.state.project.pages)
+        except Exception as exc:  # noqa: BLE001 -- reported, never a crash
+            log_exception("auto_crop_failed", exc)
+            self.schedule_saved.emit(f"Could not measure the ink: {exc}")
+            return
+        for parity, insets in (("odd", odd), ("even", even)):
+            if insets is None:
+                continue
+            for edge, value in zip(("left", "bottom", "right", "top"), insets):
+                box = self.crop_spinboxes[(parity, edge)]
+                box.blockSignals(True)
+                box.setValue(from_points(value, self._unit))
+                box.blockSignals(False)
+            self._on_crop_changed(parity)
+        self.schedule_saved.emit(
+            "Crop measured from the ink -- check it before printing."
+        )
+
+    def _on_trim_changed(self, value: float) -> None:
+        plan = apply_layout_change(
+            self.state, lambda project: set_trim(project, to_points(value, self._unit))
+        )
+        # The trim is the tolerance the suggestion works to, so changing it
+        # can change the advice without the paper changing at all.
+        self._refresh_suggestion()
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_signature_lengths_changed(self) -> None:
+        text = self.signature_lengths_edit.text()
+        try:
+            plan = apply_layout_change(
+                self.state, lambda project: set_signature_lengths(project, text)
+            )
+        except ValueError as exc:
+            # Reported where the user is looking rather than raised: a
+            # mistyped gathering list is a typo, not a bug report.
+            self.signature_lengths_edit.setToolTip(str(exc))
+            self.schedule_saved.emit(f"Gatherings: {exc}")
+            return
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_apply_suggestion(self) -> None:
+        plan = apply_layout_change(self.state, apply_suggested_sheets)
+        self.sheets_per_signature_spinbox.blockSignals(True)
+        self.sheets_per_signature_spinbox.setValue(
+            self.state.project.layout.sheets_per_signature
+        )
+        self.sheets_per_signature_spinbox.blockSignals(False)
+        self._refresh_suggestion()
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _refresh_suggestion(self) -> None:
+        """Show or hide the gathering-size advice.
+
+        Hidden entirely when there is nothing to say, rather than left
+        showing a stale sentence -- the button beside it would otherwise
+        apply advice that is no longer on screen.
+        """
+        text = signature_suggestion_text(self.state.project.layout)
+        self.suggestion_label.setText(text or "")
+        self.suggestion_label.setVisible(bool(text))
+        self.suggestion_button.setVisible(bool(text))
 
     def _on_sheets_per_signature_changed(self, value: int) -> None:
         plan = apply_layout_change(

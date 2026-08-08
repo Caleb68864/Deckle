@@ -63,6 +63,24 @@ see the README. The calibration wizard is not built.
 - `export` and `impose` now print layout warnings to stderr. Previously only
   `info` did.
 
+- **Paper by weight** — `deckle.core.paper` turns what is printed on the
+  ream wrapper into a caliper, so nobody has to own calipers. A stock
+  dropdown in the app, `--paper-weight 80gsm` (or `24lb` with
+  `--paper-grade`) on the command line. Bulk varies about 10% between
+  manufacturers, so the caliper is an estimate and is used only to predict
+  fore-edge creep and spine width, never to place a page.
+- **Signature size suggested from the paper** — how many sheets a
+  gathering should hold, from the caliper and the planned trim, naming
+  which constraint decided it: fore-edge creep, or a fold too thick to lie
+  flat. Creep alone is not enough — 80gsm with a quarter-inch trim
+  tolerates 62 sheets before creep shows, and nobody hand-sews that.
+- **Crash recovery** — autosave has always been written on every edit and
+  was never offered back. Reopening a project Deckle did not close cleanly
+  now asks whether to recover the unsaved changes.
+- **Crop, trim and explicit gatherings in the desktop app** — the last
+  four layout settings that were reachable only from the command line,
+  including a *Measure crop from the ink* button.
+
 ### Fixed
 
 Defects found during development, each with a full write-up in

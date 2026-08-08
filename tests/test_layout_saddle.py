@@ -346,11 +346,55 @@ def test_portrait_paper_warns_once_and_does_not_swap_paper_pt():
 
 
 def test_creep_advisory_names_trim_and_remedy():
+    """`(sheets - 1) * caliper`, not `sheets * caliper`.
+
+    The outermost leaf is pushed out by nothing, so a gathering of one
+    sheet creeps by nothing. This test used to assert 2.16 -- 0.27 x 8 --
+    which made this advisory a third opinion on one physical quantity:
+    `schedule._creep_note` and `paper.suggest_sheets_per_signature` both
+    use the formula below, and three numbers for one measurement is worse
+    than none.
+    """
     plan = impose(make_pages(32), settings(paper_thickness_pt=0.27, sheets_per_signature=8))
     creep = [w for w in plan.warnings if w.kind == "creep_advisory"]
     assert len(creep) == 1
-    assert "2.16" in creep[0].detail
+    assert "1.89" in creep[0].detail
     assert "sheets per signature" in creep[0].detail
+
+
+def test_the_creep_remedy_is_the_size_the_panel_would_suggest():
+    """The remedy used to be "halve it", which is derived from nothing and
+    says the same thing however many times it is taken. Now it is the
+    real answer, so the advisory and the panel cannot disagree about one
+    document."""
+    from deckle.core.paper import suggest_sheets_per_signature
+
+    layout = settings(paper_thickness_pt=0.27, sheets_per_signature=8)
+    plan = impose(make_pages(32), layout)
+    detail = [w for w in plan.warnings if w.kind == "creep_advisory"][0].detail
+
+    expected = suggest_sheets_per_signature(0.27, trim_pt=layout.trim_pt).sheets
+    assert f"{expected} sheets per signature" in detail
+
+
+def test_negligible_creep_says_nothing_at_all():
+    """It used to fire whenever a thickness was set, however small the
+    creep -- so a binder who filled the field in got a warning about
+    1.18pt, which is invisible. An advisory that always fires is one
+    people learn to skip."""
+    plan = impose(make_pages(32), settings(paper_thickness_pt=0.01, sheets_per_signature=4))
+
+    assert not any(w.kind == "creep_advisory" for w in plan.warnings)
+
+
+def test_a_planned_trim_absorbs_the_creep_and_silences_the_advisory():
+    """Creep inside the trim is not a problem to report."""
+    plan = impose(
+        make_pages(32),
+        settings(paper_thickness_pt=0.27, sheets_per_signature=8, trim_pt=36.0),
+    )
+
+    assert not any(w.kind == "creep_advisory" for w in plan.warnings)
 
 
 def test_zero_paper_thickness_emits_no_creep_advisory():

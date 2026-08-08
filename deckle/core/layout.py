@@ -18,6 +18,7 @@ from deckle.core.marks import (
     sewing_stations,
     signature_order_mark,
 )
+from deckle.core.paper import CREEP_INVISIBLE_PT, suggest_sheets_per_signature
 from deckle.core.models import (
     LayoutSettings,
     LayoutWarning,
@@ -790,16 +791,37 @@ def _creep_advisory(warnings: list[LayoutWarning], settings: LayoutSettings) -> 
     """
     if settings.paper_thickness_pt <= 0.0:
         return
-    predicted_trim = settings.paper_thickness_pt * settings.sheets_per_signature
-    remedy_sheets = max(1, settings.sheets_per_signature // 2)
+    # `(sheets - 1) * caliper`: the outermost leaf is not pushed out by
+    # anything, so a gathering of one sheet creeps by nothing. This used
+    # to be `sheets * caliper`, which made it a third opinion on one
+    # physical quantity -- `schedule._creep_note` and
+    # `paper.suggest_sheets_per_signature` both use this formula, and
+    # three numbers for one measurement is worse than none.
+    creep = (settings.sheets_per_signature - 1) * settings.paper_thickness_pt
+    tolerance = settings.trim_pt if settings.trim_pt > 0 else CREEP_INVISIBLE_PT
+    if creep <= tolerance:
+        return
+    # The remedy used to be "halve it", which is not derived from anything
+    # and says the same thing however many times it is taken. It is now
+    # the real answer, from the same function the panel offers -- so the
+    # advisory and the suggestion cannot disagree about one document.
+    suggestion = suggest_sheets_per_signature(
+        settings.paper_thickness_pt, trim_pt=settings.trim_pt
+    )
+    remedy = (
+        f"; {suggestion.sheets} sheets per signature would keep it inside "
+        + ("the trim" if settings.trim_pt > 0 else "what is visible")
+        if suggestion and suggestion.sheets < settings.sheets_per_signature
+        else ""
+    )
     warnings.append(
         LayoutWarning(
             sheet_index=0,
             kind="creep_advisory",
             detail=(
-                f"predicted fore-edge creep of {predicted_trim:.2f}pt over "
-                f"{settings.sheets_per_signature} sheets per signature; "
-                f"reduce to {remedy_sheets} sheets per signature to shrink it"
+                f"predicted fore-edge creep of {creep:.2f}pt over "
+                f"{settings.sheets_per_signature} sheets per signature"
+                f"{remedy}"
             ),
         )
     )
