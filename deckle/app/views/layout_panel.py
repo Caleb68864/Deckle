@@ -711,14 +711,40 @@ class LayoutPanel:
         # Page setup sits ABOVE the tabs because BOTH ways of making a book
         # need it: a folded signature has a gutter and margins exactly as a
         # single page does. Only what differs between the two goes in a tab.
-        page_setup = QWidget(self.widget)
-        form = QFormLayout(page_setup)
-        # Numeric fields hold values like "0.750". Letting them stretch to
-        # the pane width pushes the form wider than the column and grows a
-        # horizontal scrollbar across the whole settings panel -- the one
-        # kind of scrolling a settings form should never need.
-        form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
-        outer.addWidget(page_setup)
+        # Page setup is itself tabbed, because it had grown to twenty-six
+        # rows -- eight of them crop boxes -- and a settings panel you have
+        # to scroll is one where the control you want is never on screen.
+        #
+        # A SEPARATE tab widget from the one below, deliberately. These
+        # tabs group settings; those tabs ARE the mode, and selecting one
+        # sets `fold_scheme`. Putting Crop beside Signatures would mean
+        # clicking it changed how the book folds, which is exactly the
+        # confusion the mode tabs were built to remove. The label above
+        # each strip is what keeps the two readable as different things.
+        setup_label = QLabel("Page setup", self.widget)
+        outer.addWidget(setup_label)
+
+        self.setup_tabs = QTabWidget(self.widget)
+        outer.addWidget(self.setup_tabs)
+
+        def _sub_tab(title: str) -> QFormLayout:
+            page = QWidget(self.widget)
+            layout = QFormLayout(page)
+            # Numeric fields hold values like "0.750". Letting them stretch
+            # to the pane width pushes the form wider than the column and
+            # grows a horizontal scrollbar across the whole settings panel
+            # -- the one kind of scrolling a settings form should never
+            # need.
+            layout.setFieldGrowthPolicy(_qt_fields_at_size_hint())
+            self.setup_tabs.addTab(page, title)
+            return layout
+
+        # Ordered by how often they are touched: the paper is chosen once
+        # per job, the margins are adjusted while looking at the preview,
+        # and the crop is set once from a scan and then left alone.
+        paper_form = _sub_tab("Paper")
+        margins_form = _sub_tab("Margins")
+        crop_form = _sub_tab("Crop && trim")
 
         # The tabs ARE the mode. Selecting one sets ``fold_scheme``, so the
         # two ways of making a book are mutually exclusive by construction:
@@ -731,6 +757,7 @@ class LayoutPanel:
         # silently swallows the click, and having two controls for one
         # decision meant the tab could look active while the dropdown said
         # otherwise.
+        outer.addWidget(QLabel("How it folds", self.widget))
         self.tabs = QTabWidget(self.widget)
         outer.addWidget(self.tabs)
 
@@ -769,7 +796,7 @@ class LayoutPanel:
         self.unit_combo.addItems(["pt", "in", "cm", "mm"])
         self.unit_combo.setCurrentText("in")
         self._unit = "in"
-        form.addRow("Units:", self.unit_combo)
+        paper_form.addRow("Units:", self.unit_combo)
 
         # Paper size and orientation. Folio needs landscape stock -- two
         # portrait pages side by side do not fit on a portrait sheet -- and
@@ -791,7 +818,7 @@ class LayoutPanel:
             "Under Signatures a sheet is folded in half, so each book page "
             "ends up half the sheet."
         )
-        form.addRow("Paper:", self.paper_combo)
+        paper_form.addRow("Paper:", self.paper_combo)
 
         self.orientation_combo = QComboBox(self.widget)
         self.orientation_combo.addItems(list(ORIENTATIONS))
@@ -805,7 +832,7 @@ class LayoutPanel:
             "portrait stock they get squeezed, and Deckle warns rather than "
             "silently rotating your paper for you."
         )
-        form.addRow("Orientation:", self.orientation_combo)
+        paper_form.addRow("Orientation:", self.orientation_combo)
 
         # Grain and thickness are properties of the STOCK, so they sit with
         # the paper rather than in a mode tab. Neither changes any geometry:
@@ -829,7 +856,7 @@ class LayoutPanel:
             "Leave Unknown and Deckle stays quiet. Set it and you get a "
             "warning when a fold is going to fight the paper."
         )
-        form.addRow("Paper grain:", self.grain_combo)
+        paper_form.addRow("Paper grain:", self.grain_combo)
 
         self.paper_thickness_spinbox = QDoubleSpinBox(self.widget)
         self.paper_thickness_spinbox.setDecimals(4)
@@ -860,9 +887,9 @@ class LayoutPanel:
             "fore-edge creep and spine width, never to place a page."
         )
         self.paper_stock_combo.currentTextChanged.connect(self._on_paper_stock_changed)
-        form.addRow("Paper stock:", self.paper_stock_combo)
+        paper_form.addRow("Paper stock:", self.paper_stock_combo)
 
-        form.addRow("Paper thickness:", self.paper_thickness_spinbox)
+        paper_form.addRow("Paper thickness:", self.paper_thickness_spinbox)
 
         self.trim_spinbox = QDoubleSpinBox(self.widget)
         self.trim_spinbox.setDecimals(3)
@@ -877,7 +904,7 @@ class LayoutPanel:
             "0 draws none."
         )
         self.trim_spinbox.valueChanged.connect(self._on_trim_changed)
-        form.addRow("Trim depth:", self.trim_spinbox)
+        crop_form.addRow("Trim depth:", self.trim_spinbox)
 
         # Eight boxes rather than four: a scan's gutter swaps sides every
         # leaf, so one rectangle cannot fit both parities. Built in a loop
@@ -892,7 +919,7 @@ class LayoutPanel:
                     lambda _value, p=parity: self._on_crop_changed(p)
                 )
                 self.crop_spinboxes[(parity, edge)] = box
-                form.addRow(f"Crop {parity} {edge}:", box)
+                crop_form.addRow(f"Crop {parity} {edge}:", box)
 
         self.auto_crop_button = QPushButton("Measure crop from the ink", self.widget)
         self.auto_crop_button.setToolTip(
@@ -903,7 +930,7 @@ class LayoutPanel:
             "is what a number cannot show you."
         )
         self.auto_crop_button.clicked.connect(self._on_auto_crop)
-        form.addRow("", self.auto_crop_button)
+        crop_form.addRow("", self.auto_crop_button)
         self.unit_combo.setToolTip(
             "The unit every length on this tab is typed in. Values are "
             "stored in points regardless, so switching units re-displays "
@@ -915,7 +942,7 @@ class LayoutPanel:
         self.gutter_spinbox.setSingleStep(0.125)
         self.gutter_spinbox.setRange(0.0, from_points(288.0, self._unit))
         self.gutter_spinbox.setValue(from_points(state.project.layout.gutter_pt, self._unit))
-        form.addRow("Gutter:", self.gutter_spinbox)
+        margins_form.addRow("Gutter:", self.gutter_spinbox)
         self.gutter_spinbox.setToolTip(
             "The margin on the spine edge -- the strip swallowed by the "
             "binding. It alternates side by side so it always falls on "
@@ -946,11 +973,11 @@ class LayoutPanel:
             "Split evenly: both vary by half, so the content sits centred "
             "between them."
         )
-        form.addRow("Spare width to:", self.slack_combo)
+        margins_form.addRow("Spare width to:", self.slack_combo)
 
         self.link_margins_check = QCheckBox("Link all three", self.widget)
         self.link_margins_check.setChecked(state.project.layout.margins_linked)
-        form.addRow("", self.link_margins_check)
+        margins_form.addRow("", self.link_margins_check)
         self.link_margins_check.setToolTip(
             "Edit head, tail and fore-edge as a single value. Untick to "
             "set them independently -- useful when the fore-edge needs "
@@ -993,7 +1020,7 @@ class LayoutPanel:
             box.setRange(0.0, from_points(216.0, self._unit))
             box.setValue(from_points(getattr(state.project.layout, field), self._unit))
             box.setToolTip(tip)
-            form.addRow(label, box)
+            margins_form.addRow(label, box)
             self.margin_spinboxes[field] = box
         self._sync_margin_enabled()
 
@@ -1002,7 +1029,7 @@ class LayoutPanel:
             "Set the margin to the printer's non-printable inset, so content "
             "clears the dead border on every edge."
         )
-        form.addRow("", self.use_printer_margins_button)
+        margins_form.addRow("", self.use_printer_margins_button)
 
         self.binding_edge_combo = QComboBox(self.widget)
         self.binding_edge_combo.addItems(list(BINDING_EDGES))
@@ -1013,7 +1040,7 @@ class LayoutPanel:
             "Japanese tate-gaki. This mirrors which side the gutter "
             "falls on for every page."
         )
-        form.addRow("Binding edge:", self.binding_edge_combo)
+        margins_form.addRow("Binding edge:", self.binding_edge_combo)
 
         self.start_on_recto_check = QCheckBox("Start on a right-hand page", self.widget)
         self.start_on_recto_check.setChecked(state.project.layout.start_on_recto)
@@ -1025,7 +1052,7 @@ class LayoutPanel:
             "your document already begins with its own title leaf. Deckle "
             "adds one blank in front to shift everything over."
         )
-        form.addRow("", self.start_on_recto_check)
+        margins_form.addRow("", self.start_on_recto_check)
 
         self.landscape_policy_combo = QComboBox(self.widget)
         self.landscape_policy_combo.addItems(list(LANDSCAPE_POLICIES))
@@ -1037,7 +1064,7 @@ class LayoutPanel:
             "scale: shrink it to fit upright.\n"
             "letterbox: leave it upright with bands above and below."
         )
-        form.addRow("Landscape policy:", self.landscape_policy_combo)
+        margins_form.addRow("Landscape policy:", self.landscape_policy_combo)
 
         # -- signature/binding controls ---------------------------------
         # Everything below lands on the Signatures tab, and is reachable

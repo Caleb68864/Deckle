@@ -186,3 +186,67 @@ def test_a_thickness_with_no_preset_behind_it_reads_as_custom(panel):
     panel.refresh_from_project()
 
     assert panel.paper_stock_combo.currentText() == CUSTOM_STOCK_LABEL
+
+
+# -- the panel's own shape -----------------------------------------------
+
+
+def test_page_setup_is_split_across_tabs(panel):
+    """It had grown to twenty-six rows -- eight of them crop boxes -- and
+    a settings panel you have to scroll is one where the control you want
+    is never on screen."""
+    titles = [panel.setup_tabs.tabText(i) for i in range(panel.setup_tabs.count())]
+
+    assert len(titles) >= 3
+    assert any("Crop" in title for title in titles)
+
+
+def test_no_settings_tab_is_taller_than_a_dozen_rows(panel):
+    """The number that made this necessary. A ceiling rather than an exact
+    count, so adding one control does not fail the suite -- but adding
+    eight does, which is what happened."""
+    for index in range(panel.setup_tabs.count()):
+        rows = panel.setup_tabs.widget(index).layout().rowCount()
+        assert rows <= 12, (panel.setup_tabs.tabText(index), rows)
+
+
+def test_the_settings_tabs_are_not_the_mode_tabs(panel):
+    """Two separate tab widgets, deliberately."""
+    assert panel.setup_tabs is not panel.tabs
+
+
+def test_choosing_a_settings_tab_never_changes_how_the_book_folds(panel):
+    """The invariant that decided the design. The mode tabs *are* the
+    mode -- selecting one sets ``fold_scheme`` -- so putting Crop beside
+    Signatures would mean clicking it changed how the book folds. If these
+    two tab widgets are ever merged, this is what fails.
+    """
+    before = panel.state.project.layout.fold_scheme
+
+    for index in range(panel.setup_tabs.count()):
+        panel.setup_tabs.setCurrentIndex(index)
+        assert panel.state.project.layout.fold_scheme == before
+
+
+def test_the_mode_tabs_still_set_the_fold_scheme(panel):
+    """The other half: the behaviour the settings tabs must not acquire is
+    one the mode tabs must keep."""
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+    assert panel.state.project.layout.fold_scheme == "folio"
+
+    panel.tabs.setCurrentIndex(panel._single_tab_index)
+    assert panel.state.project.layout.fold_scheme == "none"
+
+
+def test_every_control_survives_the_split(panel):
+    """Seventeen rows moved between layouts. A control left behind would
+    still exist as an attribute and simply never appear."""
+    for widget in (
+        panel.unit_combo, panel.paper_combo, panel.grain_combo,
+        panel.paper_stock_combo, panel.paper_thickness_spinbox,
+        panel.trim_spinbox, panel.auto_crop_button, panel.gutter_spinbox,
+        panel.binding_edge_combo,
+    ):
+        assert widget.parent() is not None, widget
+    for key, box in panel.crop_spinboxes.items():
+        assert box.parent() is not None, key
