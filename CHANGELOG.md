@@ -130,6 +130,26 @@ Defects found during development, each with a full write-up in
 - Print sessions hashed `time.time()` into their id, which steps ~15ms on
   Windows, so runs of one document to one printer collided and shared a
   state file — one job silently overwriting another's resume point.
+- **Two render threads could take the whole app down.** pdfium's rendering
+  is not thread-safe and fails as a native access violation, not an
+  exception — no traceback, nothing in the log, the process simply gone.
+  Scrubbing the preview reached it on its own, because both rendering
+  views start a new thread without waiting for the one they just
+  cancelled; so did printing, which rasterises on the GUI thread. Every
+  pdfium call is now serialised.
+- The same source page used twice was cropped twice — the second copy lost
+  double the insets, the fourth quadruple, with the numeral on a test
+  document clipped in half by the fourth.
+- A print chunk that reached paper but could not be written to the session
+  log threw past the print dialog, and left the resume cursor reading
+  zero — so the sheets printed, the user got a traceback, and resuming
+  reprinted every one of them.
+- Autosave's debounce timer and its shutdown flush could write the same
+  file at once, which on Windows fails the rename outright rather than
+  picking a winner.
+- `schedule -o` and `crop-preview -o` truncated their output before
+  writing, so a failed write destroyed the previous file. `export` had
+  always written to a scratch file and renamed it; now all three do.
 
 ### Removed
 

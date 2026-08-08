@@ -265,3 +265,48 @@ def test_no_profile_field_round_trips_as_a_list():
         assert not isinstance(value, list), (
             f"{field.name} came back as a list: {value!r}"
         )
+
+
+# -- the cross-process case, which no lock can cover --------------------
+
+
+def test_recording_a_project_survives_a_rename_that_loses_a_race(monkeypatch, tmp_path):
+    """Two Deckle windows share one config directory, and a lock inside
+    one process cannot serialise them.
+
+    On Windows a losing rename does not lose quietly -- ``os.replace`` is
+    ``MoveFileEx``, which raises ``PermissionError: [WinError 5]`` when
+    another handle holds the target. ``record`` already promises never to
+    raise, on the grounds that a config directory that cannot be written
+    must not be what stops a project opening; this pins that the promise
+    covers a *contended* write and not only an unwritable one.
+    """
+    project = tmp_path / "a.deckle"
+    project.write_text("{}", encoding="utf-8")
+
+    def contended(*args, **kwargs):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", contended)
+
+    recent.record(str(project))  # must not raise
+
+    assert recent.load() == []
+
+
+def test_a_contended_profile_write_reports_rather_than_corrupting(monkeypatch):
+    """Profiles take the opposite contract to ``recent`` -- ``save``
+    raises, because losing a hand-measured calibration silently would be
+    worse than being told. What must not happen either way is a damaged
+    file, and the previous calibration is still there to re-read.
+    """
+    _calibrated().save("ink")
+
+    def contended(*args, **kwargs):
+        raise PermissionError(5, "Access is denied")
+
+    monkeypatch.setattr(os, "replace", contended)
+    with pytest.raises(OSError):
+        BUILTIN_PRESETS["generic_face_up_in_order"].save("ink")
+
+    assert PrinterProfile.load("ink").back_offset_x_pt == 3.0
