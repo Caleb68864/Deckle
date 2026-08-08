@@ -21,6 +21,8 @@ is embedded and no font licence is involved.
 from __future__ import annotations
 
 import pikepdf
+
+from deckle.core.paths import atomic_output
 from pikepdf import Name
 from pikepdf.canvas import ContentStreamBuilder
 
@@ -131,6 +133,10 @@ def make_numbered_pdf(
         for number in range(1, pages + 1):
             page = pdf.add_blank_page(page_size=(width, height))
             _draw_page(page, number, width, height)
-        pdf.save(out_path)
+        # Written beside the target and renamed, so a failure partway
+        # leaves whatever was there -- the guarantee `export`, `schedule`
+        # and `crop-preview` already give for the files they name.
+        with atomic_output(out_path) as scratch:
+            pdf.save(scratch)
     finally:
         pdf.close()

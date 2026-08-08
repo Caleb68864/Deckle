@@ -159,3 +159,38 @@ def test_an_export_already_had_this_guarantee(tmp_path, torn_write):
         _run("export", FIXTURE, "-o", out, "--fold-scheme", "folio")
 
     assert open(out, "rb").read() == first
+
+
+def test_a_dummy_page_count_below_one_is_reported(tmp_path):
+    """``make_numbered_pdf`` refuses a count below 1 with a message naming
+    the number it got. That message was reaching the user wrapped in a
+    traceback, because ``_cmd_dummy`` caught only ``OSError`` -- the same
+    shape as the three settings ``_impose_or_report`` was written for.
+    """
+    import subprocess
+    import sys
+
+    out = os.path.join(str(tmp_path), "dummy.pdf")
+    result = subprocess.run(
+        [sys.executable, "-m", "deckle.cli", "dummy", "--pages", "0", "-o", out],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    )
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert result.stderr.startswith("error:")
+    assert "at least 1" in result.stderr
+
+
+def test_a_failed_dummy_write_keeps_the_previous_one(tmp_path, torn_write):
+    """The fifth file the CLI names, brought up to the same guarantee as
+    the other four."""
+    out = os.path.join(str(tmp_path), "dummy.pdf")
+    assert _run("dummy", "--pages", "8", "-o", out) == 0
+    first = open(out, "rb").read()
+
+    with torn_write():
+        _run("dummy", "--pages", "16", "-o", out)
+
+    assert open(out, "rb").read() == first

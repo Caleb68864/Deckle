@@ -1103,6 +1103,16 @@ def _cmd_dummy(args: argparse.Namespace) -> int:
     except OSError as exc:
         _report_write_failure(args.output, exc)
         return 1
+    except ValueError as exc:
+        # `make_numbered_pdf` refuses a page count below 1 with a message
+        # naming the number it got -- which was reaching the user as a
+        # traceback, because nothing here caught it. Same shape as the
+        # three settings `_impose_or_report` was written for: the message
+        # was always right, only its presentation was wrong, and asking
+        # for zero pages is a user's typo rather than a bug report.
+        print(f"error: {exc}", file=sys.stderr)
+        log_exception("dummy_failed", exc, pages=args.pages)
+        return 1
     print(f"wrote {args.output} -- {args.pages} numbered page(s)")
     print(
         "Impose it, print it on scrap, fold it, and read the numbers. An "
