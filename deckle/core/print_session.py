@@ -35,6 +35,7 @@ from typing import Sequence
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
+from deckle.core.paths import write_text_atomic
 from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_passes
 from deckle.core.profiles import PrinterProfile
 
@@ -317,11 +318,21 @@ class PrintSession:
         return current.reload_instruction if current else None
 
     def _save(self) -> None:
+        # Through the shared writer rather than a fourth hand-rolled
+        # temp-and-rename. This one already had the rename, which is why a
+        # failed save here always left the previous state parseable; what
+        # it lacked was the `fsync` before it, and that matters more here
+        # than anywhere else in Deckle. The other stores are written during
+        # ordinary use and their worst realistic failure is a full disk.
+        # This file exists specifically to survive a crash -- and a crash
+        # is precisely when an unsynced rename can reach the platter ahead
+        # of the content it renames, leaving zeros where a resumable job
+        # was. It also strands nothing now: the old temp file was left
+        # behind whenever the write failed, one per failure, beside the
+        # state it was meant to replace.
         path = self.state_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(self._state.to_json(), indent=2), encoding="utf-8")
-        tmp_path.replace(path)
+        write_text_atomic(path, json.dumps(self._state.to_json(), indent=2))
 
     def _delete_state(self) -> None:
         path = self.state_path
@@ -431,8 +442,13 @@ class PrintSession:
             return []
         summaries: list[SessionSummary] = []
         for path in sorted(directory.glob("*.json")):
-            if path.suffix == ".tmp":
-                continue
+            # There was a `path.suffix == ".tmp"` skip here. It could never
+            # fire: the glob only yields names ending `.json`, so `suffix`
+            # is always `.json`, and the scratch file it meant to exclude
+            # (`<id>.json.tmp`, and now `.<id>.json.<random>.tmp`) does not
+            # match the glob in the first place. Dead code that reads as a
+            # live precaution is the same failure as a docstring that
+            # describes a capability nothing implements.
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError) as exc:
