@@ -219,8 +219,22 @@ def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
             UnknownLayoutFieldsWarning,
             stacklevel=2,
         )
-    if "paper" in kwargs:
-        kwargs["paper"] = tuple(kwargs["paper"])
+    # JSON has one sequence type and Python has two, so every tuple field
+    # comes back as a list unless something converts it. This used to name
+    # `paper` specifically, which was right while `paper` was the only
+    # tuple -- and then three more arrived in a day and each silently
+    # became a list: still usable (a list unpacks and indexes the same),
+    # but the reloaded layout no longer equalled the saved one, the frozen
+    # dataclass stopped being hashable, and the export cache keys on
+    # `repr`, so identical geometry produced two entries.
+    #
+    # Converting every list rather than a named few is what keeps the next
+    # tuple field from reintroducing it. No LayoutSettings field is
+    # genuinely a list.
+    kwargs = {
+        key: tuple(value) if isinstance(value, list) else value
+        for key, value in kwargs.items()
+    }
     return LayoutSettings(**kwargs)
 
 
