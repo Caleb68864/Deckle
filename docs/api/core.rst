@@ -31,6 +31,7 @@ of it.
    core.locate
    core.paths
    core.schema
+   core.paper
    core.project_io
    core.outputs
    core.printing

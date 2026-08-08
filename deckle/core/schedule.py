@@ -23,6 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from deckle.core.marks import SEWING_MARGIN_PT
+from deckle.core.paper import CREEP_INVISIBLE_PT
 from deckle.core.models import LayoutSettings, SheetPlan
 from deckle.core.printing import duplex_flip_edge
 
@@ -188,7 +189,7 @@ def _creep_note(signature_sheets: int, thickness_pt: float) -> str | None:
     if thickness_pt <= 0 or signature_sheets <= 1:
         return None
     creep = (signature_sheets - 1) * thickness_pt
-    if creep < 1.0:
+    if creep < CREEP_INVISIBLE_PT:
         return None
     return (
         f"Fore-edge creep is about {creep:.1f}pt "
