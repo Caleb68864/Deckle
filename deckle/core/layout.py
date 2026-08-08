@@ -568,9 +568,15 @@ def actual_margins_pt(
 
     "Inner" is the spine side, which is the left edge on a recto under a left
     binding and the right edge on a verso. Negative values mean the content
-    overflows that edge. Pure geometry over the emitted ``Placement``, so
-    tests and the UI measure the same numbers the exporter will use rather
-    than re-deriving them from settings.
+    overflows that edge. Pure geometry over the emitted ``Placement``, so a
+    caller measures the same numbers the exporter will use rather than
+    re-deriving them from settings.
+
+    In practice that caller is the test suite: this was written so tests
+    and the UI would agree, and **no UI code calls it** -- the layout panel
+    still shows the requested margins rather than the measured ones. Said
+    plainly because the previous wording named the UI as a user and would
+    otherwise read as a description of how the app works.
 
     ``cell`` defaults to the whole sheet, so margins are measured relative
     to sheet edges as before. Under folio, pass the leaf's cell so a
