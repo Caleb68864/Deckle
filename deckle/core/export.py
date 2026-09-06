@@ -341,16 +341,26 @@ def _place_output_page(
     placement = output_page.placement
     rotate_deg = placement.rotate_deg % 360
 
-    if rotate_deg in (90, 270):
+    if rotate_deg in (90, 180, 270):
         # The final on-sheet footprint (tx/ty/width/height in Placement) is
         # already expressed post-rotation. Place the form at its natural
         # (pre-rotation) orientation centered on that same footprint, then
         # rotate the whole thing about the footprint's center -- this keeps
         # the placement rect's own scale exact while the wrapping transform
         # supplies the rotation Imposer decided on.
+        #
+        # A HALF TURN does not swap the footprint: a page turned 180 covers
+        # the rectangle it covered upright. Only the quarter turns transpose
+        # it. This branch used to test `in (90, 270)` and drop 180 into the
+        # translation path below, where it was discarded in silence -- the
+        # exported ink landed in exactly the pixels an unrotated placement
+        # produced, which is what made it invisible for so long.
         scaled_w = src_w * placement.scale_x
         scaled_h = src_h * placement.scale_y
-        footprint_w, footprint_h = scaled_h, scaled_w
+        if rotate_deg == 180:
+            footprint_w, footprint_h = scaled_w, scaled_h
+        else:
+            footprint_w, footprint_h = scaled_h, scaled_w
         cx = placement.tx + footprint_w / 2.0
         cy = placement.ty + footprint_h / 2.0
         prerotate_rect = Rectangle(

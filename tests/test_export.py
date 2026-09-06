@@ -7,7 +7,7 @@ import os
 import pikepdf
 import pytest
 
-from deckle.core import export
+from deckle.core import export, render
 from deckle.core.export import export as export_fn
 from deckle.core.layout import GutterShiftStrategy
 from deckle.core.models import (
@@ -843,3 +843,142 @@ def test_a_failed_verification_leaves_no_scratch_file_behind(tmp_path, monkeypat
         n for n in os.listdir(str(tmp_path)) if n.endswith(".pdf") and n != "src.pdf"
     ]
     assert leftovers == [], f"failed export left files behind: {leftovers}"
+
+
+# -- the half turn -------------------------------------------------------
+#
+# `Placement.rotate_deg` is documented as 0/90/180/270, and the exporter
+# branched on `rotate_deg in (90, 270)`. A half turn therefore fell into the
+# translation path and was discarded in silence -- no exception, no warning,
+# and ink in exactly the pixels an unrotated placement produces. Latent
+# while `_place_page` emitted only 0 and 90; B1 makes it reachable, because
+# a page the user turns upside down is the commonest scanner mistake there
+# is.
+
+
+def _write_corner_marked_pdf(tmp_path, n_pages: int,
+                             page_size=(400.0, 600.0)) -> str:
+    """A source whose ink is a black square in each page's BOTTOM-LEFT.
+
+    Asymmetric on both axes on purpose. A blank page -- which is what
+    `_write_source_pdf` makes -- looks identical under every rotation, so a
+    test built on one can assert nothing about which way a page turned.
+    """
+    path = os.path.join(str(tmp_path), "corner.pdf")
+    pdf = pikepdf.Pdf.new()
+    for _ in range(n_pages):
+        page = pdf.add_blank_page(page_size=page_size)
+        page.contents_add(b"q\n0 0 0 rg\n0 0 100 100 re\nf\nQ\n")
+    pdf.save(path)
+    pdf.close()
+    return path
+
+
+def _ink_bbox_px(rendered) -> tuple[int, int, int, int]:
+    """``(left, top, right, bottom)`` of non-white pixels, image coords."""
+    xs: list[int] = []
+    ys: list[int] = []
+    for i in range(0, len(rendered.rgba), 4):
+        if rendered.rgba[i] < 250:
+            pixel = i // 4
+            xs.append(pixel % rendered.width)
+            ys.append(pixel // rendered.width)
+    assert xs, "the rasterised sheet has no ink at all"
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _one_page_plan(ref, rotate_deg: int, tx=100.0, ty=100.0) -> SheetPlan:
+    page = OutputPage(
+        source_ref=ref,
+        placement=Placement(scale_x=1.0, scale_y=1.0, tx=tx, ty=ty,
+                            rotate_deg=rotate_deg),
+        is_filler=False,
+    )
+    return SheetPlan(
+        sheets=[Sheet(index=0, front=Side(pages=(page,)), back=None)],
+        paper_pt=LETTER, warnings=[],
+    )
+
+
+def test_a_half_turn_placement_is_actually_turned(tmp_path):
+    """The defect, measured in ink rather than in matrices.
+
+    Scale 1.0, footprint 400x600 at (100, 100), so the source's
+    bottom-left square covers sheet points x 100..200, y 100..200. A half
+    turn about (300, 400) maps that to x 400..500, y 600..700; at 36 dpi
+    on a 612x792 sheet (306x396 px) that is x 200..250 and y 46..96.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+
+    try:
+        rendered = render.render_sheet(_one_page_plan(ref, 180), 0, "front", 36)
+        assert _ink_bbox_px(rendered) == (200, 46, 249, 95)
+    finally:
+        export.clear_sheet_cache()
+
+
+def test_an_unrotated_placement_is_the_control_for_the_half_turn(tmp_path):
+    """Proves the measurement, so the 180 assertion is not an accident.
+
+    Passes before and after the fix. Its job is to show that
+    `_ink_bbox_px` reads what it claims, and to name the exact pixels a
+    dropped half turn produced -- because that was the bug: 180 rendered
+    byte-for-byte identically to this.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+
+    try:
+        rendered = render.render_sheet(_one_page_plan(ref, 0), 0, "front", 36)
+        assert _ink_bbox_px(rendered) == (50, 296, 99, 345)
+    finally:
+        export.clear_sheet_cache()
+
+
+def test_a_half_turn_pivots_on_the_unswapped_footprint_centre(tmp_path):
+    """A page turned 180 covers the rectangle it covered upright.
+
+    Only the quarter turns transpose the footprint. This asserts the
+    emitted point reflection `-1 0 0 -1 2cx 2cy cm` with cx = 100 + 400/2
+    and cy = 100 + 600/2. A half turn that wrongly transposed its
+    footprint would pivot on (400, 300) and emit `... 800.0 600.0 cm` --
+    still on the sheet, and entirely plausible to the eye.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    try:
+        export_fn(_one_page_plan(ref, 180), out)
+        with pikepdf.open(out) as pdf:
+            stream = _content_bytes(pdf.pages[0])
+    finally:
+        export.clear_sheet_cache()
+
+    assert b"-1.0 0.0 -0.0 -1.0 600.0 800.0 cm" in stream, stream
+
+
+def test_a_quarter_turn_still_transposes_its_footprint(tmp_path):
+    """The half turn's sibling, so the 180 branch cannot be inverted.
+
+    A 400x600 page turned a quarter has a 600x400 footprint, so at the
+    sheet origin it covers sheet points x 0..600, y 0..400 -- image pixels
+    x 0..300, y 196..396 on a 306x396 raster. Asserted as containment
+    rather than as a corner because B1 changes a quarter turn from
+    counter-clockwise to clockwise, which moves the corner and leaves the
+    footprint alone.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+
+    try:
+        rendered = render.render_sheet(
+            _one_page_plan(ref, 90, tx=0.0, ty=0.0), 0, "front", 36
+        )
+        left, top, right, bottom = _ink_bbox_px(rendered)
+    finally:
+        export.clear_sheet_cache()
+
+    assert 0 <= left <= right <= 300, (left, right)
+    assert 196 <= top <= bottom <= 396, (top, bottom)
