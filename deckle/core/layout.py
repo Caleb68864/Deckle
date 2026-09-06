@@ -50,6 +50,61 @@ def _full_sheet_cell(paper: tuple[float, float]) -> Cell:
     return (0.0, 0.0, paper[0], paper[1])
 
 
+def _margins(settings: LayoutSettings) -> tuple[float, float, float, float]:
+    """The four margins, clamped at zero: ``(gutter, outer, top, bottom)``.
+
+    Negative margins are clamped rather than refused, on purpose and with a
+    test pinning it -- and ``project_io._check_layout_values`` says so
+    outright, which is why nothing validates them at load time.
+
+    The gutter IS the inner (spine) margin, so these four describe all four
+    edges of a page. Returned in spine-outer-top-bottom order to match the
+    order they are unpacked at every call site.
+    """
+    return (
+        max(0.0, settings.gutter_pt),
+        max(0.0, settings.margin_outer_pt),
+        max(0.0, settings.margin_top_pt),
+        max(0.0, settings.margin_bottom_pt),
+    )
+
+
+def _box_within(
+    settings: LayoutSettings, cell: Cell | None
+) -> tuple[tuple[float, float, float, float], float, float, bool]:
+    """The content box inside ``cell``: margins, size, and whether it collapsed.
+
+    Returns ``((gutter, outer, top, bottom), box_w, box_h, collapsed)``.
+    When ``collapsed`` is ``True`` the margins consume the cell entirely;
+    the margins are then all zero and the box is the bare cell, so a caller
+    that ignores the flag still gets a usable, positive box rather than a
+    negative-size one and a nonsense scale.
+
+    Three functions had this arithmetic copied -- ``content_box_size``,
+    ``content_box_rect_pt`` and ``_place_page`` -- and they differ only in
+    what they do about ``collapsed``: the first two stay silent so the
+    scale pass can call them without duplicating a warning, and
+    ``_place_page`` emits ``clipped_by_page``. One rule, three reactions,
+    is the shape this returns.
+
+    :param settings: supplies the four margins.
+    :param cell: the region to measure inside, or ``None`` for the whole
+        sheet.
+    :returns: ``(margins, box_w, box_h, collapsed)``.
+    """
+    if cell is None:
+        cell = _full_sheet_cell(settings.paper)
+    cx0, cy0, cx1, cy1 = cell
+    cell_w = cx1 - cx0
+    cell_h = cy1 - cy0
+    gutter, outer, top, bottom = _margins(settings)
+    box_w = cell_w - gutter - outer
+    box_h = cell_h - top - bottom
+    if box_w <= 0.0 or box_h <= 0.0:
+        return ((0.0, 0.0, 0.0, 0.0), cell_w, cell_h, True)
+    return ((gutter, outer, top, bottom), box_w, box_h, False)
+
+
 @runtime_checkable
 class LayoutStrategy(Protocol):
     """A pluggable page-imposition algorithm.
@@ -201,6 +256,34 @@ def _source_dims(
     return width, height
 
 
+def _policy_rotation(
+    src_w: float, src_h: float, settings: LayoutSettings, cell: Cell
+) -> int:
+    """The rotation ``landscape_policy`` adds for a page this shape, in ``cell``.
+
+    ``90`` for landscape content in a portrait cell under
+    ``landscape_policy="rotate"``, ``0`` otherwise. Judged against the cell
+    rather than the sheet: under folio the sheet is landscape and each of
+    its two cells is portrait, so the two questions have opposite answers.
+
+    Extracted verbatim from ``_place_page``. ``_rotates_to_portrait`` asks
+    the same question against ``settings.paper`` and still does --
+    reconciling the two is B5, not this refactor.
+
+    :param src_w: the page's width after cropping and after the user's own
+        rotation, i.e. as ``_source_dims`` returns it.
+    :param src_h: the same for height.
+    :param settings: read for ``landscape_policy`` only.
+    :param cell: the region the leaf is placed into.
+    :returns: ``90`` or ``0``.
+    """
+    if settings.landscape_policy != "rotate":
+        return 0
+    cx0, cy0, cx1, cy1 = cell
+    cell_is_portrait = (cy1 - cy0) >= (cx1 - cx0)
+    return 90 if cell_is_portrait and src_w > src_h else 0
+
+
 def content_box_size(
     settings: LayoutSettings, cell: Cell | None = None
 ) -> tuple[float, float]:
@@ -218,15 +301,7 @@ def content_box_size(
         sheet.
     :returns: ``(width, height)`` in points.
     """
-    if cell is None:
-        cell = _full_sheet_cell(settings.paper)
-    cx0, cy0, cx1, cy1 = cell
-    cell_w = cx1 - cx0
-    cell_h = cy1 - cy0
-    box_w = cell_w - max(0.0, settings.gutter_pt) - max(0.0, settings.margin_outer_pt)
-    box_h = cell_h - max(0.0, settings.margin_top_pt) - max(0.0, settings.margin_bottom_pt)
-    if box_w <= 0.0 or box_h <= 0.0:
-        return (cell_w, cell_h)
+    _margins_unused, box_w, box_h, _collapsed = _box_within(settings, cell)
     return (box_w, box_h)
 
 
@@ -380,9 +455,7 @@ def _place_page(
     # and warn, rather than silently clipping or shrinking it. Under folio
     # each cell is portrait-shaped even though the sheet itself is
     # landscape, so this must be judged against the cell, not the sheet.
-    cell_is_portrait = cell_h >= cell_w
-    page_is_landscape = src_w > src_h
-    if settings.landscape_policy == "rotate" and cell_is_portrait and page_is_landscape:
+    if _policy_rotation(src_w, src_h, settings, cell) == 90:
         rotate_deg = 90
         src_w, src_h = src_h, src_w
         warnings.append(
@@ -400,17 +473,13 @@ def _place_page(
     # The content box. All four page edges have a margin: the gutter IS the
     # inner (spine) margin, and outer/top/bottom cover the rest.
     # ------------------------------------------------------------------
-    gutter = max(0.0, settings.gutter_pt)
-    outer = max(0.0, settings.margin_outer_pt)
-    top = max(0.0, settings.margin_top_pt)
-    bottom = max(0.0, settings.margin_bottom_pt)
+    (gutter, outer, top, bottom), box_w, box_h, collapsed = _box_within(settings, cell)
 
-    box_w = cell_w - gutter - outer
-    box_h = cell_h - top - bottom
-
-    if box_w <= 0.0 or box_h <= 0.0:
+    if collapsed:
         # Margins consume the whole cell. Warn and fall back to the bare
         # cell rather than producing a negative-size box and nonsense scale.
+        # `_box_within` has already zeroed the margins and returned the bare
+        # cell, which is exactly the fallback this used to apply by hand.
         warnings.append(
             LayoutWarning(
                 sheet_index=sheet_index,
@@ -421,8 +490,6 @@ def _place_page(
                 ),
             )
         )
-        gutter = outer = top = bottom = 0.0
-        box_w, box_h = cell_w, cell_h
 
     # `scale` is computed ONCE for the whole document by `document_scale` --
     # the largest that fits every page -- so body text is reproduced at
@@ -538,14 +605,11 @@ def content_box_rect_pt(
     if cell is None:
         cell = _full_sheet_cell(settings.paper)
     cx0, cy0, cx1, cy1 = cell
-    cell_w = cx1 - cx0
-    cell_h = cy1 - cy0
-    gutter = max(0.0, settings.gutter_pt)
-    outer = max(0.0, settings.margin_outer_pt)
-    top = max(0.0, settings.margin_top_pt)
-    bottom = max(0.0, settings.margin_bottom_pt)
+    (gutter, outer, top, bottom), _box_w, _box_h, collapsed = _box_within(
+        settings, cell
+    )
 
-    if cell_w - gutter - outer <= 0.0 or cell_h - top - bottom <= 0.0:
+    if collapsed:
         return (cx0, cy0, cx1, cy1)
 
     if spine_side is not None:
@@ -958,6 +1022,45 @@ class SaddleStitchStrategy:
                     cell_a, spine_a = cells[0], "right"
                     cell_b, spine_b = cells[1], "left"
 
+                def place_pair(slot_a: int, slot_b: int) -> tuple[OutputPage, OutputPage]:
+                    """One face's two leaves: `a` in `cell_a`, `b` in `cell_b`.
+
+                    Ten identical lines, four times, differing only in which
+                    slot each leaf comes from. `output_index` is `0` for
+                    both: under folio the spine is a function of which cell
+                    a leaf sits in, never of output-page parity, so
+                    `spine_side` is given and the index is inert -- see
+                    `_place_page`.
+
+                    Defined inside this loop rather than above it so the
+                    capture is lexically obvious: `cell_a`, `spine_a` and
+                    `page_offset` are all assigned per iteration, and a
+                    closure defined earlier would read them at call time
+                    and only work by accident.
+                    """
+                    return (
+                        _place_page(
+                            slots[page_offset + slot_a],
+                            0,
+                            settings,
+                            sheet_index,
+                            warnings,
+                            scale,
+                            cell=cell_a,
+                            spine_side=spine_a,
+                        ),
+                        _place_page(
+                            slots[page_offset + slot_b],
+                            0,
+                            settings,
+                            sheet_index,
+                            warnings,
+                            scale,
+                            cell=cell_b,
+                            spine_side=spine_b,
+                        ),
+                    )
+
                 is_outermost = local_idx == 0
                 is_innermost = local_idx == len(group) - 1
 
@@ -980,55 +1083,16 @@ class SaddleStitchStrategy:
                         signature_order_mark(sig_index, sig_count, paper_h, fold_x)
                     )
 
+                # Warning order is load-bearing: `_place_page` appends to the
+                # shared `warnings` list, `plan.warnings` order is printed by
+                # the CLI and counted by tests, and a tuple evaluates left to
+                # right. front_a, front_b, back_a, back_b -- do not reorder
+                # these two assignments.
                 front = Side(
-                    pages=(
-                        _place_page(
-                            slots[page_offset + front_a],
-                            0,
-                            settings,
-                            sheet_index,
-                            warnings,
-                            scale,
-                            cell=cell_a,
-                            spine_side=spine_a,
-                        ),
-                        _place_page(
-                            slots[page_offset + front_b],
-                            0,
-                            settings,
-                            sheet_index,
-                            warnings,
-                            scale,
-                            cell=cell_b,
-                            spine_side=spine_b,
-                        ),
-                    ),
-                    marks=tuple(front_marks),
+                    pages=place_pair(front_a, front_b), marks=tuple(front_marks)
                 )
                 back = Side(
-                    pages=(
-                        _place_page(
-                            slots[page_offset + back_a],
-                            0,
-                            settings,
-                            sheet_index,
-                            warnings,
-                            scale,
-                            cell=cell_a,
-                            spine_side=spine_a,
-                        ),
-                        _place_page(
-                            slots[page_offset + back_b],
-                            0,
-                            settings,
-                            sheet_index,
-                            warnings,
-                            scale,
-                            cell=cell_b,
-                            spine_side=spine_b,
-                        ),
-                    ),
-                    marks=tuple(back_marks),
+                    pages=place_pair(back_a, back_b), marks=tuple(back_marks)
                 )
                 sheets.append(Sheet(index=sheet_index, front=front, back=back))
 

@@ -25,6 +25,7 @@ from typing import Protocol
 
 import pytest
 
+from deckle.core import layout
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, actual_margins_pt
 from deckle.core.models import LayoutSettings, SourcePage, SourceRef
 
@@ -668,3 +669,107 @@ def test_slack_targets_conserve_total_horizontal_margin():
         inner, outer, _, _ = margins(impose(make_pages(2, size=DIGEST), s), 0)
         totals.add(round(inner + outer, 6))
     assert len(totals) == 1, f"total horizontal margin must not vary: {totals}"
+
+
+# -- the extracted placement seams ---------------------------------------
+#
+# `_margins` and `_box_within` replaced three hand-copied versions of the
+# same arithmetic in `content_box_size`, `content_box_rect_pt` and
+# `_place_page`. These tests pin the two properties that made the copies
+# dangerous rather than merely repetitive: the tuple ORDER, which three
+# call sites unpack positionally, and the exact boundary at which the box
+# collapses, which all three have to agree on or the scale pass and the
+# placement pass describe different paper.
+
+
+def _margin_settings(**overrides) -> LayoutSettings:
+    base = dict(paper=(612.0, 792.0), gutter_pt=0.0, binding_edge="left")
+    base.update(overrides)
+    return LayoutSettings(**base)
+
+
+def test_the_margin_helper_clamps_every_negative():
+    """Negative margins clamp rather than raise, and the order is fixed.
+
+    Clamping is deliberate and `project_io._check_layout_values` says so,
+    which is why nothing validates these at load time. The order --
+    spine, outer, top, bottom -- is what three call sites unpack
+    positionally, so it is pinned here rather than left to a docstring.
+    """
+    clamped = layout._margins(
+        _margin_settings(gutter_pt=-50.0, margin_outer_pt=-10.0,
+                         margin_top_pt=-10.0, margin_bottom_pt=-10.0)
+    )
+    assert clamped == (0.0, 0.0, 0.0, 0.0)
+
+    ordered = layout._margins(
+        _margin_settings(gutter_pt=54.0, margin_outer_pt=18.0,
+                         margin_top_pt=36.0, margin_bottom_pt=9.0)
+    )
+    assert ordered == (54.0, 18.0, 36.0, 9.0)
+
+
+def test_the_content_box_helper_reports_a_collapse_without_warning():
+    """A collapsed box comes back usable, flagged, and silent.
+
+    The helper returns the bare cell with zeroed margins so a caller that
+    ignores the flag still gets a positive box rather than a negative one
+    and a nonsense scale. It emits no warning itself: `_place_page` wants
+    one, and the scale pass must be able to ask the same question without
+    duplicating it.
+    """
+    collapsed = layout._box_within(
+        _margin_settings(gutter_pt=400.0, margin_outer_pt=400.0,
+                         margin_top_pt=500.0, margin_bottom_pt=500.0),
+        None,
+    )
+    assert collapsed == ((0.0, 0.0, 0.0, 0.0), 612.0, 792.0, True)
+
+    ordinary = layout._box_within(
+        _margin_settings(gutter_pt=54.0, margin_outer_pt=18.0,
+                         margin_top_pt=36.0, margin_bottom_pt=9.0),
+        None,
+    )
+    assert ordinary[3] is False
+    assert ordinary[1:3] == (612.0 - 54.0 - 18.0, 792.0 - 36.0 - 9.0)
+
+
+@pytest.mark.parametrize("gutter_pt", [0.0, 593.0, 594.0, 595.0])
+@pytest.mark.parametrize("margin_top_pt", [0.0, 773.0, 774.0, 775.0])
+def test_the_three_box_users_agree_about_when_it_collapses(gutter_pt, margin_top_pt):
+    """The property the extraction exists to guarantee.
+
+    On portrait letter with an 18pt outer and an 18pt bottom margin, the
+    box collapses at gutter >= 594 (612 - 594 - 18 == 0) and at top >= 774
+    (792 - 774 - 18 == 0). The values straddle both boundaries, because
+    the test is `<= 0.0` and an off-by-one there is the difference between
+    a book and a stack of blank paper.
+
+    Before the extraction each of the three had its own copy of this
+    condition. They agreed, and nothing said they had to.
+    """
+    settings = _margin_settings(
+        gutter_pt=gutter_pt, margin_outer_pt=18.0,
+        margin_top_pt=margin_top_pt, margin_bottom_pt=18.0,
+    )
+    expected_collapse = gutter_pt >= 594.0 or margin_top_pt >= 774.0
+
+    size_says = layout.content_box_size(settings) == settings.paper
+    rect_says = layout.content_box_rect_pt(settings, is_recto=True) == (
+        0.0, 0.0, 612.0, 792.0,
+    )
+
+    warnings: list = []
+    layout._place_page(
+        make_page(size=(400.0, 600.0)), 0, settings, 0, warnings, 1.0,
+        cell=(0.0, 0.0, 612.0, 792.0),
+    )
+    # Filter on the detail, not the kind: `clipped_by_page` is emitted for
+    # two different reasons and only one of them is this one.
+    place_says = any(
+        "exceed the paper size" in w.detail for w in warnings
+    )
+
+    assert size_says is expected_collapse, ("content_box_size", size_says)
+    assert rect_says is expected_collapse, ("content_box_rect_pt", rect_says)
+    assert place_says is expected_collapse, ("_place_page", place_says)
