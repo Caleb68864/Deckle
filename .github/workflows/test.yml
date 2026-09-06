@@ -1,0 +1,86 @@
+# The suite, on a machine that is not the author's.
+#
+# Every one of R0.1-R0.5 was a defect that was true on one Windows working
+# tree and false everywhere else: a test fixture that was never committed,
+# an undeclared numpy import, a build spec swallowed by `*.spec`, a `chmod`
+# constant that means "writable" on Windows and "unreadable" on POSIX, and a
+# stray file named `=` left by a shell redirect. All five would have failed
+# on the first push here. That is what this job is for -- not coverage, not
+# gatekeeping, just a second machine.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A push that supersedes an in-flight run cancels it. The suite is ~60s;
+# this is about not queueing behind yourself, not about cost.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # Every interpreter reports. A failure on one is a fact about that
+      # one, and cancelling the others throws away the comparison that
+      # makes it diagnosable.
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor `pyproject.toml` and the README both claim, so
+        # it is tested rather than merely asserted. `run.bat` says 3.12+;
+        # that is a documentation drift item, not a second opinion about
+        # what the code supports.
+        python-version: ["3.11", "3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          # There is no lockfile; the extras live in pyproject.toml, so
+          # that is what the cache key hashes.
+          cache-dependency-path: pyproject.toml
+
+      # PySide6 ships its own Qt, but Qt still links the system's EGL,
+      # fontconfig, xkbcommon and dbus. Without these the offscreen
+      # platform plugin fails to load and every Qt test dies with
+      # "could not load the Qt platform plugin" rather than an assertion.
+      # No X server and no Xvfb: nothing in the suite needs a display.
+      - name: Install the libraries Qt links against
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 \
+            libopengl0 \
+            libglib2.0-0 \
+            libdbus-1-3 \
+            libfontconfig1 \
+            libfreetype6 \
+            libxkbcommon0
+
+      - name: Install Deckle and its test extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Printed rather than asserted. This is the first thing a bug report
+      # asks for, and it exercises the importlib.metadata path that the
+      # frozen build once got silently wrong -- a "not installed" here
+      # would be worth knowing about before it reaches a bundle.
+      - name: Report what is installed
+        run: python -m deckle.cli --version
+
+      - name: Run the suite
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q --no-header -p no:cacheprovider
