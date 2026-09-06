@@ -386,3 +386,75 @@ def test_round_trip_still_preserves_every_known_field(tmp_path):
         slack_to="outer", margins_linked=False, start_on_recto=False,
     )
     assert _layout_from_dict(_layout_to_dict(original)) == original
+
+
+# -- the landscape policy that never branched ----------------------------
+#
+# `landscape_policy` offered three values and the imposer contained exactly
+# one comparison, `== "rotate"`. `scale` and `letterbox` therefore produced
+# byte-identical placements, while the GUI tooltip promised two different
+# behaviours -- "shrink it to fit upright" and "leave it upright with bands
+# above and below". One control expressing one decision twice is the shape
+# `docs/decisions.md` records deleting `scale_mode` over.
+
+
+def test_a_letterbox_project_loads_as_scale(tmp_path):
+    """Projects saved by earlier builds must still open.
+
+    `_check_layout_values` refuses a value outside a field's Literal,
+    correctly and harshly, so without the migration a project carrying
+    `letterbox` would simply not open. Mapping it is allowed precisely
+    because the two spellings meant the same thing -- a silent migration
+    that loses nothing.
+    """
+    path = os.path.join(str(tmp_path), "legacy.deckle")
+    payload = {
+        "version": 1,
+        "pages": [],
+        "layout": {
+            "paper": [612.0, 792.0],
+            "gutter_pt": 36.0,
+            "binding_edge": "left",
+            "landscape_policy": "letterbox",
+        },
+    }
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+    project = load_project(path, check_sources=False)
+
+    assert project.layout.landscape_policy == "scale"
+
+
+def test_no_landscape_policy_value_is_unreachable():
+    """Every value the model offers must change what the imposer does.
+
+    Asserted by counting distinct placements rather than by reading the
+    code, so it stays true if someone adds a fourth value and forgets to
+    branch on it -- which is exactly how `letterbox` survived.
+    """
+    import typing
+
+    from deckle.core.layout import GutterShiftStrategy
+    from deckle.core.models import LayoutSettings, SourcePage, SourceRef
+
+    values = typing.get_args(
+        typing.get_type_hints(LayoutSettings)["landscape_policy"]
+    )
+    page = SourcePage(
+        ref=SourceRef(path="s.pdf", page_index=0, sha256="a" * 64,
+                      width_pt=900.0, height_pt=600.0),
+        rotate_deg=0, skipped=False,
+    )
+
+    placements = {}
+    for value in values:
+        s = LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0,
+                           binding_edge="left", landscape_policy=value)
+        plan = GutterShiftStrategy().impose([page], s)
+        placements[value] = plan.sheets[0].front.pages[0].placement
+
+    assert len(set(placements.values())) == len(values), (
+        f"two landscape_policy values produce identical placements for a "
+        f"landscape page: {placements}"
+    )

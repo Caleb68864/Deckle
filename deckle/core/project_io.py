@@ -369,6 +369,16 @@ def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
             UnknownLayoutFieldsWarning,
             stacklevel=2,
         )
+    # `letterbox` was a third `landscape_policy` value that never branched
+    # on anything -- `scale` and `letterbox` produced identical placements
+    # -- and was removed. `_check_layout_values` refuses a value outside a
+    # field's `Literal`, correctly and harshly, so without this a project
+    # saved by any earlier build would simply not open. Mapped rather than
+    # dropped: the two meant the same thing, so this loses nothing, which
+    # is exactly when a silent migration is allowed.
+    if kwargs.get("landscape_policy") == "letterbox":
+        kwargs["landscape_policy"] = "scale"
+
     # Before the tuple conversion below, not after: `tuple("big")` succeeds
     # and yields `('b', 'i', 'g')`, so checking afterwards would let a
     # string through as a three-element tuple and move the failure further

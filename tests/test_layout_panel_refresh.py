@@ -205,7 +205,7 @@ def test_every_control_follows_the_loaded_layout():
     state, panel = _panel()
     loaded = LayoutSettings(
         paper=(792.0, 612.0), gutter_pt=36.0, binding_edge="right",
-        start_on_recto=False, landscape_policy="letterbox", margin_top_pt=12.0,
+        start_on_recto=False, landscape_policy="scale", margin_top_pt=12.0,
         margin_bottom_pt=13.0, margin_outer_pt=14.0, slack_to="split",
         margins_linked=False, fold_scheme="folio", sheets_per_signature=4,
         grain="short", paper_thickness_pt=0.2, sewing_stations=3,
@@ -217,7 +217,7 @@ def test_every_control_follows_the_loaded_layout():
 
     assert panel.binding_edge_combo.currentText() == "right"
     assert panel.start_on_recto_check.isChecked() is False
-    assert panel.landscape_policy_combo.currentText() == "letterbox"
+    assert panel.landscape_policy_combo.currentText() == "scale"
     assert panel.blank_mode_combo.currentText() == "balanced"
     assert panel.sewing_stations_spinbox.value() == 3
     assert panel.sheets_per_signature_spinbox.value() == 4

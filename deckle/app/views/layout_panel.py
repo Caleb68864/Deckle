@@ -40,7 +40,7 @@ from deckle.core.schedule import build_schedule, format_schedule_text
 
 BINDING_EDGES: tuple[str, ...] = ("left", "right")
 
-LANDSCAPE_POLICIES: tuple[str, ...] = ("rotate", "scale", "letterbox")
+LANDSCAPE_POLICIES: tuple[str, ...] = ("rotate", "scale")
 
 FOLD_SCHEMES: tuple[str, ...] = ("none", "folio")
 
@@ -276,7 +276,7 @@ def set_grain(project: Project, grain: str) -> Project:
 
 
 def set_landscape_policy(
-    project: Project, landscape_policy: Literal["rotate", "scale", "letterbox"]
+    project: Project, landscape_policy: Literal["rotate", "scale"]
 ) -> Project:
     """Set what happens to a landscape page in a portrait cell.
 
@@ -1061,8 +1061,8 @@ class LayoutPanel:
             "What to do with a landscape page in a portrait book.\n\n"
             "rotate: turn it 90 degrees so it fills the page (the default "
             "-- the reader turns the book).\n"
-            "scale: shrink it to fit upright.\n"
-            "letterbox: leave it upright with bands above and below."
+            "scale: leave it upright, filling the width, with bands above "
+            "and below."
         )
         margins_form.addRow("Landscape policy:", self.landscape_policy_combo)
 

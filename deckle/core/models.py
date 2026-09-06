@@ -313,7 +313,17 @@ class LayoutSettings:
         page. Honoured for free in the one-page-per-side layout, where
         output index 0 is a recto by definition.
     :ivar landscape_policy: what to do with a landscape page in a portrait
-        cell. ``rotate`` turns it and warns.
+        cell. ``rotate`` turns it 90 degrees so it fills the cell, and
+        warns. ``scale`` leaves it upright, which -- because content is
+        always fitted to the box in both dimensions -- means it fills the
+        box's width and sits centred vertically, with bands above and
+        below.
+
+        There used to be a third value, ``letterbox``, whose promised
+        behaviour was that last sentence. It never branched on anything:
+        the only comparison in the imposer is ``== "rotate"``, so
+        ``scale`` and ``letterbox`` produced byte-identical placements. A
+        ``.deckle`` carrying it loads as ``scale``.
     :ivar margin_top_pt: head margin, in points.
     :ivar margin_bottom_pt: tail margin, in points.
     :ivar fold_scheme: ``none`` for one page per side, ``folio`` for
@@ -340,7 +350,7 @@ class LayoutSettings:
     # only by overflowing the page, and once margins existed its sole
     # distinct behaviour was producing output that could not be printed.
     start_on_recto: bool = True
-    landscape_policy: Literal["rotate", "scale", "letterbox"] = "rotate"
+    landscape_policy: Literal["rotate", "scale"] = "rotate"
     margin_top_pt: float = 0.0
     margin_bottom_pt: float = 0.0
     margin_outer_pt: float = 0.0
