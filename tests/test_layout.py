@@ -773,3 +773,103 @@ def test_the_three_box_users_agree_about_when_it_collapses(gutter_pt, margin_top
     assert size_says is expected_collapse, ("content_box_size", size_says)
     assert rect_says is expected_collapse, ("content_box_rect_pt", rect_says)
     assert place_says is expected_collapse, ("_place_page", place_says)
+
+
+# -- the user's own rotation ---------------------------------------------
+#
+# `_place_page` read `slot.rotate_deg` through `_source_dims`, to swap the
+# page's dimensions for sizing, and then emitted `rotate_deg = 0`. A page
+# rotated in Arrange was therefore MEASURED as turned and DRAWN as upright:
+# under the default policies it exported unrotated and shrunk to 0.77, and
+# a half turn was a complete no-op. The composition rule is
+# `(user + policy) % 360`, both clockwise.
+
+
+def _placement(page, **overrides):
+    """The single placement for `page`, imposed alone on portrait letter.
+
+    `landscape_policy` defaults to "scale" here, NOT to the model's own
+    default of "rotate": these tests isolate the user's own turn, and
+    under "rotate" a page the user has turned into landscape gets a second
+    90 from the policy. The two tests that want that composition ask for
+    it explicitly.
+    """
+    overrides.setdefault("landscape_policy", "scale")
+    s = _margin_settings(**overrides)
+    plan = GutterShiftStrategy().impose([page], s)
+    return plan.sheets[0].front.pages[0].placement
+
+
+def test_a_users_rotation_reaches_the_placement():
+    """The defect itself: a quarter turn asked for is a quarter turn placed."""
+    placement = _placement(make_page(size=(400.0, 600.0), rotate_deg=90))
+    assert placement.rotate_deg == 90
+
+
+def test_a_half_turn_is_not_silently_dropped():
+    """A page imported upside down is the commonest scanner mistake there is.
+
+    It was also the case that produced no visible difference at all: 180
+    was neither swapped by `_source_dims` nor emitted by `_place_page`.
+    """
+    placement = _placement(make_page(size=(400.0, 600.0), rotate_deg=180))
+    assert placement.rotate_deg == 180
+
+
+def test_the_users_rotation_composes_with_the_landscape_policy():
+    """Both turns apply, and they add.
+
+    A portrait page turned 90 by hand IS landscape, so under the rotate
+    policy the imposer turns it again to fit an upright cell -- net a half
+    turn. Composition, not replacement: the policy used to overwrite the
+    user's answer with its own.
+    """
+    placement = _placement(
+        make_page(size=(400.0, 600.0), rotate_deg=90), landscape_policy="rotate"
+    )
+    assert placement.rotate_deg == 180
+
+
+def test_a_three_quarter_turn_under_the_rotate_policy_lands_upright():
+    """The composition that comes back round to zero.
+
+    A portrait page turned 270 by hand is landscape; the policy's further
+    90 clockwise brings it upright again, which is the right answer and
+    the one a `rotate_deg = 90` assignment could never produce.
+    """
+    placement = _placement(
+        make_page(size=(400.0, 600.0), rotate_deg=270), landscape_policy="rotate"
+    )
+    assert placement.rotate_deg == 0
+
+
+@pytest.mark.parametrize(
+    "stored,expected",
+    [(-90, 270), (450, 90), (360, 0), (720, 0), (-180, 180), (45, 0), (135, 180)],
+)
+def test_a_stored_rotation_outside_zero_to_360_is_normalised(stored, expected):
+    """A `.deckle` is checked for *int*, not for quarter turns.
+
+    `app.state.set_rotation` takes % 360, but a hand-edited or
+    older-format project can carry -90 or 450, and the old membership test
+    `in (90, 270)` treated both as upright. A 45 is not a quarter turn and
+    has no correct answer, so it snaps to the nearest rather than reaching
+    pikepdf's matrix or pdfium's lookup table.
+    """
+    placement = _placement(make_page(size=(400.0, 600.0), rotate_deg=stored))
+    assert placement.rotate_deg == expected
+
+
+def test_a_rotated_page_is_measured_by_its_turned_footprint():
+    """Sizing and placement must use the same footprint.
+
+    A 400x600 page turned a quarter is 600x400, which is wider than tall,
+    so on portrait letter it is the WIDTH that binds the scale. This is
+    what `_source_dims` was already right about, and it is why the bug
+    was a mismatch rather than a total absence of rotation.
+    """
+    upright = _placement(make_page(size=(400.0, 600.0), rotate_deg=0))
+    turned = _placement(make_page(size=(400.0, 600.0), rotate_deg=90))
+
+    assert upright.scale_x == pytest.approx(min(612.0 / 400.0, 792.0 / 600.0))
+    assert turned.scale_x == pytest.approx(min(612.0 / 600.0, 792.0 / 400.0))

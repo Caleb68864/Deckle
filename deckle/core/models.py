@@ -26,8 +26,17 @@ class Placement:
     :ivar ty: translation of the content's lower-left corner, in sheet
         points.
     :ivar rotate_deg: rotation applied about the placement's own footprint
-        centre. ``0``, ``90``, ``180`` or ``270``; ``tx``/``ty`` already
-        describe the *post*-rotation footprint.
+        centre, in degrees **clockwise** -- the same direction PDF
+        ``/Rotate`` and pdfium's ``rotation`` both mean, so the preview,
+        the thumbnail grid and the exported sheet cannot disagree about
+        which way a page turned. ``0``, ``90``, ``180`` or ``270``;
+        ``tx``/``ty`` already describe the *post*-rotation footprint.
+
+        This is the **total** rotation: the user's own
+        ``SourcePage.rotate_deg`` composed with whatever
+        ``landscape_policy`` added, as ``(user + policy) % 360``. It used
+        to carry the policy's decision alone, so a page the user turned in
+        Arrange exported unturned.
     """
 
     scale_x: float
@@ -93,9 +102,10 @@ class SourcePage:
     """A page as it exists in the input, before placement is decided.
 
     :ivar ref: where the page's content comes from.
-    :ivar rotate_deg: the user's own rotation for this page, applied on top
-        of whatever the source file says. Distinct from
-        ``Placement.rotate_deg``, which is the imposer's decision.
+    :ivar rotate_deg: the user's own rotation for this page, in degrees
+        clockwise, applied on top of whatever the source file says.
+        Distinct from ``Placement.rotate_deg``, which is this value
+        composed with the imposer's ``landscape_policy`` decision.
     :ivar skipped: whether the page is excluded from imposition entirely.
         A skipped page keeps its position in ``Project.pages`` so
         un-skipping restores it where it was.

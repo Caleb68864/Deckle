@@ -956,7 +956,20 @@ def test_a_half_turn_pivots_on_the_unswapped_footprint_centre(tmp_path):
     finally:
         export.clear_sheet_cache()
 
-    assert b"-1.0 0.0 -0.0 -1.0 600.0 800.0 cm" in stream, stream
+    # Parsed rather than string-matched: the point reflection is
+    # `-1 0 0 -1 2cx 2cy`, and whether the two zeros print as `0.0` or
+    # `-0.0` depends on the sign of the angle handed to math.sin -- which
+    # B1 flips when it makes the matrix clockwise. Signed zero is not
+    # geometry, and a test that fails on it is a test that will be
+    # "fixed" by pasting in whatever the code now emits.
+    matrices = [
+        line for line in stream.decode("latin-1").splitlines()
+        if line.endswith(" cm")
+    ]
+    assert matrices, stream
+    a, b, c, d, e, f = (float(v) for v in matrices[0].split()[:6])
+    assert (a, b, c, d) == (-1.0, 0.0, 0.0, -1.0), matrices[0]
+    assert (e, f) == (600.0, 800.0), matrices[0]
 
 
 def test_a_quarter_turn_still_transposes_its_footprint(tmp_path):
@@ -982,3 +995,104 @@ def test_a_quarter_turn_still_transposes_its_footprint(tmp_path):
 
     assert 0 <= left <= right <= 300, (left, right)
     assert 196 <= top <= bottom <= 396, (top, bottom)
+
+
+# -- which way a page turns, measured in ink -----------------------------
+#
+# `Placement.rotate_deg` is degrees CLOCKWISE, matching PDF /Rotate and
+# pdfium. `_rotation_matrix` was counter-clockwise, which nothing noticed
+# while its only producer was the landscape policy -- both directions look
+# equally plausible on a page nobody asked to turn. Composed with a
+# rotation the user chose in Arrange, it is the difference between a
+# corrected scan and one turned the wrong way twice.
+
+
+def _corner_of_ink(rendered) -> str:
+    """Which quadrant of the image the ink sits in."""
+    left, top, right, bottom = _ink_bbox_px(rendered)
+    mid_x = (left + right) / 2 / rendered.width
+    mid_y = (top + bottom) / 2 / rendered.height
+    return ("top" if mid_y < 0.5 else "bottom") + "-" + (
+        "left" if mid_x < 0.5 else "right"
+    )
+
+
+@pytest.mark.parametrize(
+    "rotate_deg,expected_corner",
+    [
+        (0, "bottom-left"),
+        (90, "top-left"),
+        (180, "top-right"),
+        (270, "bottom-right"),
+    ],
+)
+def test_the_exported_sheet_turns_clockwise(tmp_path, rotate_deg, expected_corner):
+    """A mark in the source's bottom-left walks clockwise round the sheet.
+
+    bottom-left, top-left, top-right, bottom-right is what clockwise means
+    for a corner, and it is what PDF /Rotate and pdfium both do. The
+    exporter's matrix used to turn the other way, so 90 and 270 were
+    swapped relative to the thumbnail of the same page.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+
+    try:
+        rendered = render.render_sheet(
+            _one_page_plan(ref, rotate_deg), 0, "front", 36
+        )
+        assert _corner_of_ink(rendered) == expected_corner
+    finally:
+        export.clear_sheet_cache()
+
+
+def test_the_rotation_matrix_turns_clockwise():
+    """The direction, asserted on the matrix rather than on a picture.
+
+    A quarter turn clockwise about the origin sends (1, 0) to (0, -1), so
+    the `b` component is -1 and `c` is +1. Counter-clockwise is the
+    transpose, and that is what this emitted for the whole life of the
+    project.
+    """
+    a, b, c, d = (float(v) for v in export._rotation_matrix(90, 0.0, 0.0).split()[:4])
+    assert (a, b, c, d) == (0.0, -1.0, 1.0, 0.0)
+
+
+def test_the_sheet_and_the_thumbnail_turn_the_same_way(tmp_path):
+    """The two pictures of one page must agree.
+
+    The thumbnail grid is what the user turns the page in; the exported
+    sheet is what reaches paper. They were rendered by different code
+    turning opposite ways -- and for rotated pages the thumbnail did not
+    render at all, so nobody could see the disagreement.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+    page = SourcePage(ref=ref, rotate_deg=90, skipped=False)
+
+    try:
+        thumbnail = render.thumbnails([page], 0, 1, dpi=36)[0]
+        sheet = render.render_sheet(_one_page_plan(ref, 90), 0, "front", 36)
+    finally:
+        export.clear_sheet_cache()
+
+    assert _corner_of_ink(thumbnail) == _corner_of_ink(sheet)
+
+
+@pytest.mark.parametrize("rotate_deg", [0, 90, 180, 270, -90, 450, 45])
+def test_a_rotated_page_still_renders_a_thumbnail(tmp_path, rotate_deg):
+    """The grid must survive every rotation, including the nonsensical ones.
+
+    `_rotation_quarter_turns` divided by 90 before handing the value to
+    pypdfium2, whose `render(rotation=)` takes DEGREES and looks them up in
+    {0: 0, 90: 1, 180: 2, 270: 3}. Every non-zero rotation therefore raised
+    `KeyError: 1` out of the thumbnail worker: the one control Arrange
+    offers for a sideways scan broke the grid rather than turning the page.
+    """
+    path = _write_corner_marked_pdf(tmp_path, 1)
+    ref = _make_ref(path, 0, 400.0, 600.0)
+    page = SourcePage(ref=ref, rotate_deg=rotate_deg, skipped=False)
+
+    rendered = render.thumbnails([page], 0, 1, dpi=36)[0]
+
+    assert rendered.width > 0 and rendered.height > 0

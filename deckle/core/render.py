@@ -135,7 +135,7 @@ def rasterize_page(doc, page_index: int, *, scale: float, rotation: int = 0):
     :param doc: an open ``pdfium.PdfDocument``.
     :param page_index: which page.
     :param scale: render scale, i.e. ``dpi / 72``.
-    :param rotation: quarter turns clockwise.
+    :param rotation: degrees clockwise -- 0, 90, 180 or 270, as pypdfium2 wants them.
     :returns: a PIL image, owned by the caller and outliving the page.
 
     pdfium's Python bindings attach a finalizer to every child object that
@@ -342,7 +342,7 @@ def thumbnails(
                             doc,
                             ref.page_index,
                             scale=dpi / 72,
-                            rotation=_rotation_quarter_turns(source_page.rotate_deg),
+                            rotation=_pdfium_rotation(source_page.rotate_deg),
                         )
                     )
                 )
@@ -374,9 +374,21 @@ def _blank_thumbnail(ref: SourceRef, dpi: int) -> RenderedPage:
     )
 
 
-def _rotation_quarter_turns(rotate_deg: int) -> int:
-    """pdfium's ``rotation`` is quarter turns clockwise, not degrees."""
-    return (rotate_deg // 90) % 4
+def _pdfium_rotation(rotate_deg: int) -> int:
+    """``rotate_deg`` as pypdfium2's ``rotation`` argument wants it.
+
+    **Degrees, not quarter turns.** ``pypdfium2.internal.RotationToConst``
+    is ``{0: 0, 90: 1, 180: 2, 270: 3}`` and the helper it feeds does the
+    division itself, so pre-dividing here handed it ``1`` and every rotated
+    page raised ``KeyError: 1`` out of the thumbnail worker -- i.e. the one
+    control Arrange offers for a sideways scan broke the grid rather than
+    turning the page.
+
+    Snapped to the nearest quarter turn for the same reason
+    ``layout._page_rotation`` is: a stored ``45`` is not a rotation pdfium
+    can perform, and a KeyError is not the way to say so.
+    """
+    return (round(rotate_deg / 90.0) * 90) % 360
 
 
 _ink_bbox_cache: OrderedDict[SourceRef, tuple[float, float, float, float]] = OrderedDict()

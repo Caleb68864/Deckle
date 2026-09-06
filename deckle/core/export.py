@@ -184,8 +184,20 @@ def _rect_for_placement(placement: Placement, src_w: float, src_h: float) -> Rec
 
 
 def _rotation_matrix(rotate_deg: int, cx: float, cy: float) -> str:
-    """A ``cm`` matrix string rotating ``rotate_deg`` about ``(cx, cy)``."""
-    theta = math.radians(rotate_deg)
+    """A ``cm`` matrix rotating ``rotate_deg`` CLOCKWISE about ``(cx, cy)``.
+
+    Clockwise because that is what ``Placement.rotate_deg`` means, which in
+    turn is what PDF ``/Rotate`` and pdfium's ``rotation`` both mean. A
+    positive angle in the PDF's own coordinate system turns
+    counter-clockwise, so the angle is negated here -- once, in the one
+    place that builds the matrix, rather than at each call site.
+
+    This was counter-clockwise, silently, for as long as nothing composed
+    it with a rotation the user could see: the only producer was the
+    landscape policy, whose two directions are equally plausible on a page
+    nobody asked to turn.
+    """
+    theta = math.radians(-rotate_deg)
     cos_t = round(math.cos(theta), 10)
     sin_t = round(math.sin(theta), 10)
     e = cx - cx * cos_t + cy * sin_t

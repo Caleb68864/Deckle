@@ -234,6 +234,25 @@ def _cropped_dims(
     return cropped_w, cropped_h
 
 
+def _page_rotation(page: SourcePage) -> int:
+    """The user's rotation for ``page``, normalised to 0/90/180/270.
+
+    Clockwise, matching PDF ``/Rotate`` and pdfium -- see
+    ``Placement.rotate_deg``. Normalised here rather than trusted because
+    ``app.state.set_rotation`` takes ``% 360`` but a stored ``.deckle`` is
+    only checked for *int* (``core.schema``), so ``-90`` and ``450`` both
+    reach the imposer. The old membership test ``in (90, 270)`` treated
+    both as upright.
+
+    ``round(x / 90) * 90`` rather than ``x % 360``: a stored ``45`` is not
+    a quarter turn and there is no correct answer, so it is snapped to the
+    nearest one rather than crashing pikepdf's matrix or pdfium's lookup
+    table. ``round`` is banker's rounding, so 45 snaps to 0 and 135 to
+    180; both are arbitrary and both are safe.
+    """
+    return (round(page.rotate_deg / 90.0) * 90) % 360
+
+
 def _source_dims(
     page: SourcePage, settings: LayoutSettings | None = None
 ) -> tuple[float, float]:
@@ -251,7 +270,7 @@ def _source_dims(
     height = page.ref.height_pt
     if settings is not None:
         width, height = _cropped_dims(width, height, crop_for(page, settings))
-    if page.rotate_deg in (90, 270):
+    if _page_rotation(page) in (90, 270):
         width, height = height, width
     return width, height
 
@@ -463,15 +482,24 @@ def _place_page(
         return OutputPage(source_ref=None, placement=placement, is_filler=True)
 
     src_w, src_h = _source_dims(slot, settings)
-    rotate_deg = 0
+    # The user's own rotation is where this starts, not zero. It was read
+    # by `_source_dims` to swap the page's dimensions for sizing and then
+    # dropped, so a page rotated in Arrange was measured as turned and
+    # drawn as upright.
+    rotate_deg = _page_rotation(slot)
 
     # Landscape content inside a portrait cell (or vice versa) under the
     # "rotate" policy: rotate the content to match the cell's orientation
     # and warn, rather than silently clipping or shrinking it. Under folio
     # each cell is portrait-shaped even though the sheet itself is
     # landscape, so this must be judged against the cell, not the sheet.
+    #
+    # `src_w`/`src_h` already reflect the user's turn, so the policy judges
+    # the page as the reader will see it and composes with what the user
+    # asked for: a portrait page turned 90 by hand is landscape, so the
+    # policy turns it the other way round again -- net a half turn.
     if _policy_rotation(src_w, src_h, settings, cell) == 90:
-        rotate_deg = 90
+        rotate_deg = (rotate_deg + 90) % 360
         src_w, src_h = src_h, src_w
         warnings.append(
             LayoutWarning(
