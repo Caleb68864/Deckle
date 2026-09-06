@@ -266,9 +266,15 @@ def _policy_rotation(
     rather than the sheet: under folio the sheet is landscape and each of
     its two cells is portrait, so the two questions have opposite answers.
 
-    Extracted verbatim from ``_place_page``. ``_rotates_to_portrait`` asks
-    the same question against ``settings.paper`` and still does --
-    reconciling the two is B5, not this refactor.
+    **Judged against the cell, never the sheet.** Under folio the sheet is
+    landscape and each of its two cells is portrait, so the two questions
+    have opposite answers -- and the scale pass used to ask about the paper
+    while the placement pass asked about the cell. Four letter-landscape
+    pages imposed as folio were then placed rotated at a scale computed for
+    an unrotated page: 0.50 where 0.6471 fitted, on every leaf of the book.
+
+    Returns degrees rather than a bool because ``_place_page`` composes this
+    with the user's own ``SourcePage.rotate_deg``.
 
     :param src_w: the page's width after cropping and after the user's own
         rotation, i.e. as ``_source_dims`` returns it.
@@ -364,15 +370,20 @@ def grain_warning(settings: LayoutSettings) -> LayoutWarning | None:
     )
 
 
-def _rotates_to_portrait(src_w: float, src_h: float, settings: LayoutSettings) -> bool:
-    paper_w, paper_h = settings.paper
-    return settings.landscape_policy == "rotate" and paper_h >= paper_w and src_w > src_h
+def _fitted_dims(
+    slot: SourcePage, settings: LayoutSettings, cell: Cell | None = None
+) -> tuple[float, float]:
+    """A page's upright dimensions after any landscape rotation, in ``cell``.
 
-
-def _fitted_dims(slot: SourcePage, settings: LayoutSettings) -> tuple[float, float]:
-    """A page's upright dimensions after any landscape rotation."""
+    ``cell`` defaults to the whole sheet, matching ``document_scale``'s own
+    default. It is not optional in spirit: this and ``_place_page`` must
+    agree about whether a page rotates, and they disagreed for as long as
+    one of them read the paper.
+    """
     src_w, src_h = _source_dims(slot, settings)
-    if _rotates_to_portrait(src_w, src_h, settings):
+    if cell is None:
+        cell = _full_sheet_cell(settings.paper)
+    if _policy_rotation(src_w, src_h, settings, cell) == 90:
         src_w, src_h = src_h, src_w
     return src_w, src_h
 
@@ -402,7 +413,11 @@ def document_scale(
     :param settings: supplies the margins that define the content box.
     :param cell: the region pages are fitted into, or ``None`` for the
         whole sheet. Under folio every cell is identical, so any one of
-        them gives the document-wide answer.
+        them gives the document-wide answer. It decides **both** halves of
+        the calculation -- the content box and whether ``landscape_policy``
+        rotates the page -- because a scale fitted to one orientation and a
+        placement made in the other is how a folio landscape source came
+        out 23% small.
     :returns: the scale factor. ``1.0`` when there is nothing to fit --
         an empty document has no constraint to satisfy.
     """
@@ -411,7 +426,7 @@ def document_scale(
     for slot in pages:
         if slot is None or slot.skipped:
             continue
-        src_w, src_h = _fitted_dims(slot, settings)
+        src_w, src_h = _fitted_dims(slot, settings, cell)
         if src_w <= 0 or src_h <= 0:
             continue
         scales.append(min(box_w / src_w, box_h / src_h))

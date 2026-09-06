@@ -26,6 +26,7 @@ from deckle.core.layout import (
     _signature_sheet_groups,
     actual_margins_pt,
     cell_geometry,
+    content_box_size,
 )
 from deckle.core.models import LayoutSettings, OutputPage, SourcePage, SourceRef
 from deckle.core.signatures import fold_reading_order
@@ -529,3 +530,112 @@ def test_invariants_hold_across_many_shapes():
             assert covered == list(range(len(plan.sheets)))
             total_padded_pages = sum(len(sig.sheet_indices) for sig in plan.signatures) * 4
             assert total_padded_pages == len(flat_pages(plan))
+
+
+# ----- landscape sources under folio ------------------------------------
+#
+# The scale pass asked whether a page rotates by looking at the PAPER; the
+# placement pass asked by looking at the CELL. Under folio the sheet is
+# landscape and each of its two cells is portrait, so the two questions
+# have opposite answers. A landscape source was then placed rotated at a
+# scale computed for an unrotated page: 0.50 where 0.6471 fitted, on every
+# leaf of the book, with nothing warning that it had happened.
+
+
+def _cell_box(s: LayoutSettings) -> tuple[float, float]:
+    """The content box of one folio cell, after margins."""
+    cell = cell_geometry(s.paper)[0]
+    return content_box_size(s, cell)
+
+
+def test_a_landscape_source_is_scaled_for_the_cell_it_is_rotated_into():
+    """The scale must be the one that fits the page as it is actually placed.
+
+    A 792x612 source turned a quarter is 612x792, and a zero-margin folio
+    cell on letter-landscape paper is 396x612. The number is derived here
+    from those dimensions rather than written as 0.6471, so the test says
+    why it is that and not something else.
+    """
+    s = settings(gutter_pt=0.0, margin_outer_pt=0.0,
+                 margin_top_pt=0.0, margin_bottom_pt=0.0)
+    plan = impose(make_pages(4, w=792.0, h=612.0), s)
+
+    box_w, box_h = _cell_box(s)
+    expected = min(box_w / 612.0, box_h / 792.0)
+
+    placement = plan.sheets[0].front.pages[0].placement
+    assert placement.rotate_deg == 90
+    assert placement.scale_x == pytest.approx(expected)
+
+
+def test_the_scale_pass_and_the_placement_pass_agree_about_rotation():
+    """The invariant behind the bug, stated directly.
+
+    A rotated leaf's scaled footprint must fit its cell's content box, and
+    fit it snugly -- one axis has to bind. A scale computed for the other
+    orientation also fits, which is why the bug was invisible; what it
+    never does is bind.
+    """
+    s = settings()
+    plan = impose(make_pages(4, w=792.0, h=612.0), s)
+    box_w, box_h = _cell_box(s)
+
+    rotated = [
+        page.placement
+        for sheet in plan.sheets
+        for side in (sheet.front, sheet.back)
+        if side is not None
+        for page in side.pages
+        if page.placement.rotate_deg % 180 == 90
+    ]
+    assert rotated, "no leaf rotated; the fixture is meant to be landscape"
+
+    for placement in rotated:
+        width = 612.0 * placement.scale_x
+        height = 792.0 * placement.scale_y
+        assert width <= box_w + 1e-6, (width, box_w)
+        assert height <= box_h + 1e-6, (height, box_h)
+        binds = (
+            abs(width - box_w) < 1e-6 or abs(height - box_h) < 1e-6
+        )
+        assert binds, (
+            f"scaled footprint {width:.4f}x{height:.4f} floats inside a "
+            f"{box_w:.4f}x{box_h:.4f} box -- the scale was computed for the "
+            "other orientation"
+        )
+
+
+def test_a_portrait_source_under_folio_is_unaffected():
+    """The guard that the fix does not start rotating things.
+
+    The module's default page is 396x612, already portrait, in a portrait
+    cell. Nothing should turn, nothing should warn, and one scale should
+    serve the whole document.
+    """
+    plan = impose(make_pages(8), settings())
+
+    assert not [w for w in plan.warnings if w.kind == "mixed_orientation"]
+
+    scales = set()
+    for sheet in plan.sheets:
+        for side in (sheet.front, sheet.back):
+            if side is None:
+                continue
+            for page in side.pages:
+                assert page.placement.rotate_deg == 0
+                if not page.is_filler:
+                    scales.add(round(page.placement.scale_x, 9))
+    assert len(scales) == 1, scales
+
+
+def test_the_landscape_warning_still_fires_once_per_leaf():
+    """The fix changes the scale, not whether the rotation is reported.
+
+    Four landscape pages produce four placed leaves and four warnings. A
+    fix that silenced a true warning while correcting the arithmetic would
+    be a worse trade than the bug.
+    """
+    plan = impose(make_pages(4, w=792.0, h=612.0), settings())
+
+    mixed = [w for w in plan.warnings if w.kind == "mixed_orientation"]
+    assert len(mixed) == 4, [w.detail for w in mixed]
