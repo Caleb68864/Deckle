@@ -27,6 +27,7 @@ for ordinary development. They are the gate for a release, and
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,43 @@ def test_the_spec_records_why_pyinstallers_licence_permits_this():
     spec = (REPO_ROOT / "packaging" / "deckle.spec").read_text(encoding="utf-8")
     assert "exception" in spec.lower()
     assert "GPL" in spec
+
+
+def test_the_spec_is_tracked_and_not_ignored():
+    """Present on this disk and present in the repository are different
+    facts, and only the second one lets anyone else build.
+
+    ``*.spec`` under the PyInstaller heading in ``.gitignore`` is meant
+    for the specs PyInstaller generates. It also matched this one, which
+    is hand-maintained source, so for a month exactly one machine could
+    produce a release build -- and the licence gate that guards a release
+    lives in this very file.
+    """
+    if not (REPO_ROOT / ".git").exists():
+        pytest.skip("not a git checkout")
+
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "packaging/deckle.spec"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    assert tracked.returncode == 0, (
+        "packaging/deckle.spec is not tracked, so nobody else can build. "
+        f"git said: {tracked.stderr.strip()!r}"
+    )
+
+    ignored = subprocess.run(
+        ["git", "check-ignore", "-v", "packaging/deckle.spec"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+    )
+    # check-ignore exits 1 when the path is not ignored, which is wanted.
+    assert ignored.returncode == 1, (
+        "packaging/deckle.spec is ignored and will not survive a clone. "
+        f"Matching rule: {ignored.stdout.strip()!r}"
+    )
 
 
 # -- run.bat integrity ---------------------------------------------------

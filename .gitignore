@@ -19,6 +19,7 @@ htmlcov/
 build/
 dist/
 *.spec
+!packaging/deckle.spec
 
 # Qt
 *.qmlc
