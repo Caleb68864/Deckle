@@ -831,3 +831,10 @@
 - Watch: **The failure was two assertions past the behaviour under test**, so the traceback pointed at `pathlib`. When a hardening test fails on a path the product never touched, suspect the fixture before the feature. And a suite that is red on arrival on one platform is a suite people stop reading: this was one of exactly two failures a fresh Linux clone showed, and the other was a missing file.
 - Commit: (this commit)
 
+## 2026-09-06 — A shell redirect was committed and lived at the repo root for a month
+- Symptom: An empty tracked file named `=` at the repository root, first in every `ls`, since commit b549d95 on 5 August. `>=` at a shell prompt is `>` followed by `=`: the shell creates a file called `=` and truncates it. The commit that introduced it is, fittingly, the one whose message says a test "asserted only '>= 0.0'".
+- Fix: `git rm '='`, plus `tests/test_repo_hygiene.py::test_no_tracked_path_needs_shell_quoting` -- every component of every tracked path must match `[A-Za-z0-9._-]+`. Exactly one path in 227 violated it, and the guard was watched failing on that one before the file was removed.
+- Surfaces: The rule is about the name, not the size: `tests/__init__.py` is also zero bytes and is a legitimate package marker. And it is a rule rather than an assertion that no file is called `=`, because the next redirect will produce `1`, `2` or `>`, and a hard-coded name would pass forever after this commit.
+- Watch: **The file was harmless and that is why it survived** -- nothing failed, so nothing pointed at it, and a zero-byte file with an unreadable name is what every subsequent reader leaves alone in case it matters. Not ignored, deleted: an entry in `.gitignore` would have hidden the next one instead of reporting it. This project has already paid once for an invisible character in a path -- the literal tab in `run.bat` that turned `tests\test_packaging_audit.py` into two arguments and disabled the release gate for a two-minute build.
+- Commit: (this commit)
+
