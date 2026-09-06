@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import os
 
-import numpy as np
 import pypdfium2
 import pytest
 
@@ -53,18 +52,35 @@ def source(tmp_path):
 
 
 def _ink_widths(path: str) -> list[int]:
-    """The ink width on each exported sheet, in pixels."""
+    """The ink width on each exported sheet, in pixels.
+
+    Pillow rather than numpy, and not for taste: numpy was the only thing
+    in the suite that a fresh ``.[dev]`` install did not have, and a
+    module-level import of it turned every one of the 1531 tests into a
+    single collection error. Pillow is already a runtime dependency and
+    ``page.render(...).to_pil()`` already returns one of its images.
+
+    ``getbbox`` on the thresholded mask gives the same integer the
+    ``np.where`` version did: its ``right`` is one past the last dark
+    column, so ``right - left - 1`` is ``columns.max() - columns.min()``.
+    Verified equal on the four-sheet export this file measures.
+    """
     widths: list[int] = []
     doc = pypdfium2.PdfDocument(path)
     try:
         for index in range(len(doc)):
             page = doc[index]
             try:
-                array = np.asarray(page.render(scale=0.5).to_pil().convert("L"))
+                ink = (
+                    page.render(scale=0.5)
+                    .to_pil()
+                    .convert("L")
+                    .point(lambda value: 255 if value < 200 else 0)
+                )
             finally:
                 page.close()
-            _, columns = np.where(array < 200)
-            widths.append(int(columns.max() - columns.min()) if columns.size else 0)
+            box = ink.getbbox()
+            widths.append(box[2] - box[0] - 1 if box else 0)
     finally:
         doc.close()
     return widths
