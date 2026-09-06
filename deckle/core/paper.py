@@ -142,6 +142,67 @@ PAPER_PRESETS = (
 # ladder.
 CREEP_INVISIBLE_PT = 1.0
 
+
+def creep_pt(sheets_per_signature: int, caliper_pt: float) -> float:
+    """How far the innermost leaf of a nested gathering protrudes, in points.
+
+    ``(sheets - 1) * caliper``: the outermost leaf is pushed out by
+    nothing, so a gathering of one sheet creeps by nothing.
+
+    :param sheets_per_signature: sheets nested into one gathering.
+    :param caliper_pt: one sheet's thickness.
+    :returns: the protrusion in points, ``0.0`` when either input is
+        non-positive -- there is nothing to estimate, and a negative answer
+        would read as "the fore-edge is inset".
+    """
+    if sheets_per_signature <= 1 or caliper_pt <= 0.0:
+        return 0.0
+    return (sheets_per_signature - 1) * caliper_pt
+
+
+def creep_tolerance_pt(trim_pt: float = 0.0) -> float:
+    """How much creep this job can absorb before it is worth mentioning.
+
+    A planned fore-edge trim absorbs creep, so someone who is going to
+    plough the block can carry far more of it than someone who is not;
+    without a trim the threshold is the point below which it is simply
+    invisible.
+
+    :param trim_pt: the planned fore-edge trim, or ``0.0`` for none.
+    :returns: the tolerance in points.
+    """
+    return trim_pt if trim_pt > 0 else CREEP_INVISIBLE_PT
+
+
+def creep_is_worth_reporting(
+    sheets_per_signature: int, caliper_pt: float, trim_pt: float = 0.0
+) -> bool:
+    """Whether this gathering's creep should be said out loud.
+
+    **The single predicate.** Three places used to answer this and no two
+    agreed: ``layout._creep_advisory`` judged the *requested*
+    ``sheets_per_signature`` even when ``signature_lengths`` or
+    ``blank_mode="balanced"`` had overridden it, ``schedule._creep_note``
+    ignored ``trim_pt`` entirely, and the two used different operators at
+    the boundary -- so a 0.25pt stock in 5-sheet gatherings, creeping
+    exactly ``CREEP_INVISIBLE_PT``, produced a warning in the schedule and
+    silence in the layout.
+
+    **Strictly greater than.** Creep exactly equal to the tolerance is
+    absorbed, not reported -- which is the reading
+    :func:`suggest_sheets_per_signature` already had built into
+    ``int(tolerance // caliper_pt) + 1``, and a suggestion that recommended
+    a gathering its own advisory then warned about would be the fourth
+    opinion this consolidation exists to remove.
+
+    :param sheets_per_signature: sheets in the gathering **as built**, not
+        as requested.
+    :param caliper_pt: one sheet's thickness.
+    :param trim_pt: the planned fore-edge trim, or ``0.0``.
+    :returns: whether to report.
+    """
+    return creep_pt(sheets_per_signature, caliper_pt) > creep_tolerance_pt(trim_pt)
+
 # A folded gathering of n nested sheets has 2n layers of paper at the
 # fold. Past about 1.8mm it stops folding cleanly and is awkward to sew.
 #
@@ -203,13 +264,13 @@ def suggest_sheets_per_signature(
     """
     if caliper_pt <= 0:
         return None
-    tolerance = trim_pt if trim_pt > 0 else CREEP_INVISIBLE_PT
+    tolerance = creep_tolerance_pt(trim_pt)
     by_creep = int(tolerance // caliper_pt) + 1
     by_fold = int((FOLD_BULK_LIMIT_MM * PT_PER_MM) // (2 * caliper_pt))
     sheets = max(1, min(by_creep, by_fold))
     return SignatureSuggestion(
         sheets=sheets,
         pages=sheets * 4,
-        creep_pt=(sheets - 1) * caliper_pt,
+        creep_pt=creep_pt(sheets, caliper_pt),
         limited_by="creep" if by_creep <= by_fold else "fold",
     )

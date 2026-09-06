@@ -249,11 +249,42 @@ def test_thicker_paper_never_suggests_more_sheets():
     assert counts == sorted(counts, reverse=True)
 
 
-def test_the_schedule_shares_this_creep_threshold():
-    """One physical threshold expressed twice is the duplication this
-    codebase has already been bitten by four times over one platform
-    ladder."""
-    from deckle.core import schedule
-    from deckle.core.paper import CREEP_INVISIBLE_PT
+def test_every_consumer_shares_this_creep_predicate():
+    """One physical question answered in one place.
 
-    assert schedule.CREEP_INVISIBLE_PT is CREEP_INVISIBLE_PT
+    This used to assert that `schedule` imported `CREEP_INVISIBLE_PT`, and
+    a shared constant was not enough: `layout` and `schedule` each applied
+    it with their own operator, their own inputs and their own view of
+    `trim_pt`, so all three disagreed while importing the same number.
+    Sharing the *predicate* is what makes them agree, so that is what is
+    asserted now.
+    """
+    from deckle.core import layout, schedule
+    from deckle.core.paper import creep_is_worth_reporting
+
+    assert schedule.creep_is_worth_reporting is creep_is_worth_reporting
+    assert layout.creep_is_worth_reporting is creep_is_worth_reporting
+
+
+def test_the_suggestion_never_recommends_a_gathering_it_would_warn_about():
+    """The fourth opinion this consolidation exists to remove.
+
+    `suggest_sheets_per_signature` inverts the same inequality the
+    advisory applies, so a recommendation it makes must not then be
+    reported as too much creep. Checked across the calipers and trims a
+    binder actually uses rather than at one point, because the two used to
+    differ only at the exact boundary.
+    """
+    from deckle.core.paper import (
+        creep_is_worth_reporting,
+        suggest_sheets_per_signature,
+    )
+
+    for caliper in (0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 1.0):
+        for trim in (0.0, 6.0, 12.0, 36.0):
+            suggestion = suggest_sheets_per_signature(caliper, trim_pt=trim)
+            if suggestion is None:
+                continue
+            assert not creep_is_worth_reporting(
+                suggestion.sheets, caliper, trim
+            ), (caliper, trim, suggestion.sheets)

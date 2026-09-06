@@ -388,3 +388,204 @@ def test_the_flip_edge_is_carried_on_the_schedule_not_re_derived_by_the_text():
     ``/Duplex`` value the exporter wrote into the PDF."""
     assert _gutter_schedule(8, paper=(612.0, 792.0)).duplex_flip_edge == "long"
     assert _gutter_schedule(8, paper=(792.0, 612.0)).duplex_flip_edge == "short"
+
+
+# -- reader-facing page numbers ------------------------------------------
+#
+# `_page_numbers` returned `source_ref.page_index + 1`: the page's offset
+# INSIDE THE FILE IT CAME FROM. That equals the reader's numbering only for
+# a document that is exactly one source, imported whole, with nothing
+# skipped and nothing inserted -- which is what every existing test used.
+# A four-page book made of two 2-page PDFs was reported as
+# "front: 2 1 / back: 2 1": pages 1 and 2 twice, pages 3 and 4 nowhere.
+
+
+def _page(path: str, index: int) -> SourcePage:
+    """One source page from a named file."""
+    return SourcePage(
+        ref=SourceRef(path=path, page_index=index, sha256="a" * 64,
+                      width_pt=400.0, height_pt=600.0),
+        rotate_deg=0, skipped=False,
+    )
+
+
+def _two_source_pages():
+    """Four leaves from two different 2-page files."""
+    return [
+        _page("a.pdf", 0), _page("a.pdf", 1),
+        _page("b.pdf", 0), _page("b.pdf", 1),
+    ]
+
+
+def test_two_sources_are_numbered_by_the_reader_not_by_the_file():
+    """The defect. Both files contribute pages 1 and 2 by their own count.
+
+    A binder checking sheet against schedule sees each number once, in the
+    place the folded book puts it -- not each file's offsets repeated.
+    """
+    s = _folio_settings()
+    plan = SaddleStitchStrategy().impose(_two_source_pages(), s)
+    schedule = build_schedule(plan, s)
+
+    sheet = schedule.signatures[0].sheets[0]
+    assert sheet.front_pages == (4, 1)
+    assert sheet.back_pages == (2, 3)
+
+
+def test_every_page_number_appears_exactly_once():
+    """The property that makes a schedule checkable at the bench.
+
+    Stated over the whole document rather than one sheet, because the old
+    behaviour's failure was a duplicate and an omission at the same time,
+    and either alone would be caught by a weaker assertion.
+    """
+    s = _folio_settings()
+    plan = SaddleStitchStrategy().impose(_two_source_pages(), s)
+    schedule = build_schedule(plan, s)
+
+    numbers = [
+        n
+        for sig in schedule.signatures
+        for sheet in sig.sheets
+        for n in sheet.front_pages + sheet.back_pages
+        if n is not None
+    ]
+    assert sorted(numbers) == [1, 2, 3, 4], numbers
+
+
+def test_a_skipped_page_is_not_counted_by_the_reader():
+    """Skipped pages are not in the book, so they take no number.
+
+    They never reach `plan.sheets` at all. The leaves that remain are
+    numbered 1, 2, 3 by position, and the padding blank that rounds the
+    signature out takes the fourth position without printing a number.
+    """
+    s = _folio_settings()
+    pages = [_page("a.pdf", i) for i in range(4)]
+    pages[1] = SourcePage(ref=pages[1].ref, rotate_deg=0, skipped=True)
+
+    schedule = build_schedule(SaddleStitchStrategy().impose(pages, s), s)
+    sheet = schedule.signatures[0].sheets[0]
+
+    numbers = sorted(
+        n for n in sheet.front_pages + sheet.back_pages if n is not None
+    )
+    assert numbers == [1, 2, 3]
+    assert None in sheet.front_pages + sheet.back_pages
+
+
+def test_a_blank_consumes_its_position():
+    """A blank leaf prints as `blank` but still occupies a page number.
+
+    A person thumbing the bound book counts blank leaves along with
+    printed ones, so the page after a blank is n + 2. Numbering only the
+    content pages would produce numbers that match nothing physical.
+    """
+    s = _folio_settings()
+    pages = [_page("a.pdf", i) for i in range(3)]
+
+    schedule = build_schedule(SaddleStitchStrategy().impose(pages, s), s)
+    sheet = schedule.signatures[0].sheets[0]
+
+    every = sheet.front_pages + sheet.back_pages
+    assert len(every) == 4
+    assert sorted(n for n in every if n is not None) == [1, 2, 3]
+
+
+# -- one creep opinion ----------------------------------------------------
+#
+# Three places answered "is this creep worth mentioning" and no two agreed.
+# `layout._creep_advisory` judged the REQUESTED `sheets_per_signature` even
+# when `signature_lengths` or `blank_mode="balanced"` had overridden it;
+# `schedule._creep_note` ignored `trim_pt` entirely; and the two used
+# different operators at the boundary. Each was correct against its own
+# tests. The defect was that there were three of them.
+
+
+def _creep_settings(**overrides) -> LayoutSettings:
+    base = dict(
+        paper=LETTER_LANDSCAPE,
+        gutter_pt=18.0,
+        binding_edge="left",
+        fold_scheme="folio",
+    )
+    base.update(overrides)
+    return LayoutSettings(**base)
+
+
+def _both_opinions(n_pages: int, **overrides):
+    """What the layout and the schedule each say about one document."""
+    s = _creep_settings(**overrides)
+    plan = SaddleStitchStrategy().impose(_pages(n_pages), s)
+    layout_warns = any(w.kind == "creep_advisory" for w in plan.warnings)
+    # "Fore-edge creep", not just "creep": with no thickness set the
+    # schedule emits a *different* note saying creep was not estimated,
+    # which is correct and is not a warning about creep.
+    schedule_warns = any(
+        n.startswith("Fore-edge creep") for n in build_schedule(plan, s).notes
+    )
+    return layout_warns, schedule_warns
+
+
+def test_the_advisory_judges_the_signatures_actually_built():
+    """`signature_lengths` overrides the requested gathering size.
+
+    Asking for one 8-sheet signature while `sheets_per_signature` still
+    says 2 built 8-sheet gatherings creeping 2.8pt, and the layout judged
+    the 2 it had been asked for -- so the preview was silent about a
+    document the schedule warned on.
+    """
+    layout_warns, schedule_warns = _both_opinions(
+        32, sheets_per_signature=2, signature_lengths=(8,), paper_thickness_pt=0.4
+    )
+    assert layout_warns is True
+    assert schedule_warns is True
+
+
+def test_a_planned_trim_silences_both_or_neither():
+    """A binder who is going to plough the fore-edge is not told to.
+
+    The layout has honoured `trim_pt` since it was written; the schedule
+    ignored it, so the same document produced a warning on the bench sheet
+    and silence in the preview.
+    """
+    layout_warns, schedule_warns = _both_opinions(
+        32, sheets_per_signature=8, paper_thickness_pt=0.4, trim_pt=12.0
+    )
+    assert layout_warns is False
+    assert schedule_warns is False
+
+
+def test_creep_exactly_at_the_tolerance_is_absorbed_by_both():
+    """The boundary the two operators disagreed about.
+
+    Five sheets of 0.25pt stock creep exactly 1.0pt, which is exactly
+    `CREEP_INVISIBLE_PT`. The layout used `<=` and stayed quiet; the
+    schedule used `<` and warned. Absorbed is the right answer, because it
+    is the reading `suggest_sheets_per_signature` already had.
+    """
+    from deckle.core.paper import CREEP_INVISIBLE_PT, creep_pt
+
+    assert creep_pt(5, 0.25) == CREEP_INVISIBLE_PT
+
+    layout_warns, schedule_warns = _both_opinions(
+        32, sheets_per_signature=5, paper_thickness_pt=0.25
+    )
+    assert layout_warns is False
+    assert schedule_warns is False
+
+
+@pytest.mark.parametrize("caliper", [0.0, 0.1, 0.25, 0.4, 1.0])
+@pytest.mark.parametrize("trim", [0.0, 12.0])
+@pytest.mark.parametrize("sheets", [1, 2, 5, 8])
+def test_the_two_opinions_agree_on_every_combination(caliper, trim, sheets):
+    """The property, rather than the three cases that happened to break.
+
+    Neither number is asserted here -- only that the preview and the bench
+    sheet say the same thing about one document, which is the whole point
+    of a single predicate.
+    """
+    layout_warns, schedule_warns = _both_opinions(
+        32, sheets_per_signature=sheets, paper_thickness_pt=caliper, trim_pt=trim
+    )
+    assert layout_warns == schedule_warns, (caliper, trim, sheets)

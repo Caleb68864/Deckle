@@ -18,7 +18,11 @@ from deckle.core.marks import (
     sewing_stations,
     signature_order_mark,
 )
-from deckle.core.paper import CREEP_INVISIBLE_PT, suggest_sheets_per_signature
+from deckle.core.paper import (
+    creep_is_worth_reporting,
+    creep_pt,
+    suggest_sheets_per_signature,
+)
 from deckle.core.models import (
     LayoutSettings,
     LayoutWarning,
@@ -887,7 +891,11 @@ def _signature_sheet_groups(
     return groups
 
 
-def _creep_advisory(warnings: list[LayoutWarning], settings: LayoutSettings) -> None:
+def _creep_advisory(
+    warnings: list[LayoutWarning],
+    settings: LayoutSettings,
+    groups: Sequence[Sequence[int]],
+) -> None:
     """A never-applied advisory: predicted fore-edge creep, and the remedy.
 
     The **only** function in this module permitted to reference
@@ -896,17 +904,22 @@ def _creep_advisory(warnings: list[LayoutWarning], settings: LayoutSettings) -> 
     compensated in placement geometry: no ``Placement`` this module emits
     may differ because of this value.
     """
-    if settings.paper_thickness_pt <= 0.0:
-        return
-    # `(sheets - 1) * caliper`: the outermost leaf is not pushed out by
-    # anything, so a gathering of one sheet creeps by nothing. This used
-    # to be `sheets * caliper`, which made it a third opinion on one
-    # physical quantity -- `schedule._creep_note` and
-    # `paper.suggest_sheets_per_signature` both use this formula, and
-    # three numbers for one measurement is worse than none.
-    creep = (settings.sheets_per_signature - 1) * settings.paper_thickness_pt
-    tolerance = settings.trim_pt if settings.trim_pt > 0 else CREEP_INVISIBLE_PT
-    if creep <= tolerance:
+    # Judged against the WIDEST SIGNATURE ACTUALLY BUILT, not against
+    # `settings.sheets_per_signature`. The two differ whenever
+    # `signature_lengths` states a grouping or `blank_mode="balanced"`
+    # reshapes one -- and the schedule has always used the built sizes, so
+    # a binder who asked for one 8-sheet signature with
+    # `sheets_per_signature=2` got a schedule warning about 2.8pt of creep
+    # and a preview that said nothing at all.
+    #
+    # The `paper_thickness_pt <= 0.0` early return is gone: `creep_pt`
+    # returns 0.0 for a non-positive caliper and the predicate is a strict
+    # `>`, so the zero case falls out of the arithmetic.
+    sheets = max((len(group) for group in groups), default=0)
+    creep = creep_pt(sheets, settings.paper_thickness_pt)
+    if not creep_is_worth_reporting(
+        sheets, settings.paper_thickness_pt, settings.trim_pt
+    ):
         return
     # The remedy used to be "halve it", which is not derived from anything
     # and says the same thing however many times it is taken. It is now
@@ -918,7 +931,7 @@ def _creep_advisory(warnings: list[LayoutWarning], settings: LayoutSettings) -> 
     remedy = (
         f"; {suggestion.sheets} sheets per signature would keep it inside "
         + ("the trim" if settings.trim_pt > 0 else "what is visible")
-        if suggestion and suggestion.sheets < settings.sheets_per_signature
+        if suggestion and suggestion.sheets < sheets
         else ""
     )
     warnings.append(
@@ -927,7 +940,7 @@ def _creep_advisory(warnings: list[LayoutWarning], settings: LayoutSettings) -> 
             kind="creep_advisory",
             detail=(
                 f"predicted fore-edge creep of {creep:.2f}pt over "
-                f"{settings.sheets_per_signature} sheets per signature"
+                f"{sheets} sheets per signature"
                 f"{remedy}"
             ),
         )
@@ -1143,7 +1156,7 @@ class SaddleStitchStrategy:
                 Signature(index=sig_index, sheet_indices=group, blank_count=sig_blank_count)
             )
 
-        _creep_advisory(warnings, settings)
+        _creep_advisory(warnings, settings, groups)
 
         # Invariants, verified rather than trusted -- the SS-03 precedent.
         all_sheet_indices = [i for sig in signatures for i in sig.sheet_indices]

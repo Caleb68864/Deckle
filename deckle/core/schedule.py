@@ -23,9 +23,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from deckle.core.marks import SEWING_MARGIN_PT
-from deckle.core.paper import CREEP_INVISIBLE_PT
+from deckle.core.paper import creep_is_worth_reporting, creep_pt
 from deckle.core.models import LayoutSettings, SheetPlan
 from deckle.core.printing import duplex_flip_edge
+from deckle.core.signatures import fold_reading_order
 
 
 @dataclass(frozen=True)
@@ -131,18 +132,39 @@ class Schedule:
         return len(self.signatures)
 
 
-def _page_numbers(side) -> tuple[int | None, ...]:
+def _page_numbers(
+    side, reading_order: list[int], first_slot: int
+) -> tuple[int | None, ...]:
     """Reader-facing page numbers for one side, left to right.
 
-    ``None`` for a blank. Page numbers are 1-based because the schedule is
-    read by a person holding the book, and ``source_ref.page_index`` is 0-based
-    because it indexes a file.
+    ``None`` for a blank. A **reader-facing page number** is the leaf's
+    1-based position in the finished book's reading order -- the order a
+    person turns the pages -- counting every imposed slot, blanks
+    included. A blank leaf still prints as ``blank`` rather than as its
+    number, because there is nothing on it to check; it consumes its
+    position all the same, so the page after it is ``n + 2``, which is
+    what the reader will call it.
+
+    This used to be ``source_ref.page_index + 1``, the page's offset
+    **inside the file it came from**. The two agree only for a document
+    that is exactly one source, imported whole, with nothing skipped and
+    nothing inserted. A four-page book made of two 2-page PDFs was
+    reported as "front: 2 1 / back: 2 1" -- pages 1 and 2 twice, pages 3
+    and 4 nowhere.
+
+    :param side: the ``Side`` to number, or ``None`` for a face that does
+        not exist.
+    :param reading_order: :func:`~deckle.core.signatures.fold_reading_order`
+        over the whole plan.
+    :param first_slot: this side's first leaf's index into
+        ``reading_order``.
+    :returns: one entry per leaf, left to right.
     """
     if side is None:
         return ()
     return tuple(
-        None if page.source_ref is None else page.source_ref.page_index + 1
-        for page in side.pages
+        None if page.source_ref is None else reading_order[first_slot + i] + 1
+        for i, page in enumerate(side.pages)
     )
 
 
@@ -178,7 +200,9 @@ def spine_width_pt(sheet_count: int, thickness_pt: float) -> tuple[float, float]
     return (block * (1.0 + SWELL_FRACTION_LOW), block * (1.0 + SWELL_FRACTION_HIGH))
 
 
-def _creep_note(signature_sheets: int, thickness_pt: float) -> str | None:
+def _creep_note(
+    signature_sheets: int, thickness_pt: float, trim_pt: float = 0.0
+) -> str | None:
     """An advisory about fore-edge creep, or ``None`` if it will not matter.
 
     Nested sheets push each other outward at the fore-edge: the innermost
@@ -186,11 +210,9 @@ def _creep_note(signature_sheets: int, thickness_pt: float) -> str | None:
     it is invisible; past that the fore-edge wants trimming, and a binder
     would rather know before folding than after.
     """
-    if thickness_pt <= 0 or signature_sheets <= 1:
+    if not creep_is_worth_reporting(signature_sheets, thickness_pt, trim_pt):
         return None
-    creep = (signature_sheets - 1) * thickness_pt
-    if creep < CREEP_INVISIBLE_PT:
-        return None
+    creep = creep_pt(signature_sheets, thickness_pt)
     return (
         f"Fore-edge creep is about {creep:.1f}pt "
         f"({creep / 72:.2f}in) on the innermost leaf. Trim the fore-edge "
@@ -213,6 +235,26 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
     by_index = {sheet.index: sheet for sheet in plan.sheets}
     signatures: list[SignatureInstruction] = []
 
+    # The reader's own numbering, taken from the fold simulator rather than
+    # from any file offset. `fold_reading_order` walks `plan.signatures` in
+    # the same order this loop does and emits four slots per sheet --
+    # front's two leaves, then back's two -- so a single cursor keeps the
+    # two in step.
+    reading_order = fold_reading_order(plan)
+    slot_total = sum(
+        len(side.pages)
+        for sheet in plan.sheets
+        for side in (sheet.front, sheet.back)
+        if side is not None
+    )
+    if plan.signatures and len(reading_order) != slot_total:
+        raise ValueError(
+            f"this plan has {slot_total} print slot(s) but its signatures "
+            f"describe {len(reading_order)}; a schedule cannot number "
+            "pages it cannot place in reading order"
+        )
+    slot = 0
+
     for signature in plan.signatures:
         sheets: list[SheetInstruction] = []
         # `sheet_indices` is already outermost-first: that is the order the
@@ -220,13 +262,21 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
         for position, sheet_index in enumerate(signature.sheet_indices, start=1):
             sheet = by_index.get(sheet_index)
             if sheet is None:
+                # A signature naming a sheet the plan does not carry.
+                # Skipped as before -- but the cursor still advances,
+                # because `fold_reading_order` counted four slots for it
+                # and every later sheet's numbers would otherwise slide.
+                slot += 4
                 continue
+            front_pages = _page_numbers(sheet.front, reading_order, slot)
+            back_pages = _page_numbers(sheet.back, reading_order, slot + 2)
+            slot += 4
             sheets.append(
                 SheetInstruction(
                     sheet_index=sheet_index,
                     position=position,
-                    front_pages=_page_numbers(sheet.front),
-                    back_pages=_page_numbers(sheet.back),
+                    front_pages=front_pages,
+                    back_pages=back_pages,
                 )
             )
         signatures.append(
@@ -240,7 +290,7 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
     notes: list[str] = []
     if signatures:
         widest = max(sig.sheet_count for sig in signatures)
-        creep = _creep_note(widest, settings.paper_thickness_pt)
+        creep = _creep_note(widest, settings.paper_thickness_pt, settings.trim_pt)
         if creep is not None:
             notes.append(creep)
         elif settings.paper_thickness_pt <= 0:
