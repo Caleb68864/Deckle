@@ -24,8 +24,11 @@ dist/
 *.qmlc
 *.jsc
 
-# Test fixtures
+# Test fixtures. sample.pdf is the one exception: ~100 tests open it and a
+# fresh clone must be green, so it is tracked. The golden Pinebox fixture
+# is 30 MB and stays out -- its test skips when it is absent.
 tests/fixtures/*.pdf
+!tests/fixtures/sample.pdf
 
 # Git Bash on Windows leaves crash dumps in the working tree
 *.stackdump
