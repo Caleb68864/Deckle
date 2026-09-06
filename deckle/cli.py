@@ -336,11 +336,13 @@ def _parse_sheet_selection(value: str) -> list[int]:
 def _report_missing_sheets(plan, selection: list[int], total: int) -> bool:
     """Refuse a selection naming a sheet the document does not have.
 
-    :func:`deckle.core.export.export` skips an unknown index rather than
-    raising, which is right for a library and wrong for a command: asking
-    for sheet 99 of a four-sheet book would write a PDF with nothing in it
-    and print ``wrote proof.pdf``. A file that exists and is empty, from a
-    command that reported success, is the worst available outcome.
+    :func:`deckle.core.export.export` now refuses an unknown index too, so
+    this is no longer the only thing standing between a user and a PDF
+    with nothing in it. It stays because the two failures read very
+    differently: this one names the document's own sheet count in the
+    vocabulary of the command line and exits 1, where the library raises a
+    ``ValueError`` that would reach the user as a traceback. Checked here
+    first, so the friendly message is the one that fires.
 
     :param plan: the imposed plan, for the indices it really has.
     :param selection: what the user asked for.

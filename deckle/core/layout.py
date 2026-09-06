@@ -875,6 +875,24 @@ def _signature_sheet_groups(
         # describe how to DERIVE a grouping, and the user has
         # stated one instead.
         return split_signatures_at(sheet_count, lengths)
+    if sheets_per_signature <= 0:
+        # Checked here rather than only inside `split_signatures`, because
+        # the "balanced" branch below never reaches it: `0` was a
+        # ZeroDivisionError out of the ceil division, and a negative
+        # produced `n_groups <= 0`, an empty `sizes`, and a plan whose
+        # sheets belonged to no signature at all -- caught 130 lines later
+        # by a post-condition about slot counts, and not caught at all
+        # under `python -O`. Same message as `split_signatures`, so both
+        # modes refuse the same input in the same words.
+        #
+        # After the `lengths` branch on purpose: an explicit
+        # `signature_lengths` wins over `sheets_per_signature`, so a
+        # project that states its own groupings must not be refused for a
+        # value it is not using.
+        raise ValueError(
+            "sheets_per_signature must be a positive integer, got "
+            f"{sheets_per_signature}"
+        )
     if blank_mode != "balanced":
         return split_signatures(sheet_count, sheets_per_signature)
 

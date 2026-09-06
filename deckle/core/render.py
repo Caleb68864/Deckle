@@ -230,8 +230,18 @@ def render_sheet(
 
     by_index = {sheet.index: sheet for sheet in plan.sheets}
     sheet = by_index.get(sheet_index)
-    has_front = sheet is not None and sheet.front is not None
-    has_back = sheet is not None and sheet.back is not None
+    if sheet is None:
+        # Answered BEFORE the export, not after. `export_sheet_cached`
+        # now refuses an unknown index, so reaching it with a stale one
+        # would raise into a render worker rather than returning the
+        # "nothing to show" page a cancelled or absent render returns --
+        # and before that it cached an empty PDF under the stale key.
+        # A sheet the plan does not have is not an error here: the preview
+        # is asked for whatever the user last looked at, and a shorter
+        # document is an ordinary thing to arrive at.
+        return _empty_rendered_page()
+    has_front = sheet.front is not None
+    has_back = sheet.back is not None
 
     # Route through the cache rather than exporting to a fresh temp file
     # every time. The cache was built, bounded, tested -- and never called,

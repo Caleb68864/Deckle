@@ -547,6 +547,44 @@ def _draw_proof_rule(dest_page: pikepdf.Page, paper_pt: tuple[float, float]) -> 
     dest_page.contents_add(b"q\n" + builder.build() + b"Q\n")
 
 
+def _select_sheets(plan: SheetPlan, sheets: Sequence[int] | None) -> list[Sheet]:
+    """The sheets ``sheets`` names, in the order given.
+
+    :param plan: the imposed plan.
+    :param sheets: indices to select, or ``None`` for every sheet in plan
+        order.
+    :returns: the selected sheets.
+    :raises ValueError: any index is not in the plan, naming every one that
+        is missing and what the plan does have.
+
+    **All or nothing.** This used to drop an unknown index silently, so a
+    fully-unknown selection wrote a 0-page PDF that then *passed*
+    ``_verify_output`` -- the expected page count was derived from the same
+    filtered list, so the check agreed with itself. The mixed case was
+    worse and quieter: ``--sheets 0,99,1`` wrote two sheets under a name
+    the user believed held three, which is only visible once the stack is
+    collated.
+    """
+    by_index = {sheet.index: sheet for sheet in plan.sheets}
+    if sheets is None:
+        return list(plan.sheets)
+    requested = list(sheets)
+    missing = sorted({i for i in requested if i not in by_index})
+    if missing:
+        known = sorted(by_index)
+        if not known:
+            have = "no sheets"
+        elif known == list(range(known[0], known[-1] + 1)):
+            have = f"sheets {known[0]}-{known[-1]}"
+        else:
+            have = "sheets " + ", ".join(str(i) for i in known)
+        raise ValueError(
+            f"sheet(s) {', '.join(str(i) for i in missing)} are not in "
+            f"this plan, which has {have}"
+        )
+    return [by_index[i] for i in requested]
+
+
 def export(
     plan: SheetPlan,
     out_path: str,
@@ -576,8 +614,8 @@ def export(
         goes to a scratch file beside it, which is renamed into place only
         once the whole document is assembled.
     :param sheets: the sheet indices to export, in the order given, or
-        ``None`` for the whole plan. An index not present in the plan is
-        skipped rather than raising.
+        ``None`` for the whole plan. An index the plan does not have is
+        refused -- see :func:`_select_sheets`.
     :param rule: draw a labelled ruler of known length on every face, so a
         printed sheet can be measured against it. For proofs -- it is drawn
         over the content, not around it.
@@ -596,6 +634,8 @@ def export(
         Expressed on the paper, so it is negated when ``rotate_180`` turns
         the face. ``(0.0, 0.0)`` writes nothing at all.
     :returns: nothing.
+    :raises ValueError: ``sheets`` names an index the plan does not have.
+        Refused before the scratch file is created, so nothing is written.
     :raises OSError: the output directory does not exist, or the scratch
         file cannot be created.
     :raises PermissionError: the output directory or an existing
@@ -608,11 +648,9 @@ def export(
         written and any previous export there survives. Not a user error:
         see the exception's own documentation.
     """
-    target_indices = (
-        [s.index for s in plan.sheets] if sheets is None else list(sheets)
-    )
-    by_index = {s.index: s for s in plan.sheets}
-    selected = [by_index[i] for i in target_indices if i in by_index]
+    # Before `_check_writable` and the scratch file, so the "raises before
+    # any bytes are written" promise above still holds.
+    selected = _select_sheets(plan, sheets)
 
     _check_writable(out_path)
 

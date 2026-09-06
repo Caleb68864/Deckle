@@ -1096,3 +1096,92 @@ def test_a_rotated_page_still_renders_a_thumbnail(tmp_path, rotate_deg):
     rendered = render.thumbnails([page], 0, 1, dpi=36)[0]
 
     assert rendered.width > 0 and rendered.height > 0
+
+
+# -- a selection that names a sheet the plan does not have ----------------
+#
+# `export` filtered unknown indices out with `if i in by_index`, so a
+# fully-unknown selection wrote a 0-page PDF -- which then PASSED
+# `_verify_output`, because the expected page count came from the same
+# filtered list and the check agreed with itself. The mixed case was
+# quieter and worse: `--sheets 0,99,1` wrote two sheets under a name the
+# user believed held three.
+
+
+def test_a_selection_naming_a_missing_sheet_is_refused(tmp_path):
+    """The whole selection, not the part of it that happens to exist.
+
+    A selection is a statement about which sheets to print. Honouring
+    three quarters of it produces a stack that is wrong in a way nobody
+    can see until it is collated.
+    """
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    with pytest.raises(ValueError) as exc_info:
+        export_fn(plan, out, sheets=[0, 99, 1])
+
+    message = str(exc_info.value)
+    assert "99" in message
+    assert "sheets 0-1" in message, message
+    assert not os.path.exists(out), "refused before anything was written"
+
+
+def test_every_missing_index_is_named_once(tmp_path):
+    """Sorted and de-duplicated, so a repeated typo is reported once."""
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    with pytest.raises(ValueError) as exc_info:
+        export_fn(plan, out, sheets=[99, 12, 99])
+
+    assert "sheet(s) 12, 99 are not in this plan" in str(exc_info.value)
+
+
+def test_a_fully_unknown_selection_no_longer_writes_an_empty_pdf(tmp_path):
+    """The case `_verify_output` could not catch.
+
+    Expected pages were derived from the filtered list, so zero expected
+    against zero written passed -- a check that agreed with itself about
+    a file containing nothing.
+    """
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    with pytest.raises(ValueError):
+        export_fn(plan, out, sheets=[99])
+
+    assert not os.path.exists(out)
+
+
+def test_a_valid_selection_is_unaffected(tmp_path):
+    """The guard that this refuses only what it should.
+
+    Order is preserved too: a selection is in the order given, because
+    that is the order the sheets feed.
+    """
+    plan = _plan_from_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "out.pdf")
+
+    export_fn(plan, out, sheets=[1, 0])
+
+    with pikepdf.open(out) as pdf:
+        assert len(pdf.pages) == 4  # two sheets, both faces
+
+
+def test_the_preview_of_a_missing_sheet_shows_nothing_rather_than_raising(tmp_path):
+    """The preview asks for whatever the user last looked at.
+
+    A shorter document is an ordinary thing to arrive at, so an absent
+    sheet is not an error here -- but the check has to happen BEFORE the
+    export, which previously cached an empty PDF under the stale key and
+    would now raise into a render worker.
+    """
+    plan = _plan_from_source(tmp_path, 2)
+
+    try:
+        rendered = render.render_sheet(plan, 99, "front", 36)
+    finally:
+        export.clear_sheet_cache()
+
+    assert rendered.width == 0 and rendered.height == 0

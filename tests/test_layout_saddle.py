@@ -639,3 +639,54 @@ def test_the_landscape_warning_still_fires_once_per_leaf():
 
     mixed = [w for w in plan.warnings if w.kind == "mixed_orientation"]
     assert len(mixed) == 4, [w.detail for w in mixed]
+
+
+# -- a gathering of zero sheets ------------------------------------------
+#
+# `blank_mode="balanced"` divided by `sheets_per_signature` without
+# checking it. Zero was a ZeroDivisionError out of the ceil division; a
+# negative produced no groups at all, so every sheet belonged to no
+# signature -- caught 130 lines later by an `assert` about slot counts, and
+# not caught at all under `python -O`. The "end" path has raised a clean
+# ValueError on the same input since it was written.
+
+
+@pytest.mark.parametrize("blank_mode", ["end", "balanced"])
+@pytest.mark.parametrize("sheets_per_signature", [0, -1, -8])
+def test_a_nonpositive_gathering_is_refused_by_both_blank_modes(
+    blank_mode, sheets_per_signature
+):
+    """Both modes refuse the same input in the same words.
+
+    A gathering size of zero is not a preference Deckle can honour by
+    guessing -- it is a typo or a bad file. Clamping to 1 would make both
+    paths agree by making both invent an answer, which is the same defect
+    wearing a different hat.
+    """
+    s = settings(
+        sheets_per_signature=sheets_per_signature, blank_mode=blank_mode
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        SaddleStitchStrategy().impose(make_pages(16), s)
+
+    assert "sheets_per_signature must be a positive integer" in str(exc_info.value)
+    assert str(sheets_per_signature) in str(exc_info.value)
+
+
+@pytest.mark.parametrize("blank_mode", ["end", "balanced"])
+def test_stated_signature_lengths_survive_a_nonsense_gathering_size(blank_mode):
+    """`signature_lengths` wins, so it is not refused for an unused value.
+
+    The model says explicitly that stated lengths beat both
+    `sheets_per_signature` and `blank_mode`. A project that states its own
+    groupings must impose even if the field it is overriding is nonsense,
+    which is why the guard sits after that branch and not before it.
+    """
+    s = settings(
+        sheets_per_signature=0, blank_mode=blank_mode, signature_lengths=(4,)
+    )
+
+    plan = SaddleStitchStrategy().impose(make_pages(16), s)
+
+    assert [len(sig.sheet_indices) for sig in plan.signatures] == [4]
