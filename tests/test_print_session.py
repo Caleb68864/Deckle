@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Sequence
+from typing import Literal, Sequence
 
 import pytest
 
@@ -67,7 +67,9 @@ def _profile(**overrides) -> PrinterProfile:
 class StubBackend:
     """Records every submission; never touches a real printer."""
 
-    calls: list[tuple[list[int], str, int, int]] = field(default_factory=list)
+    calls: list[tuple[list[int], str, int, int, str, bool, int]] = field(
+        default_factory=list
+    )
     fail_on_call_index: int | None = None
 
     def submit(
@@ -77,9 +79,20 @@ class StubBackend:
         printer_name: str,
         copies: int,
         dpi: int,
+        *,
+        side: Literal["front", "back"] = "front",
+        rotate_backs: bool = False,
+        pass_index: int = 0,
     ) -> PrintResult:
         call_index = len(self.calls)
-        self.calls.append((list(sheets), printer_name, copies, dpi))
+        # The three keywords are appended, so the existing `sheets, *_`
+        # destructuring in this file keeps working. They are recorded rather
+        # than ignored because a stub that mirrors a Protocol narrower than
+        # the real backend is exactly how "the back pass paints fronts"
+        # stayed invisible to a green suite.
+        self.calls.append(
+            (list(sheets), printer_name, copies, dpi, side, rotate_backs, pass_index)
+        )
         if self.fail_on_call_index is not None and call_index == self.fail_on_call_index:
             return PrintResult(submitted=0, job_id=None, error="printer offline")
         return PrintResult(submitted=len(sheets), job_id=f"job-{call_index}", error=None)
@@ -541,3 +554,104 @@ def test_the_version_check_runs_before_the_plan_check():
         PrintSession.load(plan, _profile(), StubBackend(), session_id)
 
     assert exc_info.value.reason == "version"
+
+
+# -- the side, the turn and the index reach the backend ------------------
+#
+# The session computes all three correctly in `plan_passes` and then dropped
+# them on the floor: `_submit_sheets` called `backend.submit` with five
+# positional arguments, so `side`, `rotate_backs` and `pass_index` took the
+# real backend's front-side defaults on *both* passes. Pass 2 rasterised the
+# front of every sheet, unturned, with the measured registration offset
+# unapplied -- the desktop app printed the fronts twice.
+#
+# Nothing here could see it before, because `PrintBackend` declared only the
+# five arguments and `StubBackend` mirrored that exactly. A stub that matches
+# a Protocol narrower than the only real implementation cannot observe what
+# the implementation was never told.
+
+
+def _run_both_passes(profile: PrinterProfile) -> StubBackend:
+    """Drive a two-sheet job to completion and hand back the recording."""
+    plan = _make_plan(2)
+    backend = StubBackend()
+    session = PrintSession(plan, profile, backend, printer_name="P")
+
+    session.start()
+    while not session.finished:
+        session.advance()
+
+    return backend
+
+
+def _calls_for_pass(backend: StubBackend, index: int) -> list[tuple]:
+    """Every recorded call whose `pass_index` is `index`.
+
+    Selected by the recorded value rather than by position, so this helper
+    cannot paper over the very field the tests below are about.
+    """
+    return [call for call in backend.calls if call[6] == index]
+
+
+def test_the_back_pass_asks_for_the_back_side():
+    """The whole point of manual duplex: pass 2 prints the other face."""
+    backend = _run_both_passes(_profile())
+
+    sides = [call[4] for call in backend.calls]
+    assert sides == ["front", "back"], sides
+
+
+def test_a_long_edge_flip_turns_its_backs():
+    """A printer that flips about the long edge needs the back turned.
+
+    ``plan_passes`` decides this -- ``rotate_backs = flip_axis == "long"``
+    -- and the session's job is only to carry the answer through. Both
+    axes are asserted, because a fix that hard-codes ``True`` would be as
+    wrong as the ``False`` it replaced, and only the pair can tell the two
+    apart.
+    """
+    long_edge = [call[5] for call in _run_both_passes(_profile()).calls]
+    assert long_edge == [False, True], long_edge
+
+    short_edge = [
+        call[5] for call in _run_both_passes(_profile(flip_axis="short")).calls
+    ]
+    assert short_edge == [False, False], short_edge
+
+
+def test_each_pass_submits_under_its_own_index():
+    """The pass index reaches the backend, and so reaches the session log.
+
+    Without it every chunk of both passes was logged as pass 0, which makes
+    the log useless for the one question it exists to answer: which sheets
+    went through on which pass.
+    """
+    backend = _run_both_passes(_profile())
+
+    indices = [call[6] for call in backend.calls]
+    assert indices == [0, 1], indices
+
+
+def test_a_chunked_pass_keeps_its_side_on_every_chunk():
+    """The keywords are per-call, so a long pass must not lose them midway.
+
+    Sixty sheets at the default chunk size is six submissions per pass. The
+    session chunks rather than delegating to ``submit_pass`` -- the cursor
+    has to advance per chunk for resume to land on a sheet -- so each chunk
+    passes the keywords itself, and that is exactly the kind of thing that
+    gets right on the first chunk and wrong on the rest.
+    """
+    plan = _make_plan(60)
+    backend = StubBackend()
+    session = PrintSession(plan, _profile(), backend, printer_name="P")
+
+    session.start()
+    while not session.finished:
+        session.advance()
+
+    fronts = _calls_for_pass(backend, 0)
+    backs = _calls_for_pass(backend, 1)
+
+    assert len(fronts) > 1 and len(backs) > 1, (len(fronts), len(backs))
+    assert all(call[4] == "front" for call in fronts)
+    assert all(call[4] == "back" for call in backs)

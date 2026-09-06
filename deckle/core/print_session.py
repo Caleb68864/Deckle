@@ -557,8 +557,24 @@ class PrintSession:
     # -- submission -----------------------------------------------------------
 
     def _submit_sheets(self, pass_: PrintPass, sheets: list[int]) -> PrintResult:
+        """Submit one chunk of ``pass_``, on that pass's own side.
+
+        The session chunks rather than calling ``backend.submit_pass``,
+        because the cursor must advance per chunk for resume to land on a
+        sheet rather than on a whole pass. The side, the turn and the pass
+        index therefore have to be threaded through by hand -- omitting
+        them takes the backend's front-side defaults and prints the fronts
+        twice, which is what this did until 2026-09-06.
+        """
         result = self.backend.submit(
-            self.plan, sheets, self.printer_name, self.copies, self.dpi
+            self.plan,
+            sheets,
+            self.printer_name,
+            self.copies,
+            self.dpi,
+            side=pass_.side,
+            rotate_backs=pass_.rotate_backs,
+            pass_index=pass_.index,
         )
         log_print_job(self.printer_name, self.profile, sheets, self.dpi, pass_.index)
         return result

@@ -304,11 +304,13 @@ class QtPrintBackend:
     ) -> PrintResult:
         """Submit ``sheets`` as a single Qt print job (one chunk).
 
-        ``side``/``rotate_backs``/``pass_index`` are additional keyword-only
-        parameters beyond the ``PrintBackend`` Protocol's required
-        ``(plan, sheets, printer_name, copies, dpi)`` shape -- callers that
-        only know the Protocol (SS-11/SS-12 submitting a single front pass)
-        can omit them and get front-side, unrotated behavior.
+        ``side``/``rotate_backs``/``pass_index`` are keyword-only and are
+        declared on the ``PrintBackend`` Protocol too. Their defaults exist
+        for a one-face job; **any caller submitting a pass must pass all
+        three, or a back pass paints fronts.** They were once extras beyond
+        a narrower Protocol, described here as safe to omit, and
+        ``PrintSession`` -- written against that Protocol -- omitted them on
+        both passes for the life of the manual-duplex path.
 
         A printer that has disappeared since it was chosen is reported as
         such before anything is painted, rather than as whatever Qt says

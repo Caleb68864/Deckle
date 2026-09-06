@@ -78,7 +78,7 @@ class _StubBackend:
     def __init__(self, profile):
         self.profile = profile
 
-    def submit(self, plan, sheets, printer_name, copies, dpi):
+    def submit(self, plan, sheets, printer_name, copies, dpi, **_kwargs):
         from deckle.core.printing import PrintResult
 
         return PrintResult(submitted=len(sheets), job_id=None, error=None)

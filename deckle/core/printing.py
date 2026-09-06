@@ -80,7 +80,17 @@ class PrintResult:
 
 
 class PrintBackend(Protocol):
-    """A pluggable print submission target. Never imports Qt."""
+    """A pluggable print submission target. Never imports Qt.
+
+    Backends must honour ``side`` -- a back pass that paints fronts is a
+    ruined stack of paper. The three keyword-only parameters carry what a
+    :class:`PrintPass` already knows and a bare sheet list cannot say; they
+    are declared here, and not only on the concrete backend, because a
+    Protocol narrower than its implementation is a Protocol its callers
+    cannot use correctly. ``PrintSession`` submitted five positional
+    arguments against the old signature and every back pass silently took
+    the front-side defaults.
+    """
 
     def submit(
         self,
@@ -89,6 +99,10 @@ class PrintBackend(Protocol):
         printer_name: str,
         copies: int,
         dpi: int,
+        *,
+        side: Literal["front", "back"] = "front",
+        rotate_backs: bool = False,
+        pass_index: int = 0,
     ) -> PrintResult: ...
 
 

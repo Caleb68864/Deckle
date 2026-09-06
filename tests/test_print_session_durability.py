@@ -74,7 +74,7 @@ class StubBackend:
     calls: list[tuple[list[int], str, int, int]] = field(default_factory=list)
 
     def submit(self, plan, sheets: Sequence[int], printer_name: str,
-               copies: int, dpi: int) -> PrintResult:
+               copies: int, dpi: int, **_kwargs) -> PrintResult:
         self.calls.append((list(sheets), printer_name, copies, dpi))
         return PrintResult(submitted=len(sheets), job_id="job", error=None)
 

@@ -294,3 +294,62 @@ def test_backend_module_import_does_not_load_qt():
     assert result.stdout.strip() == "[]", (
         f"importing deckle.app.backend pulled in Qt eagerly: {result.stdout.strip()}"
     )
+
+
+def test_the_protocol_carries_the_side():
+    """The Protocol must describe the arguments a pass actually needs.
+
+    ``PrintBackend`` declared only ``(plan, sheets, printer_name, copies,
+    dpi)`` while ``QtPrintBackend.submit`` had three keyword-only extras
+    with front-side defaults. ``PrintSession`` was written against the
+    Protocol, so it submitted five positional arguments and every back pass
+    silently painted fronts, unturned, with no registration offset.
+
+    Every stub backend in the suite mirrored the narrow signature, so
+    nothing could observe the omission -- which is why this asserts on the
+    declaration rather than on behaviour. A Protocol narrower than its only
+    implementation hides the seam between them, and this is what keeps the
+    two in step.
+    """
+    import inspect
+
+    from deckle.core.printing import PrintBackend
+
+    protocol = inspect.signature(PrintBackend.submit).parameters
+    concrete = inspect.signature(QtPrintBackend.submit).parameters
+
+    for name, default in (("side", "front"), ("rotate_backs", False), ("pass_index", 0)):
+        assert name in protocol, (
+            f"PrintBackend.submit does not declare {name!r}, so a caller "
+            "written against the Protocol cannot pass it"
+        )
+        assert protocol[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert protocol[name].default == default
+        assert name in concrete
+        assert concrete[name].default == default, (
+            f"{name!r} defaults to {concrete[name].default!r} on the backend "
+            f"and {protocol[name].default!r} on the Protocol"
+        )
+
+
+def test_the_session_tells_the_backend_which_side_to_paint():
+    """The caller that broke, pinned at its call site.
+
+    ``PrintSession._submit_sheets`` holds the ``PrintPass`` and must pass
+    its ``side``, ``rotate_backs`` and ``index`` on. It deliberately does
+    *not* delegate to ``submit_pass``: that submits a whole pass at once,
+    and the cursor has to advance per chunk for resume to land on a sheet.
+    So the keywords are threaded by hand here, and that is worth a guard.
+    """
+    import inspect
+
+    from deckle.core.print_session import PrintSession
+
+    source = inspect.getsource(PrintSession._submit_sheets)
+
+    for fragment in ("side=pass_.side", "rotate_backs=pass_.rotate_backs",
+                     "pass_index=pass_.index"):
+        assert fragment in source, (
+            f"PrintSession._submit_sheets does not pass {fragment!r}; a back "
+            "pass submitted without it paints fronts"
+        )

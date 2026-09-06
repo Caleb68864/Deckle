@@ -248,6 +248,7 @@ class _StubPrintBackend:
         printer_name: str,
         copies: int,
         dpi: int,
+        **_kwargs,
     ) -> PrintResult:
         self.calls.append(list(sheets))
         return PrintResult(submitted=len(sheets), job_id=f"job-{len(self.calls)}", error=None)
