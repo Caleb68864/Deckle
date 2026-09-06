@@ -155,7 +155,13 @@ def test_export_over_a_read_only_file_says_it_is_read_only(tmp_path, capsys):
     try:
         rc = main(["export", FIXTURE, "-o", str(out)])
     finally:
-        os.chmod(str(out), stat.S_IWRITE)
+        # 0o644, not stat.S_IWRITE. S_IWRITE is 0o200 on POSIX -- write
+        # for the owner and read for nobody -- so the last assertion
+        # below could not open the file it was asserting about. On
+        # Windows chmod only touches the read-only attribute and
+        # S_IWRITE clears it, which is why this test was green on the
+        # machine it was written on and red on every Linux clone.
+        os.chmod(str(out), 0o644)
 
     assert rc == 1
     err = capsys.readouterr().err
@@ -164,6 +170,28 @@ def test_export_over_a_read_only_file_says_it_is_read_only(tmp_path, capsys):
     # The pre-existing bytes are untouched: a refused export must not
     # damage whatever was already at that path.
     assert out.read_bytes() == b"%PDF-1.4 placeholder"
+
+
+def test_a_refused_export_does_not_change_the_files_permissions(tmp_path):
+    """Refusing to write must not be a write of its own.
+
+    ``export`` checks writability before it creates a scratch file, so
+    nothing on the refusal path touches the mode -- and this pins that,
+    because the obvious "fix" for a permission error is to relax the
+    permission, and a tool that silently unlocks a file the owner locked
+    has done something worse than fail.
+    """
+    out = tmp_path / "locked_down.pdf"
+    out.write_bytes(b"%PDF-1.4 placeholder")
+    os.chmod(str(out), stat.S_IREAD)
+    try:
+        rc = main(["export", FIXTURE, "-o", str(out)])
+        after = stat.S_IMODE(os.stat(str(out)).st_mode)
+    finally:
+        os.chmod(str(out), 0o644)
+
+    assert rc == 1
+    assert after == stat.S_IREAD, oct(after)
 
 
 def test_export_to_a_file_held_open_by_another_process(tmp_path, capsys):

@@ -824,3 +824,10 @@
 - Watch: **The audit's other eighteen tests skip when `dist/` is empty, so the file passes vacuously and only the spec-reading test ever went red.** A gate whose default state is "skipped" reports nothing about a release nobody built. That is doubly true now that the spec is an educated reconstruction: the first real build on Windows is the only thing that will tell us whether this file is right.
 - Commit: (this commit)
 
+## 2026-09-06 — A test's own cleanup made a Linux clone red
+- Symptom: `test_export_over_a_read_only_file_says_it_is_read_only` failed on Linux with `PermissionError: [Errno 13]` on its final line. Its `finally` restored `stat.S_IWRITE`, which is `0o200` on POSIX -- write for the owner and read for nobody -- and the assertion after it reads the file back. Deckle's behaviour was correct throughout: the refusal returns 1, names the path, says "read-only", and leaves the bytes and the mode alone.
+- Fix: restore `0o644`. Plus `test_a_refused_export_does_not_change_the_files_permissions`, which pins the property the neighbouring test's hard-coded mode makes easy to disturb -- a tool that silently unlocks a file its owner locked has done something worse than fail.
+- Surfaces: `os.chmod` on Windows manipulates only the read-only attribute, so `S_IWRITE` there means "make this writable" and the test was green on the machine it was written on. Every POSIX-mode constant in a test is a platform assumption; this file already knows that in prose -- its unwritable-directory test says outright that Windows ignores `chmod` on directories and uses `monkeypatch` instead -- and the knowledge had not reached the line above it.
+- Watch: **The failure was two assertions past the behaviour under test**, so the traceback pointed at `pathlib`. When a hardening test fails on a path the product never touched, suspect the fixture before the feature. And a suite that is red on arrival on one platform is a suite people stop reading: this was one of exactly two failures a fresh Linux clone showed, and the other was a missing file.
+- Commit: (this commit)
+
