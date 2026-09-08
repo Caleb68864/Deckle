@@ -8,6 +8,7 @@ server needed.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 
@@ -150,6 +151,51 @@ def test_autosave_survives_kill_and_reopen(tmp_path):
     # restore the last mutated state.
     reopened = load_project(state.autosave_path, check_sources=False)
     assert reopened.pages[0].rotate_deg == 180
+
+
+def test_autosave_follows_the_path_a_first_save_gives_the_project(tmp_path):
+    """A project that starts unnamed autosaves once Save names it.
+
+    This is the ordinary session, not an edge case: ``main()`` opens a blank
+    project with no path, so ``autosave_path`` is ``None`` and autosave is
+    correctly a no-op. Save is what supplies the path. When the path was
+    computed once in ``__init__`` it stayed ``None`` for the life of the
+    window, so from the first save onward the project autosaved nowhere --
+    the whole session was unprotected by the feature meant to protect it.
+    """
+    state = AppState(_make_project(2), timer_factory=_ImmediateTimer)
+    assert state.autosave_path is None
+
+    project_path = str(tmp_path / "proj.deckle")
+    # What Save does, and all it does -- see `MainWindow._save_project_to`.
+    state.project_path = project_path
+    assert state.autosave_path == f"{project_path}.autosave"
+
+    state.mutate(lambda p: set_rotation(p, 0, 180))
+
+    loaded = load_project(state.autosave_path, check_sources=False)
+    assert loaded.pages[0].rotate_deg == 180
+
+
+def test_autosave_repoints_when_the_project_is_saved_somewhere_else(tmp_path):
+    """Save As moves the autosave with the project.
+
+    The stronger half of the same rule: a cached path would keep writing the
+    *new* project's contents into the *old* project's autosave, so opening
+    the old file afterwards would be offered someone else's work as its
+    recovery.
+    """
+    first = str(tmp_path / "first.deckle")
+    second = str(tmp_path / "second.deckle")
+    state = AppState(_make_project(2), project_path=first, timer_factory=_ImmediateTimer)
+
+    state.project_path = second
+    state.mutate(lambda p: toggle_skip(p, 0))
+
+    assert state.autosave_path == f"{second}.autosave"
+    assert not os.path.exists(f"{first}.autosave")
+    loaded = load_project(state.autosave_path, check_sources=False)
+    assert loaded.pages[0].skipped is True
 
 
 def test_flush_autosave_cancels_pending_timer_and_saves_immediately(tmp_path):

@@ -9,14 +9,24 @@ status: draft -- for discussion before any of it is scheduled
 A consolidated view of what is broken, what is hard to maintain, and what is
 missing, as of commit `08e7f49`. Produced by reading every module under
 `deckle/` plus the docs, plans and research, and by running the full test
-suite on a fresh Linux clone. Nothing here has been implemented; that is the
-conversation this file exists to start.
+suite on a fresh Linux clone. Nothing had been implemented when it was
+written; see the reconciliation note below for what has landed since.
 
 **Every item here now has an implementation spec** under
 [`docs/specs/2026-09-04-roadmap/`](specs/2026-09-04-roadmap/index.md) — 79 of
 them, each self-contained enough to hand to an implementer who has read
 nothing else. Start at that directory's `index.md`; read its
 `00-environment.md` before touching code.
+
+> **Reconciled 2026-09-08.** This roadmap was written at commit `08e7f49` and
+> had drifted: fifteen of its findings had already been fixed but were still
+> listed as open. Those rows are now marked ✅ with the evidence that closed
+> them — R0.1-R0.6, B1, B2, B5, B7, B8, B18, B19, B20 and B36. **B9 was
+> then fixed on 2026-09-08** in the same session. Everything
+> unmarked was re-checked against the tree on that date and is still open.
+> Verified by running the suite on Linux: **1636 passed, 22 skipped**.
+> New findings from the same audit are in `vault/` (gitignored), and the
+> cross-project view is in `../../ROADMAP.md`.
 
 Each item carries an ID so it can be referred to in that conversation.
 Sizes: **S** under a day, **M** a few days, **L** a week or more, or gated on
@@ -27,18 +37,19 @@ just by reading it.
 
 ## 0. State of the tree on a fresh clone
 
-The suite is healthy once the environment is right, but a fresh clone cannot
-run it without three undocumented steps. These are the first things to fix
-because they block every other item from being checked.
+**This section is closed.** A fresh clone once needed three undocumented
+steps before the suite would run; all six findings landed, and the suite now
+runs clean on a fresh Linux clone (1636 passed, 22 skipped). Kept for the
+record.
 
 | ID | Finding | Size |
 |---|---|---|
-| **R0.1** | `tests/fixtures/sample.pdf` is not in the repository (`*.pdf` under fixtures is gitignored) but `tests/fixtures/README.md` calls it "checked in" and ~100 tests depend on it. A fresh clone gets 79 failures plus 25 fixture-setup errors (collection itself succeeds; the collection abort belongs to R0.2). It must be a **2-page** PDF; `deckle dummy -o tests/fixtures/sample.pdf --pages 2` produces one that passes. Either un-ignore that one file or generate it in a session-scoped fixture. | S |
-| **R0.2** | `tests/test_repeated_source_page.py` imports `numpy`, which is not in `[dev]`. Collection of the whole suite aborts. Add it to `dev` extras or rewrite the test without it. | S |
-| **R0.3** | `packaging/deckle.spec` is gitignored by the `*.spec` pattern and absent from the tree, yet `run.bat package` and `tests/test_packaging_audit.py` both read it. Nobody but the original Windows machine can build. Commit it with a negating ignore rule. | S |
-| **R0.4** | `tests/test_hardening_io.py::test_export_over_a_read_only_file_says_it_is_read_only` fails on Linux: the `finally` restores `S_IWRITE` (write-only), then reads the file. Restore `0o644`. | S |
-| **R0.5** | An empty file literally named `=` is tracked at the repo root (from commit `b549d95`, almost certainly a shell redirect typo). Delete it. | S |
-| **R0.6** | No CI. Nothing runs the 1,500 tests on a push. A single GitHub Actions job on Linux with `QT_QPA_PLATFORM=offscreen` would have caught R0.1-R0.4. | S |
+| **R0.1** ✅ | **Landed 2026-09-08 audit:** `tests/fixtures/sample.pdf` is committed. `tests/fixtures/sample.pdf` is not in the repository (`*.pdf` under fixtures is gitignored) but `tests/fixtures/README.md` calls it "checked in" and ~100 tests depend on it. A fresh clone gets 79 failures plus 25 fixture-setup errors (collection itself succeeds; the collection abort belongs to R0.2). It must be a **2-page** PDF; `deckle dummy -o tests/fixtures/sample.pdf --pages 2` produces one that passes. Either un-ignore that one file or generate it in a session-scoped fixture. | S |
+| **R0.2** ✅ | **Landed 2026-09-08 audit:** the test was rewritten onto Pillow, so numpy is no longer imported (`tests/test_repeated_source_page.py:57`). `tests/test_repeated_source_page.py` imports `numpy`, which is not in `[dev]`. Collection of the whole suite aborts. Add it to `dev` extras or rewrite the test without it. | S |
+| **R0.3** ✅ | **Landed 2026-09-08 audit:** `packaging/deckle.spec` is tracked. `packaging/deckle.spec` is gitignored by the `*.spec` pattern and absent from the tree, yet `run.bat package` and `tests/test_packaging_audit.py` both read it. Nobody but the original Windows machine can build. Commit it with a negating ignore rule. | S |
+| **R0.4** ✅ | **Landed 2026-09-08 audit:** restores `0o644` (`tests/test_hardening_io.py:164,191`). `tests/test_hardening_io.py::test_export_over_a_read_only_file_says_it_is_read_only` fails on Linux: the `finally` restores `S_IWRITE` (write-only), then reads the file. Restore `0o644`. | S |
+| **R0.5** ✅ | **Landed 2026-09-08 audit:** the stray `=` is deleted. An empty file literally named `=` is tracked at the repo root (from commit `b549d95`, almost certainly a shell redirect typo). Delete it. | S |
+| **R0.6** ✅ | **Landed 2026-09-08 audit:** `.github/workflows/test.yml`. No CI. Nothing runs the 1,500 tests on a push. A single GitHub Actions job on Linux with `QT_QPA_PLATFORM=offscreen` would have caught R0.1-R0.4. | S |
 
 With R0.1, R0.2 and R0.4 fixed locally: **1507 passed, 22 skipped, 2 failed**
 (the two being R0.3 and R0.4).
@@ -54,21 +65,21 @@ expensive thing.
 
 | ID | Finding | Where | Size |
 |---|---|---|---|
-| **B36** | *Verified.* **The desktop back pass prints the fronts again.** `PrintSession._submit_sheets` calls `backend.submit` with five positional arguments, so `side`, `rotate_backs` and `pass_index` take their front-side defaults on *both* passes. Pass 2 rasterises the front of every sheet, unturned, and the measured back offset is never applied. `QtPrintBackend.submit_pass` threads all three correctly and has **no caller anywhere in `deckle/`**. Invisible to tests because the `PrintBackend` Protocol declares only the five arguments and the session's fake backend mirrors it exactly. Found after the roadmap's first draft. | `core/print_session.py:559-564`, `core/printing.py:82-92`, `app/backend.py:402` | S |
-| **B1** | *Verified.* **A user's per-page rotation never reaches the exporter.** `_place_page` consumes `slot.rotate_deg` only to swap the dimensions for sizing, then emits `rotate_deg=0`. Under the default policies a page rotated 90° in Arrange exports unrotated and shrunk to 0.77; under `rotate` it comes out sideways and clipped; 180° is a complete no-op. No test imposes or exports a page with `rotate_deg != 0`. **Two further defects found while specifying this**, both unpinned by any test: `render._rotation_quarter_turns` hands pdfium quarter turns (0-3) where `PdfPage.render(rotation=)` wants degrees, so *every* rotated thumbnail raises `KeyError` out of the Arrange grid; and `export._rotation_matrix` builds a counter-clockwise turn while the PDF `/Rotate` convention, pdfium and the Rotate button are all clockwise. | `core/layout.py:375-376, 490-496`, `core/render.py:377-379`, `core/export.py` | S |
-| **B2** | `rotate_deg == 180` is silently dropped by the exporter (only 90/270 take the rotation branch). Latent until B1 is fixed, then live. | `core/export.py:344-380` | S |
+| **B36** ✅ | **Landed 2026-09-08 audit:** the back pass no longer reprints the fronts. *Verified.* **The desktop back pass prints the fronts again.** `PrintSession._submit_sheets` calls `backend.submit` with five positional arguments, so `side`, `rotate_backs` and `pass_index` take their front-side defaults on *both* passes. Pass 2 rasterises the front of every sheet, unturned, and the measured back offset is never applied. `QtPrintBackend.submit_pass` threads all three correctly and has **no caller anywhere in `deckle/`**. Invisible to tests because the `PrintBackend` Protocol declares only the five arguments and the session's fake backend mirrors it exactly. Found after the roadmap's first draft. | `core/print_session.py:559-564`, `core/printing.py:82-92`, `app/backend.py:402` | S |
+| **B1** ✅ | **Landed 2026-09-08 audit:** `d16969d` — the Rotate button turns the page, not just the thumbnail. *Verified.* **A user's per-page rotation never reaches the exporter.** `_place_page` consumes `slot.rotate_deg` only to swap the dimensions for sizing, then emits `rotate_deg=0`. Under the default policies a page rotated 90° in Arrange exports unrotated and shrunk to 0.77; under `rotate` it comes out sideways and clipped; 180° is a complete no-op. No test imposes or exports a page with `rotate_deg != 0`. **Two further defects found while specifying this**, both unpinned by any test: `render._rotation_quarter_turns` hands pdfium quarter turns (0-3) where `PdfPage.render(rotation=)` wants degrees, so *every* rotated thumbnail raises `KeyError` out of the Arrange grid; and `export._rotation_matrix` builds a counter-clockwise turn while the PDF `/Rotate` convention, pdfium and the Rotate button are all clockwise. | `core/layout.py:375-376, 490-496`, `core/render.py:377-379`, `core/export.py` | S |
+| **B2** ✅ | **Landed 2026-09-08 audit:** `2d10681` — the half turn is drawn, not dropped. `rotate_deg == 180` is silently dropped by the exporter (only 90/270 take the rotation branch). Latent until B1 is fixed, then live. | `core/export.py:344-380` | S |
 | **B3** | **Print-session resume does not detect most "document changed" cases.** `_hash_plan` covers only sheet index, side presence and page *indices*. Change the gutter, margins, paper, crop, or open a different 16-page PDF, re-impose, resume the back pass: accepted. Backs print with different geometry than the fronts already on the paper. This is exactly what `StaleSessionError(reason="plan")` promises to catch. `export._plan_hash` already hashes content; share it. | `core/print_session.py:109-145` | S |
 | **B4** | `log_print_job` is called by both the backend and the session, so every chunk is logged twice, and if the data dir is unwritable the session's unguarded call raises *after the sheets printed and before the cursor is saved*, the exact bug the backend comment says was fixed. The test patches only the backend copy. | `core/print_session.py:559-564`, `app/backend.py:381` | S |
-| **B5** | Folio disagrees with itself about rotating landscape sources: `document_scale` judges against the paper (never rotates), `_place_page` against the cell (rotates). *Verified:* four landscape pages on folio Letter get scale 0.50 where 0.647 fits, plus a spurious `mixed_orientation` warning. | `core/layout.py:292-294` vs `383-387` | S |
+| **B5** ✅ | **Landed 2026-09-08 audit:** `9262fff` — a folio leaf is scaled and placed against the same cell. Folio disagrees with itself about rotating landscape sources: `document_scale` judges against the paper (never rotates), `_place_page` against the cell (rotates). *Verified:* four landscape pages on folio Letter get scale 0.50 where 0.647 fits, plus a spurious `mixed_orientation` warning. | `core/layout.py:292-294` vs `383-387` | S |
 | **B6** | Printing scales the whole sheet into the imageable area with aspect ignored, so books print ~6% small and distorted with asymmetric borders. The preview never shows this. Pinned by `test_print_painting.py:167-225` as an undecided product decision, so it needs a *decision*, then a one-line fix (draw 1:1 at paper origin). | `app/backend.py:519-529` | S |
-| **B7** | The binding schedule's "reader-facing page numbers" are `source page_index + 1`, wrong whenever pages are skipped, blanks inserted, or more than one source is imported. The bench sheet then lists file indices. | `core/schedule.py:134-146` | S |
-| **B8** | Creep advisory in layout uses `settings.sheets_per_signature` even when `signature_lengths` or `blank_mode="balanced"` decided the real sizes, so layout and schedule give different answers for the same plan. *Verified.* Three creep comparisons across `paper.py`, `layout.py`, `schedule.py` also use two different operators. | `core/layout.py:800`, `paper.py:207`, `schedule.py:192` | S |
+| **B7** ✅ | **Landed 2026-09-08 audit:** `b66e62d` — pages are numbered as the reader reads them. The binding schedule's "reader-facing page numbers" are `source page_index + 1`, wrong whenever pages are skipped, blanks inserted, or more than one source is imported. The bench sheet then lists file indices. | `core/schedule.py:134-146` | S |
+| **B8** ✅ | **Landed 2026-09-08 audit:** `b66e62d` — creep has one opinion. Creep advisory in layout uses `settings.sheets_per_signature` even when `signature_lengths` or `blank_mode="balanced"` decided the real sizes, so layout and schedule give different answers for the same plan. *Verified.* Three creep comparisons across `paper.py`, `layout.py`, `schedule.py` also use two different operators. | `core/layout.py:800`, `paper.py:207`, `schedule.py:192` | S |
 
 ### 1b. Lost work and desktop state (HIGH)
 
 | ID | Finding | Where | Size |
 |---|---|---|---|
-| **B9** | **Autosave is dead for any project first saved in the session.** `autosave_path` is computed once in `AppState.__init__`; Save project sets `project_path` but never re-derives it. Import, arrange for an hour, Save, keep editing, crash: nothing was autosaved. | `app/state.py:205`, `app/main.py:1054` | S |
+| **B9** ✅ | **Fixed 2026-09-08.** `autosave_path` is now a read-only property deriving from `project_path` on every read, so it can no longer drift from it — Save re-points the autosave by assigning `project_path`, and Save As moves it rather than writing the new project into the old project's autosave. Covered by `test_autosave_follows_the_path_a_first_save_gives_the_project` and `test_autosave_repoints_when_the_project_is_saved_somewhere_else`, both confirmed failing against the previous code. Original finding: **Autosave is dead for any project first saved in the session.** `autosave_path` is computed once in `AppState.__init__`; Save project sets `project_path` but never re-derives it. Import, arrange for an hour, Save, keep editing, crash: nothing was autosaved. | `app/state.py:205`, `app/main.py:1054` | S |
 | **B10** | **Closing with a never-saved project silently discards everything.** No dirty flag, no `setWindowModified`, no "save before closing?", and Open project replaces the current one without asking. | `app/main.py:1129-1138, 945` | S |
 | **B11** | Unit change (in/mm/cm/pt) converts gutter, margins and thickness but **not trim or the eight crop boxes**, which keep their old number and their construction-time range. Switch in→mm and a trim showing 0.125 is now read back as 0.125 mm. | `app/views/layout_panel.py:1430-1442` | S |
 | **B12** | `refresh_from_project` blocks signals on a hand-maintained list that omits trim, crop and paper-stock; refreshing then fires their handlers, which `mutate` the state and **clear the redo stack**. Undo a trim change and Ctrl+Y is inert; opening a project pushes up to nine spurious undo entries. | `app/views/layout_panel.py:1223-1265` | S |
@@ -82,9 +93,9 @@ expensive thing.
 | **B15** | The preview's red "printer imageable area" guide and "Use printer margins" always use the first built-in preset (`DEFAULT_PROFILE`, 0.25in). Nothing pushes the resolved printer profile to the panel or preview, and the backend never reads the driver's printable rect (getting a real one is N2, and harder than the spike suggests). The GUIDE says the red line is "your printer's hardware limit"; it is not. | `app/main.py:442, 523`, `app/backend.py` | M |
 | **B16** | The desktop app only ever resolves the *first* built-in profile (`generic_face_down_reversed`). A face-up printer owner gets the wrong reload instruction with no in-app way to pick the other preset. | `app/views/print_dialog.py:59-90` | S (see F1) |
 | **B17** | Print submission, Save PDF, Open project (sha256 of every source) and Auto-crop (rasterise every page) all run **synchronously on the GUI thread** with no cancel. A 60-sheet pass freezes the window for minutes; the "Exporting..." status never paints. | `print_dialog.py:279-347`, `main.py:969, 1097`, `layout_panel.py:1629` | M |
-| **B18** | `signature_lengths`/`--sheets-per-signature 0` with `blank_mode="balanced"` raises `ZeroDivisionError` (*verified*); negatives produce empty groups. The `end` path validates cleanly. | `core/layout.py:770` | S |
-| **B19** | `landscape_policy` `scale` and `letterbox` are **identical**: nothing branches on anything but `== "rotate"`. The GUI tooltip promises two different behaviours. Either implement letterbox or collapse the enum (the same reason `scale_mode` was deleted). | `core/layout.py:294, 385` | S |
-| **B20** | `export(sheets=...)` silently skips unknown indices; a fully-unknown selection writes a 0-page PDF that passes `_verify_output`. `render_sheet` caches an empty PDF for a stale index before checking the sheet exists. | `core/export.py:589-593`, `core/render.py:246` | S |
+| **B18** ✅ | **Landed 2026-09-08 audit:** `e397769` — a gathering of zero is refused. `signature_lengths`/`--sheets-per-signature 0` with `blank_mode="balanced"` raises `ZeroDivisionError` (*verified*); negatives produce empty groups. The `end` path validates cleanly. | `core/layout.py:770` | S |
+| **B19** ✅ | **Landed 2026-09-08 audit:** `399f437` — `landscape_policy` collapsed to the two values it had. `landscape_policy` `scale` and `letterbox` are **identical**: nothing branches on anything but `== "rotate"`. The GUI tooltip promises two different behaviours. Either implement letterbox or collapse the enum (the same reason `scale_mode` was deleted). | `core/layout.py:294, 385` | S |
+| **B20** ✅ | **Landed 2026-09-08 audit:** `e397769` — a sheet the plan does not have is refused. `export(sheets=...)` silently skips unknown indices; a fully-unknown selection writes a 0-page PDF that passes `_verify_output`. `render_sheet` caches an empty PDF for a stale index before checking the sheet exists. | `core/export.py:589-593`, `core/render.py:246` | S |
 | **B21** | CLI `_resolve_profile` catches `ValueError` from a *corrupt* saved profile and reports "no printer profile 'X'"; the print dialog catches only `OSError` so the same file crashes it. The CLI also tells users to "calibrate a printer in the desktop app", which does not exist. | `cli.py:420-447`, `print_dialog.py:46,78` | S |
 | **B22** | `--profile` without `--pass` is silently ignored, including its calibrated back offset. | `cli.py:976-996` | S |
 | **B23** | `.deckle` load swallows every warning except `PathOutsideRootsAdvisory`, so a project from a newer build loses fields silently on the CLI (`UnknownLayoutFieldsWarning` exists precisely for this). | `cli.py:507-519` | S |
@@ -197,7 +208,7 @@ exclusions: fully offline), localisation, plugin API, cover generation
 - A landscape source under folio (B5).
 - Resume a print session after changing gutter / paper / crop, expect `StaleSessionError` (B3).
 - Session-side `log_print_job` raising after a successful chunk (B4).
-- Mutate after Save project, expect `<path>.autosave` written (B9).
+- ~~Mutate after Save project, expect `<path>.autosave` written (B9).~~ ✅ Done 2026-09-08, plus the Save As case.
 - `state.can_redo` after undoing a trim/crop change; `refresh_from_project` leaves the undo stack length unchanged (B12). `test_refreshing_never_changes_the_document_in_any_unit` should include trim and crop (B11).
 - Two overlapping imports; import during shutdown (B13).
 - Cancelled resume-count prompt (B14).

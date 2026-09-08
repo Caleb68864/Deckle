@@ -188,8 +188,10 @@ class AppState:
         writes once, not once per mutation.
     :param timer_factory: injected so tests can drive the debounce without
         waiting on a real timer.
-    :ivar project_path: the path the project was opened from.
-    :ivar autosave_path: ``f"{project_path}.autosave"``, or ``None``.
+    :ivar project_path: the path the project was opened from, or was most
+        recently saved to. Assigning it re-points the autosave.
+    :ivar autosave_path: ``f"{project_path}.autosave"``, or ``None`` --
+        derived from ``project_path`` on every read, never cached.
     """
 
     def __init__(
@@ -202,7 +204,6 @@ class AppState:
     ) -> None:
         self._project = project
         self.project_path = project_path
-        self.autosave_path = autosave_path_for(project_path)
         self._undo_stack: deque[Project] = deque(maxlen=undo_depth)
         self._redo_stack: deque[Project] = deque(maxlen=undo_depth)
         self._autosave_delay_s = autosave_delay_s
@@ -220,6 +221,23 @@ class AppState:
             their own copy -- there is exactly one owner.
         """
         return self._project
+
+    @property
+    def autosave_path(self) -> str | None:
+        """Where this project's autosave goes, or ``None`` if it has never
+        been saved.
+
+        Derived on every read rather than cached, because ``project_path``
+        changes underneath it: a session almost always starts with no path
+        at all (``main()`` opens a blank project), and Save is what gives it
+        one. A value computed once in ``__init__`` would still be ``None``
+        after that Save, so the project the user has just named would go on
+        autosaving nowhere -- which is precisely the session autosave exists
+        to protect. One rule, one place; see :func:`autosave_path_for`.
+
+        :returns: the autosave path, or ``None``.
+        """
+        return autosave_path_for(self.project_path)
 
     @property
     def can_undo(self) -> bool:
