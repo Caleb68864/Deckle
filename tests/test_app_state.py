@@ -230,6 +230,82 @@ def test_no_project_path_means_autosave_is_a_noop():
 # -- import: populates state, virtualized thumbnails, off-thread ---------
 
 
+def _named_page(source: str, index: int) -> SourcePage:
+    """A page that remembers which source it came from."""
+    ref = SourceRef(
+        path=source, page_index=index, sha256="abc", width_pt=612.0, height_pt=792.0
+    )
+    return SourcePage(ref=ref, rotate_deg=0, skipped=False)
+
+
+def test_a_second_import_can_add_pages_instead_of_replacing_them(tmp_path, monkeypatch):
+    """A book made of more than one source is the normal case here.
+
+    The README promises "PDFs and image folders, interleaved", and every
+    layer below this already delivered it: `Project.pages` is a flat list
+    whose entries each name their own source, the imposer never asks where
+    a page came from, and `.deckle` round-trips a mixed list. Only the
+    import verb was missing -- it always wrote `pages=page_list`, so the
+    second source silently discarded the first.
+    """
+    scan = [_named_page("scan.pdf", i) for i in range(3)]
+    plates = [_named_page("plates.pdf", i) for i in range(2)]
+    sources = {"scan.pdf": scan, "plates.pdf": plates}
+    monkeypatch.setattr(
+        "deckle.app.views.import_view.load_pdf",
+        lambda path: sources[os.path.basename(path)],
+    )
+    state = AppState(_make_project(0))
+
+    load_and_apply_import(state, str(tmp_path / "scan.pdf"))
+    added, _warnings = load_and_apply_import(
+        state, str(tmp_path / "plates.pdf"), append=True
+    )
+
+    assert [page.ref.path for page in state.project.pages] == (
+        ["scan.pdf"] * 3 + ["plates.pdf"] * 2
+    )
+    # The return value describes what was just added, not the whole
+    # document -- the status line says "Added 2 page(s)", not "Added 5".
+    assert len(added) == 2
+
+
+def test_appending_keeps_replacing_as_the_default(tmp_path, monkeypatch):
+    """An import that quietly appended to a document the user meant to
+    replace would be its own surprise, so the old behaviour is the default
+    and the checkbox is what opts into the new one."""
+    scan = [_named_page("scan.pdf", i) for i in range(3)]
+    plates = [_named_page("plates.pdf", i) for i in range(2)]
+    sources = {"scan.pdf": scan, "plates.pdf": plates}
+    monkeypatch.setattr(
+        "deckle.app.views.import_view.load_pdf",
+        lambda path: sources[os.path.basename(path)],
+    )
+    state = AppState(_make_project(0))
+
+    load_and_apply_import(state, str(tmp_path / "scan.pdf"))
+    load_and_apply_import(state, str(tmp_path / "plates.pdf"))
+
+    assert [page.ref.path for page in state.project.pages] == ["plates.pdf"] * 2
+
+
+def test_adding_pages_is_undoable_like_any_other_change(tmp_path, monkeypatch):
+    """It goes through `mutate`, so Ctrl+Z takes the added pages back off
+    rather than leaving the user to delete them by hand."""
+    plates = [_named_page("plates.pdf", i) for i in range(2)]
+    monkeypatch.setattr(
+        "deckle.app.views.import_view.load_pdf", lambda path: list(plates)
+    )
+    state = AppState(_make_project(3))
+
+    load_and_apply_import(state, str(tmp_path / "plates.pdf"), append=True)
+    assert len(state.project.pages) == 5
+
+    state.undo()
+
+    assert len(state.project.pages) == 3
+
+
 def test_import_populates_project_pages(tmp_path, monkeypatch):
     fake_pages = [_make_page(i) for i in range(300)]
     monkeypatch.setattr("deckle.app.views.import_view.load_pdf", lambda path: fake_pages)

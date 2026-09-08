@@ -22,6 +22,7 @@ import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from deckle.core.paths import config_dir, write_text_atomic
 from deckle.core.schema import check_values
@@ -143,6 +144,14 @@ class PrinterProfile:
             a ``ValueError`` branch already reports it cleanly.
         """
         path = _profile_path(name)
+        if not path.exists():
+            # A profile saved before printer names were percent-encoded.
+            # Fall back rather than reporting the printer as uncalibrated,
+            # which would send the user to re-measure something they had
+            # already measured.
+            legacy = _legacy_profile_path(name)
+            if legacy.exists():
+                path = legacy
         data = json.loads(path.read_text(encoding="utf-8"))
         known = {field.name for field in dataclasses.fields(cls)}
         kwargs = {key: value for key, value in data.items() if key in known}
@@ -171,7 +180,54 @@ def _config_dir() -> Path:
     return config_dir("printer_profiles")
 
 
+def _safe_profile_stem(name: str) -> str:
+    """``name`` as a filename component that cannot leave its directory.
+
+    A printer name is not a filename and is not the user's to sanitise. On
+    Windows a queue is routinely called ``\\\\server\\queue``, which is an
+    absolute UNC path -- so ``config_dir / f"{name}.json"`` discarded the
+    config directory entirely and wrote the profile onto the print server.
+    ``/``, ``:`` and ``..`` do the same job on the other platforms.
+
+    Percent-encoding rather than replacement, because it is reversible and
+    total: two printers whose names differ only in punctuation still get
+    two files, where mapping every awkward character to ``_`` would have
+    silently merged their calibrations.
+
+    Spaces, hyphens, underscores and dots are left alone. They are harmless
+    in a path component, and this directory is one the GUIDE sends people
+    into to read and delete files by hand -- ``My Test Printer.json`` is
+    findable and ``My%20Test%20Printer.json`` is not. It also means the
+    overwhelmingly common name encodes to exactly what it already was, so
+    no existing profile needs migrating.
+
+    A dot is safe *within* a component but ``.`` and ``..`` name directories,
+    and since every separator is encoded those two exact stems are the only
+    way left to escape. They fall back to encoding everything.
+
+    :param name: the printer name.
+    :returns: a single safe path component, without the suffix.
+    """
+    stem = quote(name, safe=" -_.")
+    if stem.strip(".") == "":
+        return quote(name, safe="")
+    return stem
+
+
 def _profile_path(name: str) -> Path:
+    return _config_dir() / f"{_safe_profile_stem(name)}.json"
+
+
+def _legacy_profile_path(name: str) -> Path:
+    """Where a profile written before the names were encoded would be.
+
+    Read-only and deliberately never written to again. A calibration is
+    measured by hand and reprinted when the numbers are wrong; changing the
+    naming scheme must not quietly orphan one that already exists.
+
+    :param name: the printer name.
+    :returns: the pre-encoding path.
+    """
     return _config_dir() / f"{name}.json"
 
 

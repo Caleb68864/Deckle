@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 import json
 
 
@@ -165,3 +167,78 @@ def test_a_square_sheet_flips_on_its_long_edge():
     # Neither edge is longer, so neither answer is wrong -- pin one so the
     # exported PDF does not depend on a float comparison going either way.
     assert duplex_flip_edge((612.0, 612.0)) == "long"
+
+
+# -- a printer name is not a filename -------------------------------------
+
+
+def test_a_unc_printer_name_stays_inside_the_config_directory(tmp_path, monkeypatch):
+    """`config_dir / f"{name}.json"` with a Windows queue name.
+
+    ``\\\\server\\queue`` is an *absolute* UNC path, so joining it discarded
+    the config directory entirely -- pathlib treats an absolute right-hand
+    side as the whole answer -- and the calibration was written onto the
+    print server, or nowhere.
+
+    **This test cannot reproduce that on Linux**, and does not pretend to:
+    ``PurePosixPath`` does not read ``\\`` as a separator, so the unfixed
+    code passes here too. It is kept because it pins the invariant the
+    Windows case needs -- one file, in the config directory, loadable back
+    under the same name -- and would catch a future "fix" that mangled the
+    name into something ``load`` could not find. The traversal coverage
+    that genuinely fails without the fix is the ``../escape`` and ``a/b``
+    parametrization below.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+    profiles_dir = tmp_path / "deckle" / "printer_profiles"
+
+    profile = _profile()
+    profile.save(r"\\server\queue")
+
+    written = list(profiles_dir.glob("*.json"))
+    assert len(written) == 1, "the profile did not land in the config directory"
+    assert PrinterProfile.load(r"\\server\queue") == profile
+
+
+@pytest.mark.parametrize("name", ["../escape", "..", ".", "a/b", "c:d"])
+def test_no_printer_name_escapes_the_config_directory(name, tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+    profiles_dir = tmp_path / "deckle" / "printer_profiles"
+
+    _profile().save(name)
+
+    written = [p for p in tmp_path.rglob("*.json")]
+    assert len(written) == 1
+    assert written[0].parent == profiles_dir, f"{name!r} escaped to {written[0]}"
+
+
+def test_an_ordinary_name_is_still_readable_on_disk(tmp_path, monkeypatch):
+    """This directory is one the GUIDE sends people into by hand."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+
+    _profile().save("My Test Printer")
+
+    assert (tmp_path / "deckle" / "printer_profiles" / "My Test Printer.json").exists()
+
+
+def test_a_profile_saved_under_the_old_scheme_is_still_found(tmp_path, monkeypatch):
+    """Changing the naming scheme must not orphan a calibration.
+
+    It was measured by hand and reprinted until the numbers were right;
+    reporting the printer as uncalibrated would send the user to do all of
+    that again.
+    """
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+    profiles_dir = tmp_path / "deckle" / "printer_profiles"
+    profiles_dir.mkdir(parents=True)
+    import json as _json
+    from dataclasses import asdict
+
+    legacy = profiles_dir / "Old:Printer.json"
+    legacy.write_text(_json.dumps(asdict(_profile())), encoding="utf-8")
+
+    assert PrinterProfile.load("Old:Printer") == _profile()

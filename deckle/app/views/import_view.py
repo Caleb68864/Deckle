@@ -26,16 +26,35 @@ def _load_source(path: str) -> Sequence[SourcePage]:
     return load_pdf(path)
 
 
-def load_and_apply_import(state: AppState, source_path: str) -> tuple[list[SourcePage], list]:
-    """Load ``source_path`` and replace ``state.project.pages`` with it.
+def load_and_apply_import(
+    state: AppState, source_path: str, *, append: bool = False
+) -> tuple[list[SourcePage], list]:
+    """Load ``source_path`` into ``state.project``, replacing or appending.
 
     Returns ``(pages, warnings)``. Routed through ``AppState.mutate`` like
     every other project change, so importing participates in undo and
     triggers the same debounced autosave.
 
-    :param state: the app state whose project is replaced.
+    ``append`` exists because a document made of more than one source is the
+    normal case for the books this program is for -- a scanned text with a
+    typeset title page, plates dropped in between chapters -- and the README
+    says so in as many words: "PDFs and image folders, interleaved". Every
+    layer downstream of here already handles it. ``Project.pages`` is a flat
+    list whose entries each name their own source, the imposer never asks
+    where a page came from, and `.deckle` round-trips a mixed list without
+    comment. Only the import verb was missing, so the promise was true of
+    the model and false of the application.
+
+    Appending, not merging: the pages land at the end and Arrange is where
+    they are moved. That keeps this function's job to loading, and leaves
+    ordering to the view built for it.
+
+    :param state: the app state whose project is updated.
     :param source_path: a PDF file, or a directory of images.
-    :returns: ``(pages, warnings)`` -- the warnings come from
+    :param append: add to the existing pages instead of replacing them.
+    :returns: ``(pages, warnings)`` -- the newly imported pages only, never
+        the whole document, so a caller can report what it just added.
+        The warnings come from
         :class:`~deckle.core.loader.ImportedPages` and are empty for a PDF
         import.
     :raises deckle.core.loader.SourceLoadError: any refusal from the
@@ -45,7 +64,12 @@ def load_and_apply_import(state: AppState, source_path: str) -> tuple[list[Sourc
     pages = _load_source(source_path)
     warnings = list(getattr(pages, "warnings", []))
     page_list = list(pages)
-    state.mutate(lambda project: replace(project, pages=page_list))
+    if append:
+        state.mutate(
+            lambda project: replace(project, pages=[*project.pages, *page_list])
+        )
+    else:
+        state.mutate(lambda project: replace(project, pages=page_list))
     return page_list, warnings
 
 
@@ -63,6 +87,7 @@ def _qt_core():
 
 def _qt_widgets():
     from PySide6.QtWidgets import (
+        QCheckBox,
         QFileDialog,
         QHBoxLayout,
         QLabel,
@@ -70,7 +95,7 @@ def _qt_widgets():
         QWidget,
     )
 
-    return QFileDialog, QHBoxLayout, QLabel, QPushButton, QWidget
+    return QCheckBox, QFileDialog, QHBoxLayout, QLabel, QPushButton, QWidget
 
 
 class ImportWorker:
@@ -89,9 +114,12 @@ class ImportWorker:
     :ivar error: a message when the import failed, else ``None``.
     """
 
-    def __init__(self, state: AppState, source_path: str) -> None:
+    def __init__(
+        self, state: AppState, source_path: str, *, append: bool = False
+    ) -> None:
         self.state = state
         self.source_path = source_path
+        self.append = append
         self.pages: list[SourcePage] = []
         self.warnings: list = []
         self.error: str | None = None
@@ -109,7 +137,9 @@ class ImportWorker:
             import.
         """
         try:
-            self.pages, self.warnings = load_and_apply_import(self.state, self.source_path)
+            self.pages, self.warnings = load_and_apply_import(
+                self.state, self.source_path, append=self.append
+            )
         except EncryptedPdfError as exc:
             self.error = f"password-protected PDF: {exc.path}"
         except SourceLoadError as exc:
@@ -143,7 +173,7 @@ class ImportView:
 
     def __init__(self, state: AppState, parent=None) -> None:
         QObject, QThread, Signal = _qt_core()
-        QFileDialog, QHBoxLayout, QLabel, QPushButton, QWidget = _qt_widgets()
+        QCheckBox, QFileDialog, QHBoxLayout, QLabel, QPushButton, QWidget = _qt_widgets()
 
         class _Signals(QObject):
             imported = Signal(list, list)
@@ -158,9 +188,19 @@ class ImportView:
         layout = QHBoxLayout(self.widget)
         self.import_pdf_button = QPushButton("Import PDF...", self.widget)
         self.import_images_button = QPushButton("Import Images...", self.widget)
+        # Unchecked is the old behaviour, and stays the default: an import
+        # that silently appended to a document the user thought it was
+        # replacing would be its own kind of surprise. Checked is what makes
+        # the README's "interleaved" true of the app and not just the model.
+        self.append_checkbox = QCheckBox("Add to the current document", self.widget)
+        self.append_checkbox.setToolTip(
+            "Keep the pages already imported and add these after them. "
+            "Reorder them in Arrange."
+        )
         self.status_label = QLabel("", self.widget)
         layout.addWidget(self.import_pdf_button)
         layout.addWidget(self.import_images_button)
+        layout.addWidget(self.append_checkbox)
         layout.addWidget(self.status_label)
 
         self.import_pdf_button.clicked.connect(self._pick_pdf)
@@ -171,27 +211,34 @@ class ImportView:
         self._QThread = QThread
 
     def _pick_pdf(self) -> None:
-        QFileDialog, *_ = _qt_widgets()
+        _QCheckBox, QFileDialog, *_ = _qt_widgets()
         path, _filter = QFileDialog.getOpenFileName(self.widget, "Import PDF", "", "PDF files (*.pdf)")
         if path:
             self.import_path(path)
 
     def _pick_images(self) -> None:
-        QFileDialog, *_ = _qt_widgets()
+        _QCheckBox, QFileDialog, *_ = _qt_widgets()
         path = QFileDialog.getExistingDirectory(self.widget, "Import Image Directory")
         if path:
             self.import_path(path)
 
-    def import_path(self, source_path: str) -> None:
+    def import_path(self, source_path: str, append: bool | None = None) -> None:
         """Kick off a background import of ``source_path``.
 
         :param source_path: a PDF file, or a directory of images.
+        :param append: add to the current document rather than replacing
+            it, or ``None`` to take the checkbox's setting. Passed
+            explicitly by tests and by any caller that already knows.
         :returns: nothing, immediately. The import runs on a ``QThread``
             so a 300-page source never blocks the UI; completion arrives as
             ``imported`` or ``failed``.
         """
-        self.status_label.setText(f"Importing {source_path}...")
-        worker = ImportWorker(self.state, source_path)
+        if append is None:
+            append = self.append_checkbox.isChecked()
+        self.status_label.setText(
+            f"{'Adding' if append else 'Importing'} {source_path}..."
+        )
+        worker = ImportWorker(self.state, source_path, append=append)
         thread = self._QThread(self.widget)
         thread.run = worker.run  # simplest correct QThread.run override
         thread.finished.connect(lambda: self._on_finished(worker))
@@ -204,5 +251,6 @@ class ImportView:
             self.status_label.setText(worker.error)
             self.failed.emit(worker.error)
         else:
-            self.status_label.setText(f"Imported {len(worker.pages)} page(s).")
+            verb = "Added" if worker.append else "Imported"
+            self.status_label.setText(f"{verb} {len(worker.pages)} page(s).")
             self.imported.emit(worker.pages, worker.warnings)

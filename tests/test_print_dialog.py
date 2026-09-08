@@ -589,3 +589,20 @@ def test_changing_printer_reoffers_that_printer_s_own_profile():
     ), "Printer A was offered Printer B's calibration"
     assert [dialog.profile_combo.itemData(i)[0]
             for i in range(dialog.profile_combo.count())] == [FACE_DOWN, FACE_UP]
+
+
+def test_a_corrupt_stored_profile_does_not_stop_the_dialog_opening():
+    """B21. `PrinterProfile.load` raises `StoredValueError`/`JSONDecodeError`
+    for a corrupt file -- both `ValueError` subclasses, which its docstring
+    says in as many words so "a caller with a `ValueError` branch already
+    reports it cleanly". The CLI had that branch; this path did not, and it
+    runs inside `PrintDialog.__init__`. So one unreadable file did not
+    degrade a printer to uncalibrated, it made printing impossible."""
+    def corrupt(name):
+        raise ValueError("flip_axis: 'diagonal' is not one this build can honour")
+
+    dialog = _make_dialog(profile_loader=corrupt, builtin_presets=PRESETS)
+
+    assert dialog.profile_combo.count() == len(PRESETS)
+    dialog.start_print()
+    assert dialog._session is not None

@@ -975,8 +975,21 @@ def _cmd_export(args: argparse.Namespace) -> int:
     print_pass = None
     back_offset = (0.0, 0.0)
     offset_source = ""
+    profile = None
+    # Resolved whenever it is given, not only alongside `--pass`. The back
+    # offset is the most expensive datum in the project -- it comes from
+    # printing a target, measuring it by hand and reprinting when the
+    # numbers are wrong -- and it was being parsed and then dropped on the
+    # floor for anyone who asked for a profile without also asking for a
+    # single pass. B22.
+    if args.profile is not None:
+        profile = _resolve_profile(args.profile)
+        if profile is None:
+            return 1
+        back_offset = (profile.back_offset_x_pt, profile.back_offset_y_pt)
+        offset_source = f"profile {args.profile!r}"
     if args.pass_side is not None:
-        if args.profile is None:
+        if profile is None:
             print(
                 f"error: --pass {args.pass_side} needs --profile, because "
                 "neither the sheet order nor the half turn has a safe "
@@ -986,11 +999,6 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        profile = _resolve_profile(args.profile)
-        if profile is None:
-            return 1
-        back_offset = (profile.back_offset_x_pt, profile.back_offset_y_pt)
-        offset_source = f"profile {args.profile!r}"
         print_pass = _pass_for(plan, args.pass_side, profile, selection)
         side = args.pass_side
         selection = print_pass.sheet_order

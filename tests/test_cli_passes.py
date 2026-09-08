@@ -219,3 +219,74 @@ def test_a_pass_can_be_narrowed_to_one_sheet_for_a_reprint(tmp_path):
 
     assert rc == 0
     assert _page_labels(out) == ["PAGE4"]
+
+
+# --- a profile is worth reading even without a pass (B22) ----------------
+
+
+def _saved_profile_with_offset(tmp_path, monkeypatch, name="calibrated"):
+    """A profile carrying the one number a calibration run produces."""
+    from dataclasses import replace as _replace
+
+    from deckle.core.profiles import BUILTIN_PRESETS
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+    profile = _replace(
+        BUILTIN_PRESETS["generic_face_down_reversed"],
+        back_offset_x_pt=3.0,
+        back_offset_y_pt=-2.0,
+    )
+    profile.save(name)
+    return name
+
+
+def test_a_profile_supplies_its_back_offset_without_a_pass(tmp_path, monkeypatch, capsys):
+    """`--profile` alone used to be parsed and then thrown away.
+
+    The back offset is the most expensive datum Deckle holds -- it comes
+    from printing a target, measuring it by hand, and reprinting when the
+    numbers are wrong -- and it was read only inside the `--pass` branch.
+    Exporting a whole duplex document with `--profile` therefore silently
+    dropped the correction, and the misregistration is invisible until the
+    paper is printed and a back is held up against its own front.
+    """
+    name = _saved_profile_with_offset(tmp_path, monkeypatch)
+    src = _numbered_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "both.pdf")
+
+    rc = main(["export", src, "-o", out, "--profile", name])
+
+    assert rc == 0
+    reported = capsys.readouterr().out
+    assert "registration: back faces moved +3, -2pt" in reported
+    assert f"profile {name!r}" in reported
+
+
+def test_an_explicit_back_offset_still_wins_over_the_profile(tmp_path, monkeypatch, capsys):
+    """The override has to keep overriding: someone measuring a fresh
+    correction types `--back-offset` precisely because the stored one is
+    wrong."""
+    name = _saved_profile_with_offset(tmp_path, monkeypatch)
+    src = _numbered_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "both.pdf")
+
+    rc = main(
+        ["export", src, "-o", out, "--profile", name, "--back-offset", "1,1"]
+    )
+
+    assert rc == 0
+    reported = capsys.readouterr().out
+    assert "--back-offset" in reported
+    assert "+1, +1pt" in reported
+
+
+def test_a_pass_without_a_profile_is_still_refused_after_the_reshuffle(tmp_path, capsys):
+    """The guard moved; it must not have moved away."""
+    src = _numbered_source(tmp_path, 4)
+    out = os.path.join(str(tmp_path), "backs.pdf")
+
+    rc = main(["export", src, "-o", out, "--pass", "back"])
+
+    assert rc == 1
+    assert "--profile" in capsys.readouterr().err

@@ -44,7 +44,7 @@ def select_preselected_printer(
     for name in printer_names:
         try:
             profile_loader(name)
-        except (FileNotFoundError, OSError) as exc:
+        except (FileNotFoundError, OSError, ValueError) as exc:
             # No calibration profile for this printer -- try the next one.
             # Worth recording: the fallback silently lands on
             # printer_names[0], and a user wondering why Deckle picked the
@@ -129,7 +129,16 @@ def resolve_profile(
     """
     try:
         return profile_loader(printer_name)
-    except (FileNotFoundError, OSError):
+    except (FileNotFoundError, OSError, ValueError):
+        # `ValueError` covers a corrupt stored profile: `StoredValueError`
+        # for a value this build cannot honour, `JSONDecodeError` for a file
+        # that is not JSON at all. Both are `ValueError` subclasses, which
+        # is why `PrinterProfile.load`'s docstring says so. The CLI's
+        # `_resolve_profile` already caught them and reported "no printer
+        # profile"; this path did not, and it runs inside
+        # `PrintDialog.__init__` -- so a single unreadable file did not
+        # degrade one printer to uncalibrated, it made the print dialog
+        # impossible to open.
         pass
     presets = builtin_presets if builtin_presets is not None else BUILTIN_PRESETS
     return next(iter(presets.values()))

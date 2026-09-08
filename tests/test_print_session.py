@@ -764,3 +764,40 @@ def test_a_chunked_pass_keeps_its_side_on_every_chunk():
     assert len(fronts) > 1 and len(backs) > 1, (len(fronts), len(backs))
     assert all(call[4] == "front" for call in fronts)
     assert all(call[4] == "back" for call in backs)
+
+
+# -- list_resumable must actually never raise -----------------------------
+
+
+@pytest.mark.parametrize(
+    "body", ["{}", '{"session_id": "abc"}', "[]", '"a string"', "null"]
+)
+def test_list_resumable_survives_a_file_that_parses_but_is_not_a_session(
+    body, tmp_path, monkeypatch
+):
+    """Its docstring promises it never raises, and the print dialog
+    believes that -- `PrintDialog.__init__` calls it with no `try`.
+
+    Only `OSError` and `JSONDecodeError` were caught, and the five
+    `data[...]` lookups sat *after* the `try`. A file that is valid JSON
+    but not a session -- truncated, half-written, or from a build that
+    named these fields differently -- parses cleanly and then raises
+    `KeyError`, so one such file in the state directory made the print
+    dialog impossible to open at all.
+    """
+    monkeypatch.setenv("DECKLE_SESSION_STATE_DIR", str(tmp_path))
+    (tmp_path / "broken.json").write_text(body, encoding="utf-8")
+
+    assert PrintSession.list_resumable() == []
+
+
+def test_one_unreadable_file_does_not_hide_the_healthy_sessions(tmp_path, monkeypatch):
+    """The point of skipping rather than raising."""
+    monkeypatch.setenv("DECKLE_SESSION_STATE_DIR", str(tmp_path))
+    plan = _make_plan(3)
+    good_id = _started_session_id(plan)
+    (tmp_path / "broken.json").write_text("{}", encoding="utf-8")
+
+    summaries = PrintSession.list_resumable()
+
+    assert [s.session_id for s in summaries] == [good_id]

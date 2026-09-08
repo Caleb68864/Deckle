@@ -511,16 +511,7 @@ class PrintSession:
             # describes a capability nothing implements.
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                # Skipping is right -- one corrupt file must not hide every
-                # other resumable session. But a user whose state file was
-                # truncated by the very crash they are trying to resume from
-                # would otherwise watch the session silently not appear, with
-                # no way to find out why. Record it and carry on.
-                log_exception("session_state_unreadable", exc, path=str(path))
-                continue
-            summaries.append(
-                SessionSummary(
+                summary = SessionSummary(
                     session_id=data["session_id"],
                     printer_name=data["printer_name"],
                     started_at=data["started_at"],
@@ -528,7 +519,26 @@ class PrintSession:
                     sheet_cursor=data["sheet_cursor"],
                     state_path=str(path),
                 )
-            )
+            except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                # Skipping is right -- one corrupt file must not hide every
+                # other resumable session. But a user whose state file was
+                # truncated by the very crash they are trying to resume from
+                # would otherwise watch the session silently not appear, with
+                # no way to find out why. Record it and carry on.
+                #
+                # The five lookups belong inside this `try`, not after it.
+                # A file that is valid JSON but not a session -- truncated
+                # to `{}`, half-written, or from a build that named these
+                # fields differently -- parses cleanly and then raises
+                # `KeyError` (or `TypeError`, if the JSON is a list or a
+                # string). This method's docstring promises it never raises,
+                # and `PrintDialog.__init__` believes it: one such file in
+                # the state directory made the print dialog impossible to
+                # open at all, which is a far worse failure than one
+                # unlisted session.
+                log_exception("session_state_unreadable", exc, path=str(path))
+                continue
+            summaries.append(summary)
         return summaries
 
     # -- submission -----------------------------------------------------------
