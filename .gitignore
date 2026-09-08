@@ -53,3 +53,6 @@ graphify-out/
 
 # Clean build environment for packaging -- recreate with run.bat package
 .buildenv/
+
+# Local planning/notes vault (not for the repo)
+vault/
