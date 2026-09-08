@@ -189,6 +189,13 @@ def test_refreshing_never_changes_the_document_in_any_unit(unit):
         state.project.layout,
         gutter_pt=17.77, margin_top_pt=9.13, margin_bottom_pt=3.3,
         margin_outer_pt=25.4, paper_thickness_pt=0.37,
+        # Trim and crop belong here for the same reason as the rest: they
+        # are lengths stored in points and re-displayed in the current
+        # unit. They were absent, so the fields whose blocking was actually
+        # missing were the ones this test never exercised.
+        trim_pt=6.5,
+        crop_odd_pt=(1.25, 2.5, 3.75, 5.0),
+        crop_even_pt=(5.0, 3.75, 2.5, 1.25),
     )
     state._project = replace(state.project, layout=loaded)
 
@@ -240,3 +247,104 @@ def test_the_mode_tab_follows_the_fold_scheme_both_ways():
     _load(state, fold_scheme="none")
     panel.refresh_from_project()
     assert panel.tabs.currentIndex() == panel._single_tab_index
+
+
+# -- the refresh must not cost the user their history ---------------------
+
+
+def test_refreshing_adds_no_undo_entries_and_keeps_the_redo_stack():
+    """A refresh is not an edit, and must not read as one.
+
+    This is the assertion the value checks above cannot make. When a widget
+    is set without its signals blocked, its handler writes back the very
+    value the refresh was about to set -- so every "did the document
+    change?" test still passes while the user quietly loses their history:
+    one undo entry per unblocked control, and a cleared redo stack, because
+    `mutate` treats a fresh change as invalidating any undone future.
+    """
+    state, panel = _panel()
+    state.mutate(lambda project: replace(
+        project, layout=replace(project.layout, gutter_pt=24.0)
+    ))
+    state.undo()
+    assert state.can_redo, "precondition: there is an undone future to lose"
+
+    undo_before = len(state._undo_stack)
+    redo_before = len(state._redo_stack)
+
+    _load(
+        state,
+        trim_pt=9.0,
+        crop_odd_pt=(1.0, 2.0, 3.0, 4.0),
+        crop_even_pt=(4.0, 3.0, 2.0, 1.0),
+        paper_thickness_pt=0.42,
+    )
+    panel.refresh_from_project()
+
+    assert len(state._undo_stack) == undo_before
+    assert len(state._redo_stack) == redo_before
+    assert state.can_redo, "the refresh cleared a redo the user had not spent"
+
+
+# -- a unit change is a change of notation, not of the book ---------------
+
+
+@pytest.mark.parametrize("unit", ["in", "mm", "cm", "pt"])
+def test_changing_unit_reconverts_trim_and_every_crop_box(unit):
+    """Switching units must re-display every stored length, not most of them.
+
+    A box left out keeps the number it showed in the old unit. Nothing looks
+    wrong -- and the model is still right until the box is touched -- but the
+    next nudge writes that stale number back through `to_points` under the
+    new unit, so a 0.25in trim becomes a 0.25mm one.
+    """
+    from deckle.app.views.layout_panel import from_points
+
+    state, panel = _panel()
+    panel.unit_combo.setCurrentText("in")
+    _load(
+        state,
+        trim_pt=18.0,
+        crop_odd_pt=(9.0, 18.0, 27.0, 36.0),
+        crop_even_pt=(36.0, 27.0, 18.0, 9.0),
+    )
+    panel.refresh_from_project()
+
+    panel.unit_combo.setCurrentText(unit)
+
+    def shown(box, points):
+        """What the box can display: the converted length, at its own
+        precision. `0.3175cm` in a three-decimal box is `0.318`, and that
+        rounding is the widget's, not the conversion's."""
+        return round(from_points(points, unit), box.decimals())
+
+    assert panel.trim_spinbox.value() == pytest.approx(
+        shown(panel.trim_spinbox, 18.0)
+    )
+    for parity, insets in (("odd", (9.0, 18.0, 27.0, 36.0)),
+                           ("even", (36.0, 27.0, 18.0, 9.0))):
+        for index, edge in enumerate(("left", "bottom", "right", "top")):
+            box = panel.crop_spinboxes[(parity, edge)]
+            assert box.value() == pytest.approx(shown(box, insets[index])), (
+                f"crop {parity} {edge} was not reconverted into {unit}"
+            )
+
+    # The unit is notation. The book is unchanged.
+    assert state.project.layout.trim_pt == 18.0
+    assert state.project.layout.crop_odd_pt == (9.0, 18.0, 27.0, 36.0)
+    assert state.project.layout.crop_even_pt == (36.0, 27.0, 18.0, 9.0)
+
+
+def test_a_unit_change_then_a_nudge_does_not_rewrite_trim_in_the_new_unit():
+    """The failure the conversion prevents, driven end to end."""
+    state, panel = _panel()
+    panel.unit_combo.setCurrentText("in")
+    _load(state, trim_pt=18.0)  # 0.25in
+    panel.refresh_from_project()
+
+    panel.unit_combo.setCurrentText("mm")
+    # Whatever the box now shows, committing it must mean the same physical
+    # depth it meant a moment ago -- not 0.25mm.
+    panel._on_trim_changed(panel.trim_spinbox.value())
+
+    assert state.project.layout.trim_pt == pytest.approx(18.0)

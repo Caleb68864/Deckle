@@ -1218,17 +1218,22 @@ class LayoutPanel:
         handler, and those handlers write back to the project -- so an
         unguarded refresh would overwrite the freshly loaded layout with
         whatever the widgets happened to hold, one control at a time.
+
+        Every child widget is blocked rather than a list of them named here.
+        That list existed and had drifted: trim, the eight crop boxes and the
+        paper-stock combo were all set below while none of them were blocked.
+        The drift is silent, which is what makes the hand-maintained version
+        the wrong shape -- an omitted widget's handler writes back the very
+        value the refresh was about to set, so the document still looks
+        correct, while the undo stack fills with up to nine entries the user
+        never made and each one clears the redo stack out from under them.
+        A list that has to be extended every time a control is added will be
+        forgotten again; asking the widget tree cannot be.
         """
+        from PySide6.QtWidgets import QWidget
+
         layout = self.state.project.layout
-        widgets = [
-            self.unit_combo, self.paper_combo, self.orientation_combo,
-            self.grain_combo, self.paper_thickness_spinbox, self.gutter_spinbox,
-            self.slack_combo, self.link_margins_check, self.binding_edge_combo,
-            self.start_on_recto_check,
-            self.landscape_policy_combo, self.sheets_per_signature_spinbox,
-            self.blank_mode_combo, self.sewing_stations_spinbox, self.tabs,
-            *self.margin_spinboxes.values(),
-        ]
+        widgets = self.widget.findChildren(QWidget)
         for widget in widgets:
             widget.blockSignals(True)
         try:
@@ -1427,16 +1432,38 @@ class LayoutPanel:
         typed them.
         """
         layout = self.state.project.layout
-        boxes = [(self.gutter_spinbox, layout.gutter_pt, 288.0)]
+        # (box, the model's value in points, the range cap in points, how
+        # many decimals the box shows in `pt`). Every length the model keeps
+        # in points belongs on this list: one left off keeps its old number
+        # under the new unit, and the next nudge writes that number back as
+        # though the user had typed it -- a 0.25in trim silently becoming a
+        # 0.25mm one.
+        boxes = [(self.gutter_spinbox, layout.gutter_pt, 288.0, 0)]
         boxes += [
-            (self.margin_spinboxes[f], getattr(layout, f), 216.0) for f in MARGIN_FIELDS
+            (self.margin_spinboxes[f], getattr(layout, f), 216.0, 0)
+            for f in MARGIN_FIELDS
         ]
-        boxes.append((self.paper_thickness_spinbox, layout.paper_thickness_pt, 10.0))
+        boxes.append((self.paper_thickness_spinbox, layout.paper_thickness_pt, 10.0, 0))
+        boxes.append((self.trim_spinbox, layout.trim_pt, 144.0, 3))
+        # Trim and crop keep three decimals in `pt` rather than the zero the
+        # older boxes use, which is deliberate and not an inconsistency to
+        # tidy away: a crop inset is routinely a fraction of a point, and
+        # rounding it to a whole one on a unit change would destroy it. That
+        # the other boxes round to zero is B29, and is not this change.
+        for parity, insets in (("odd", layout.crop_odd_pt),
+                               ("even", layout.crop_even_pt)):
+            for index, edge in enumerate(("left", "bottom", "right", "top")):
+                boxes.append((
+                    self.crop_spinboxes[(parity, edge)],
+                    insets[index] if insets else 0.0,
+                    720.0,
+                    3,
+                ))
         self._unit = unit
-        for box, points, cap_pt in boxes:
+        for box, points, cap_pt, pt_decimals in boxes:
             box.blockSignals(True)
             box.setRange(0.0, from_points(cap_pt, unit))
-            box.setDecimals(0 if unit == "pt" else 3)
+            box.setDecimals(pt_decimals if unit == "pt" else 3)
             box.setSingleStep(1.0 if unit in ("pt", "mm") else 0.125)
             box.setValue(from_points(points, unit))
             box.blockSignals(False)

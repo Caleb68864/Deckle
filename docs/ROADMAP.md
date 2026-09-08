@@ -22,7 +22,8 @@ nothing else. Start at that directory's `index.md`; read its
 > had drifted: fifteen of its findings had already been fixed but were still
 > listed as open. Those rows are now marked ✅ with the evidence that closed
 > them — R0.1-R0.6, B1, B2, B5, B7, B8, B18, B19, B20 and B36. **B9 was
-> then fixed on 2026-09-08** in the same session. Everything
+> then fixed on 2026-09-08**, along with B11 and B12, in the same session.
+> Everything
 > unmarked was re-checked against the tree on that date and is still open.
 > Verified by running the suite on Linux: **1636 passed, 22 skipped**.
 > New findings from the same audit are in `vault/` (gitignored), and the
@@ -81,8 +82,8 @@ expensive thing.
 |---|---|---|---|
 | **B9** ✅ | **Fixed 2026-09-08.** `autosave_path` is now a read-only property deriving from `project_path` on every read, so it can no longer drift from it — Save re-points the autosave by assigning `project_path`, and Save As moves it rather than writing the new project into the old project's autosave. Covered by `test_autosave_follows_the_path_a_first_save_gives_the_project` and `test_autosave_repoints_when_the_project_is_saved_somewhere_else`, both confirmed failing against the previous code. Original finding: **Autosave is dead for any project first saved in the session.** `autosave_path` is computed once in `AppState.__init__`; Save project sets `project_path` but never re-derives it. Import, arrange for an hour, Save, keep editing, crash: nothing was autosaved. | `app/state.py:205`, `app/main.py:1054` | S |
 | **B10** | **Closing with a never-saved project silently discards everything.** No dirty flag, no `setWindowModified`, no "save before closing?", and Open project replaces the current one without asking. | `app/main.py:1129-1138, 945` | S |
-| **B11** | Unit change (in/mm/cm/pt) converts gutter, margins and thickness but **not trim or the eight crop boxes**, which keep their old number and their construction-time range. Switch in→mm and a trim showing 0.125 is now read back as 0.125 mm. | `app/views/layout_panel.py:1430-1442` | S |
-| **B12** | `refresh_from_project` blocks signals on a hand-maintained list that omits trim, crop and paper-stock; refreshing then fires their handlers, which `mutate` the state and **clear the redo stack**. Undo a trim change and Ctrl+Y is inert; opening a project pushes up to nine spurious undo entries. | `app/views/layout_panel.py:1223-1265` | S |
+| **B11** ✅ | **Fixed 2026-09-08.** `_on_unit_changed` now carries trim and all eight crop boxes, each with its range cap and its own `pt` precision -- trim and crop keep three decimals where the older boxes round to zero, because a crop inset is routinely a fraction of a point (the zero-decimal rounding on the others is B29 and is untouched). Original finding: Unit change (in/mm/cm/pt) converts gutter, margins and thickness but **not trim or the eight crop boxes**, which keep their old number and their construction-time range. Switch in→mm and a trim showing 0.125 is now read back as 0.125 mm. | `app/views/layout_panel.py:1430-1442` | S |
+| **B12** ✅ | **Fixed 2026-09-08.** The hand-maintained list is gone: `refresh_from_project` blocks `self.widget.findChildren(QWidget)`, so it cannot drift again as a control is added. Original finding: `refresh_from_project` blocks signals on a hand-maintained list that omits trim, crop and paper-stock; refreshing then fires their handlers, which `mutate` the state and **clear the redo stack**. Undo a trim change and Ctrl+Y is inert; opening a project pushes up to nine spurious undo entries. | `app/views/layout_panel.py:1223-1265` | S |
 | **B13** | Import results have no "is this still the current worker" guard, so two quick imports apply in completion order, and `open_project` swaps `AppState` mid-import so the import lands in an orphaned state. Import threads are also skipped by `stop_background_work`, so quitting mid-import runs pdfium into teardown, the crash class `_live_threads` exists to prevent. | `app/views/import_view.py:197-208`, `app/main.py:1004, 1160` | S |
 | **B14** | Cancelling the "How many sheets came out?" prompt returns 0 and resumes from sheet 0, reprinting the whole interrupted pass. | `app/views/print_dialog.py:369-376` | S |
 
@@ -209,7 +210,7 @@ exclusions: fully offline), localisation, plugin API, cover generation
 - Resume a print session after changing gutter / paper / crop, expect `StaleSessionError` (B3).
 - Session-side `log_print_job` raising after a successful chunk (B4).
 - ~~Mutate after Save project, expect `<path>.autosave` written (B9).~~ ✅ Done 2026-09-08, plus the Save As case.
-- `state.can_redo` after undoing a trim/crop change; `refresh_from_project` leaves the undo stack length unchanged (B12). `test_refreshing_never_changes_the_document_in_any_unit` should include trim and crop (B11).
+- ~~`state.can_redo` after undoing a trim/crop change; `refresh_from_project` leaves the undo stack length unchanged (B12). `test_refreshing_never_changes_the_document_in_any_unit` should include trim and crop (B11).~~ ✅ Done 2026-09-08, both exactly as specified, plus a unit-change-then-nudge test driving B11's failure end to end. Nine tests in this file fail against the pre-fix panel.
 - Two overlapping imports; import during shutdown (B13).
 - Cancelled resume-count prompt (B14).
 - Schedule numbering with skipped pages or two sources (B7); `signature_lengths` + creep (B8); `sheets_per_signature <= 0` under `balanced` (B18).
