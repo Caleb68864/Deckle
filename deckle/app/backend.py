@@ -4,10 +4,17 @@ Implements the ``PrintBackend`` Protocol (``deckle.core.printing``) by
 rasterizing each output page at the printer's own device DPI via
 ``deckle.core.render.render_sheet`` and painting it into a ``QPainter`` at
 an exact device-space rectangle. ``QPrinter.setFullPage(True)`` is always
-set, so Qt applies no margin of its own -- margins come from the profile's
-``imageable_area_pt`` instead. Transform control guarantees fidelity
-*within* the imageable area; it cannot defeat the printer's physical
-non-printable border (see ``docs/spikes/qprinter-capability-report.md``).
+set, so Qt applies no margin of its own and the painter's origin is the
+physical corner of the paper.
+
+**Sheets are painted at actual size** -- one inch of the design is one inch
+of paper (roadmap B6, settled 2026-09-08). The profile's
+``imageable_area_pt`` does not enter the paint transform; it describes the
+printer's non-printable border, which at actual size is something to warn
+about (``clipped_by_imageable_area``) rather than to shrink into. Nothing
+here can defeat that physical border (see
+``docs/spikes/qprinter-capability-report.md``) -- it can only decline to
+disguise it as a smaller book.
 
 Tray selection is deliberately never touched -- it is effectively
 Windows-only and manual duplex does not need it.
@@ -510,25 +517,62 @@ class QtPrintBackend:
                         self.profile.back_offset_y_pt,
                     ),
                 )
-                self._paint_rendered_page(painter, printer, rendered)
+                self._paint_rendered_page(painter, printer, rendered, dpi)
         finally:
             painter.end()
 
-    def _paint_rendered_page(self, painter, printer, rendered: RenderedPage) -> None:
+    def _paint_rendered_page(
+        self, painter, printer, rendered: RenderedPage, dpi: int
+    ) -> None:
+        """Paint one rasterised sheet at its true physical size.
+
+        **An inch of the design is an inch of paper.** That is the decision
+        this method used to leave open (roadmap B6), settled 2026-09-08.
+
+        It previously scaled the whole sheet into the profile's imageable
+        area, which shrank it by the border: on a printer with 18pt margins
+        a letter sheet printed at about 94% of its designed size, with the
+        aspect ratio skewed whenever the borders were asymmetric. Every
+        measurement in the finished book came out ~6% short. For a program
+        whose output is bound by hand that is not a rounding error -- boards
+        are cut to measured dimensions, the spine width in the schedule is
+        computed from paper thickness, and a text block 6% smaller than
+        designed does not fit the case made for it. Everything else here
+        already assumed actual size: the exported PDF carries
+        ``/PrintScaling /None``, the schedule prints "Print at ACTUAL SIZE",
+        and the proof rule exists to be measured with a ruler.
+
+        The transform is therefore only a change of units. The sheet was
+        rasterised at ``dpi`` dots to the inch and the printer lays down
+        ``printer.resolution()`` of them, so that ratio is the whole of it.
+        ``setFullPage(True)`` -- always set, see the module docstring --
+        puts the painter's origin on the physical paper corner rather than
+        inside Qt's own margin, so ``(0, 0)`` really is the corner of the
+        sheet.
+
+        The profile's ``imageable_area_pt`` is deliberately no longer read
+        here. At actual size the printer's non-printable border is a fact
+        to be *warned* about, not a box to shrink into: content that falls
+        inside it is clipped, and Deckle already computes that warning as
+        ``clipped_by_imageable_area`` and draws the border in the preview.
+        Telling the truth and losing a millimetre at the edge is better
+        than silently resizing the book, because the first is visible
+        before the paper is spent and the second is not visible until the
+        case will not close.
+
+        :param painter: the ``QPainter`` begun on ``printer``.
+        :param printer: the ``QPrinter`` being painted onto.
+        :param rendered: the rasterised sheet.
+        :param dpi: the resolution ``rendered`` was rasterised at.
+        :returns: nothing. A degenerate page paints nothing.
+        """
         if rendered.width == 0 or rendered.height == 0:
             return
         image = _qimage(rendered.rgba, rendered.width, rendered.height)
-        left_pt, top_pt, right_pt, bottom_pt = self.profile.imageable_area_pt
-        dpi_scale = printer.resolution() / 72.0
-        target_x = left_pt * dpi_scale
-        target_y = top_pt * dpi_scale
-        target_w = max(0.0, printer.width() - (left_pt + right_pt) * dpi_scale)
-        target_h = max(0.0, printer.height() - (top_pt + bottom_pt) * dpi_scale)
-        painter.drawImage(
-            int(target_x),
-            int(target_y),
-            image.scaled(int(target_w) or 1, int(target_h) or 1),
-        )
+        device_per_pixel = printer.resolution() / float(dpi)
+        target_w = max(1, int(round(rendered.width * device_per_pixel)))
+        target_h = max(1, int(round(rendered.height * device_per_pixel)))
+        painter.drawImage(0, 0, image.scaled(target_w, target_h))
 
     # -- duplex -------------------------------------------------------------
 
@@ -644,7 +688,7 @@ class QtPrintBackend:
                                     self.profile.back_offset_y_pt,
                                 ),
                             )
-                            self._paint_rendered_page(painter, printer, rendered)
+                            self._paint_rendered_page(painter, printer, rendered, dpi)
                 finally:
                     painter.end()
             except Exception as exc:  # noqa: BLE001

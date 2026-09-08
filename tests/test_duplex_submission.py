@@ -86,7 +86,7 @@ def recorded(monkeypatch):
     monkeypatch.setattr(backend_mod, "log_print_job",
                         lambda *a, **k: None)
     monkeypatch.setattr(QtPrintBackend, "_paint_rendered_page",
-                        lambda self, painter, printer, rendered: None)
+                        lambda self, painter, printer, rendered, dpi: None)
     return calls
 
 

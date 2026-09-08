@@ -499,6 +499,31 @@ flowchart TD
     E --> C
 ```
 
+### Sheets print at actual size
+
+An inch of the design is an inch of paper. Deckle paints each sheet 1:1 at the
+corner of the sheet and does not scale it to fit what your printer can reach.
+
+This is the only behaviour that makes the rest of the program honest. The
+binding schedule tells you to print at actual size; the exported PDF carries
+`/PrintScaling /None` so a viewer will not helpfully shrink it; the proof rule
+exists to be measured with a ruler; and the spine width the schedule gives you
+is the number you cut boards against. A sheet quietly scaled to 94% to clear
+the printer's border would make every one of those wrong by the same 6%, and
+you would not find out until the case would not close on the text block.
+
+The cost is real and deliberate: content that falls inside your printer's
+non-printable border **is clipped**, because no software can print there.
+Deckle tells you before the paper is spent rather than after — the preview
+draws that border in solid red, and a `clipped_by_imageable_area` warning
+names it specifically. If you see it, move your margins out; do not expect the
+printer to shrink the book for you.
+
+> Check it once, on your own printer: print a proof sheet with `--rule`, put a
+> ruler on it, and confirm the inch is an inch. If it is not, your *printer
+> driver* is scaling — look for "fit to page" or "shrink oversized pages" in
+> its dialog and turn it off.
+
 ### The printer profile
 
 A profile records four things about one physical printer: which face the sheet
