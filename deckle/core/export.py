@@ -36,6 +36,12 @@ from pikepdf import Name, Page, Rectangle
 from pikepdf.canvas import ContentStreamBuilder
 
 from deckle.core.diagnostics import log_event, log_exception
+from deckle.core.plan_digest import (
+    mark_key,
+    output_page_key,
+    plan_digest,
+    update_delimited,
+)
 from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
 from deckle.core.paths import evict_lru_files
 from deckle.core.printing import duplex_flip_edge
@@ -61,87 +67,14 @@ _MAX_RETIRED = 32
 _BATCH_SHEETS = 50
 
 
-def _mark_key(mark: Mark) -> str:
-    return f"{mark.kind}:{mark.x0}:{mark.y0}:{mark.x1}:{mark.y1}"
-
-
-def _update_delimited(digest: "hashlib._Hash", tag: str, value: str) -> None:
-    """Feed ``value`` into ``digest`` length-prefixed, not just concatenated.
-
-    Running variable-length keys together makes the boundary between them
-    recoverable from their content rather than fixed by the framing: a
-    ``SourceRef.path`` that happens to contain the field separators can
-    reproduce, on its own, the exact bytes that two *different* pages would
-    contribute, so two genuinely different plans hash identically and the
-    second one is handed the first one's cached PDF.
-
-    A cache that returns the wrong page is worse than no cache at all, so
-    every variable-length component announces its own byte length and no
-    content can straddle a boundary.
-    """
-    encoded = value.encode("utf-8")
-    digest.update(f"|{tag}[{len(encoded)}]:".encode("utf-8"))
-    digest.update(encoded)
-
-
-def _plan_hash(plan: SheetPlan) -> str:
-    """A stable hash of everything that affects rendered output.
-
-    Deliberately built from the plan's own field values (not Python's
-    ``id()`` or ``hash()``, which are unstable across processes) so the
-    same layout settings always produce the same cache key.
-
-    Every variable-length component is fed in length-prefixed -- see
-    :func:`_update_delimited` for why plain concatenation is not safe here.
-    """
-    digest = hashlib.sha256()
-    digest.update(repr(plan.paper_pt).encode("utf-8"))
-    for sheet in plan.sheets:
-        digest.update(f"|sheet:{sheet.index}".encode("utf-8"))
-        for side_name, side in (("front", sheet.front), ("back", sheet.back)):
-            digest.update(f"|{side_name}:".encode("utf-8"))
-            if side is None:
-                digest.update(b"none")
-                continue
-            for page in side.pages:
-                _update_delimited(digest, "page", _output_page_key(page))
-            for mark in side.marks:
-                _update_delimited(digest, "mark", _mark_key(mark))
-    return digest.hexdigest()
-
-
-def _output_page_key(page: OutputPage) -> str:
-    """One page's contribution to the plan hash.
-
-    The **path is length-prefixed** and everything else is joined plainly.
-    That asymmetry is the point: `_update_delimited` explains why running
-    variable-length keys together lets content forge a field boundary, and
-    the path is the only free-text field here -- the rest are an integer, a
-    64-character hex digest, two float reprs and a bool, none of which can
-    contain the separator.
-
-    So no collision was constructible before this, and that was **a
-    property of the field types rather than of the framing**: a
-    `SourceRef` gaining any second string field would have removed it
-    silently. The framing now does not depend on what the other fields
-    happen to be, which matters because `.deckle` files carry these paths
-    and may be shared (red-team A-3).
-    """
-    ref = page.source_ref
-    ref_key = (
-        "none"
-        if ref is None
-        else (
-            f"path[{len(ref.path.encode('utf-8'))}]:{ref.path}"
-            f":{ref.page_index}:{ref.sha256}:{ref.width_pt}:{ref.height_pt}"
-        )
-    )
-    placement = page.placement
-    placement_key = (
-        f"{placement.scale_x}:{placement.scale_y}:{placement.tx}:"
-        f"{placement.ty}:{placement.rotate_deg}"
-    )
-    return f"{ref_key}|{placement_key}|{page.is_filler}|{page.crop_pt}"
+# The plan digest lives in `deckle.core.plan_digest` because the print
+# session needs the same answer -- see that module for why two of them was
+# a bug rather than a duplication. These names are kept as the module's own
+# so the exporter reads the way it always did.
+_mark_key = mark_key
+_update_delimited = update_delimited
+_output_page_key = output_page_key
+_plan_hash = plan_digest
 
 
 def _scale_flags_for(scale: float) -> tuple[bool, bool]:

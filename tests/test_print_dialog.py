@@ -418,3 +418,174 @@ def test_resume_is_refused_and_explained_when_the_plan_has_changed():
     assert "resume" in title.lower()
     assert "layout has changed" in detail
     assert "start a new print run" in detail
+
+
+# -- picking how the paper comes out (B16) --------------------------------
+#
+# The app resolved the *first* builtin preset and offered nothing else, so
+# a face-up printer was handed the face-down reload instruction and no way
+# to say otherwise. The reload instruction is the one sentence standing
+# between a correct book and sixty sheets printed upside down.
+
+
+def _preset(**overrides) -> PrinterProfile:
+    base = dict(
+        version=1,
+        flip_axis="long",
+        output_face="down",
+        feed_edge="top",
+        reverse_stack=True,
+        imageable_area_pt=(18.0, 18.0, 18.0, 18.0),
+        calibrated_at="",
+        calibration_version=0,
+    )
+    base.update(overrides)
+    return PrinterProfile(**base)
+
+
+FACE_DOWN = _preset()
+FACE_UP = _preset(output_face="up", reverse_stack=False)
+PRESETS = {"generic_face_down_reversed": FACE_DOWN, "generic_face_up_in_order": FACE_UP}
+
+
+def test_describe_profile_names_both_axes_that_decide_the_reload():
+    from deckle.app.views.print_dialog import describe_profile
+
+    assert describe_profile(FACE_DOWN) == "Comes out face down, stack reversed"
+    assert describe_profile(FACE_UP) == "Comes out face up, order kept"
+
+
+def test_profile_choices_offers_every_preset_when_nothing_is_calibrated():
+    from deckle.app.views.print_dialog import profile_choices
+
+    choices, preselect = profile_choices(
+        "Printer A",
+        profile_loader=lambda name: (_ for _ in ()).throw(FileNotFoundError(name)),
+        builtin_presets=PRESETS,
+    )
+
+    assert [profile for _label, profile, _saved in choices] == [FACE_DOWN, FACE_UP]
+    assert preselect == 0
+
+
+def test_a_calibration_outranks_every_preset_and_is_preselected():
+    """It was measured against this actual printer. No generic preset
+    should quietly beat it."""
+    from deckle.app.views.print_dialog import profile_choices
+
+    calibrated = _preset(output_face="up", reverse_stack=False,
+                         calibrated_at="2026-01-01T00:00:00", calibration_version=1)
+    choices, preselect = profile_choices(
+        "Printer A", profile_loader=lambda name: calibrated, builtin_presets=PRESETS,
+    )
+
+    assert preselect == 0
+    label, profile, is_saved = choices[0]
+    assert profile is calibrated and is_saved
+    assert "calibrated" in label
+
+
+def test_a_corrupt_stored_profile_does_not_make_the_picker_unopenable():
+    from deckle.app.views.print_dialog import profile_choices
+
+    def corrupt(name):
+        raise ValueError("not a profile")
+
+    choices, _preselect = profile_choices(
+        "Printer A", profile_loader=corrupt, builtin_presets=PRESETS,
+    )
+
+    assert [profile for _l, profile, _s in choices] == [FACE_DOWN, FACE_UP]
+
+
+def test_the_chosen_profile_is_the_one_that_prints():
+    """The whole point: selecting face-up must reach the backend."""
+    dialog = _make_dialog(builtin_presets=PRESETS)
+    face_up_index = next(
+        i for i in range(dialog.profile_combo.count())
+        if dialog.profile_combo.itemData(i)[0] is FACE_UP
+    )
+    dialog.profile_combo.setCurrentIndex(face_up_index)
+
+    dialog.start_print()
+
+    assert dialog._session.profile is FACE_UP
+
+
+def test_choosing_a_preset_remembers_it_for_an_uncalibrated_printer():
+    """`PrinterProfile.save` had no caller anywhere in the app, so a choice
+    like this could not be expressed at all, let alone survive a restart."""
+    saved: list[tuple] = []
+
+    class Remembering(PrinterProfile):
+        pass
+
+    dialog = _make_dialog(builtin_presets=PRESETS)
+    face_up_index = next(
+        i for i in range(dialog.profile_combo.count())
+        if dialog.profile_combo.itemData(i)[0] is FACE_UP
+    )
+    dialog.profile_combo.setCurrentIndex(face_up_index)
+    profile, _is_saved = dialog.profile_combo.currentData()
+    object.__setattr__(profile, "save", lambda name: saved.append((name, profile)))
+
+    dialog.start_print()
+
+    assert saved == [("Printer A", FACE_UP)]
+
+
+def test_a_calibration_is_never_overwritten_by_the_picker():
+    """The destructive case, and the reason `_remember_profile_choice`
+    declines rather than clobbers.
+
+    A calibration is not derived from anything -- it comes from printing a
+    target, measuring it by hand, and reprinting when the numbers are
+    wrong. Writing a generic preset over one because a combo happened to be
+    showing it would destroy that, for a gesture nobody thinks of as
+    destructive.
+    """
+    calibrated = _preset(calibrated_at="2026-01-01T00:00:00", calibration_version=1)
+    writes: list[str] = []
+    object.__setattr__(FACE_UP, "save", lambda name: writes.append(name))
+
+    dialog = _make_dialog(
+        builtin_presets=PRESETS,
+        profile_loader=lambda name: calibrated,
+    )
+    face_up_index = next(
+        i for i in range(dialog.profile_combo.count())
+        if dialog.profile_combo.itemData(i)[0] is FACE_UP
+    )
+    dialog.profile_combo.setCurrentIndex(face_up_index)
+
+    dialog.start_print()
+
+    assert writes == [], "the picker overwrote a hand-measured calibration"
+    assert dialog._session.profile is FACE_UP, "but the run still honours the choice"
+
+
+def test_changing_printer_reoffers_that_printer_s_own_profile():
+    """A calibration belongs to one printer; offering another printer's is
+    worse than offering none."""
+    calibrated = _preset(output_face="up", reverse_stack=False,
+                         calibrated_at="2026-01-01T00:00:00", calibration_version=1)
+
+    def loader(name):
+        if name == "Printer B":
+            return calibrated
+        raise FileNotFoundError(name)
+
+    dialog = _make_dialog(builtin_presets=PRESETS, profile_loader=loader)
+    # The dialog opens on Printer B: `select_preselected_printer` prefers a
+    # printer that has been calibrated, which is the whole reason it exists.
+    assert dialog.printer_combo.currentText() == "Printer B"
+    assert dialog.profile_combo.itemData(0) == (calibrated, True)
+
+    dialog.printer_combo.setCurrentText("Printer A")
+
+    assert all(
+        not dialog.profile_combo.itemData(i)[1]
+        for i in range(dialog.profile_combo.count())
+    ), "Printer A was offered Printer B's calibration"
+    assert [dialog.profile_combo.itemData(i)[0]
+            for i in range(dialog.profile_combo.count())] == [FACE_DOWN, FACE_UP]

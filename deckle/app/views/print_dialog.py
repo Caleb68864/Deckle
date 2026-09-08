@@ -56,6 +56,59 @@ def select_preselected_printer(
     return printer_names[0] if printer_names else None
 
 
+def describe_profile(profile: PrinterProfile) -> str:
+    """A one-line description of how a printer hands paper back.
+
+    Derived from the profile's own fields rather than from a preset's key,
+    so a saved calibration describes itself in the same words a builtin
+    does. These two axes are the whole of what ``plan_passes`` consumes,
+    and between them they decide the reload instruction -- which is the
+    single most consequential sentence Deckle prints.
+
+    :param profile: the profile to describe.
+    :returns: a label for a picker.
+    """
+    face = "face up" if profile.output_face == "up" else "face down"
+    order = "stack reversed" if profile.reverse_stack else "order kept"
+    return f"Comes out {face}, {order}"
+
+
+def profile_choices(
+    printer_name: str,
+    profile_loader: Callable[[str], PrinterProfile] = PrinterProfile.load,
+    builtin_presets: dict[str, PrinterProfile] | None = None,
+) -> tuple[list[tuple[str, PrinterProfile, bool]], int]:
+    """The profiles offerable for ``printer_name``, and which to preselect.
+
+    A saved calibration, when there is one, comes first and is preselected:
+    it was measured against this actual printer, and no generic preset
+    should quietly outrank it. The builtins follow in declaration order.
+
+    Pure and Qt-free so the choosing is testable without a display.
+
+    :param printer_name: the printer being printed to.
+    :param profile_loader: how to load a saved profile; raising means none.
+    :param builtin_presets: the presets to offer, or ``None`` for
+        ``BUILTIN_PRESETS``.
+    :returns: ``(choices, index)`` where each choice is
+        ``(label, profile, is_saved)``.
+    """
+    presets = builtin_presets if builtin_presets is not None else BUILTIN_PRESETS
+    choices: list[tuple[str, PrinterProfile, bool]] = []
+    try:
+        saved = profile_loader(printer_name)
+    except (FileNotFoundError, OSError, ValueError):
+        # ValueError covers a corrupt stored profile, which the CLI already
+        # treats as "no profile" -- see B21. An unreadable calibration must
+        # not make the picker unopenable.
+        saved = None
+    if saved is not None:
+        choices.append((f"{describe_profile(saved)} (calibrated)", saved, True))
+    for profile in presets.values():
+        choices.append((describe_profile(profile), profile, False))
+    return choices, 0
+
+
 def resolve_profile(
     printer_name: str,
     profile_loader: Callable[[str], PrinterProfile] = PrinterProfile.load,
@@ -216,6 +269,24 @@ class PrintDialog:
         printer_row.addWidget(self.printer_combo)
         layout.addLayout(printer_row)
 
+        # Which reload instruction this run will give. The app resolved the
+        # *first* builtin preset and offered no way to say otherwise, so a
+        # face-up printer was told to reload as though it were face-down --
+        # and the reload instruction is the one sentence that decides
+        # whether the backs land on the right fronts. B16.
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("Paper:", self.widget))
+        self.profile_combo = QComboBox(self.widget)
+        self.profile_combo.setToolTip(
+            "How this printer hands paper back. It decides the reload "
+            "instruction between the two passes. A calibrated profile is "
+            "preselected when one exists."
+        )
+        profile_row.addWidget(self.profile_combo)
+        layout.addLayout(profile_row)
+        self._sync_profile_choices(self.printer_combo.currentText())
+        self.printer_combo.currentTextChanged.connect(self._sync_profile_choices)
+
         self.test_first_checkbox = QCheckBox("Test one sheet first", self.widget)
         layout.addWidget(self.test_first_checkbox)
 
@@ -250,6 +321,76 @@ class PrintDialog:
     def _resolve_profile(self, printer_name: str) -> PrinterProfile:
         return resolve_profile(printer_name, self._profile_loader, self._builtin_presets)
 
+    def _sync_profile_choices(self, printer_name: str) -> None:
+        """Refill the profile combo for ``printer_name``.
+
+        Re-run whenever the printer changes, because a saved calibration
+        belongs to one printer and offering another printer's is worse than
+        offering none.
+
+        :param printer_name: the newly selected printer.
+        :returns: nothing.
+        """
+        choices, preselect = profile_choices(
+            printer_name, self._profile_loader, self._builtin_presets
+        )
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        for label, profile, is_saved in choices:
+            self.profile_combo.addItem(label, (profile, is_saved))
+        self.profile_combo.setCurrentIndex(preselect)
+        self.profile_combo.blockSignals(False)
+
+    def _selected_profile(self, printer_name: str) -> PrinterProfile:
+        """The profile this print run will use.
+
+        The combo when there is one, falling back to :func:`resolve_profile`
+        so the pure path (and any caller constructing the dialog headlessly)
+        behaves as it always did.
+
+        :param printer_name: the printer being printed to.
+        :returns: the profile to print with.
+        """
+        data = self.profile_combo.currentData()
+        if data is None:
+            return self._resolve_profile(printer_name)
+        profile, _is_saved = data
+        return profile
+
+    def _remember_profile_choice(self, printer_name: str) -> None:
+        """Persist a picked preset so the choice sticks for this printer.
+
+        Only when the printer has no stored profile yet. A saved profile is
+        a *calibration* -- printed, measured by hand, and reprinted when the
+        numbers were wrong, which `PrinterProfile.save` calls the most
+        expensive data Deckle holds. Overwriting one with a generic preset
+        because a combo happened to be showing it would destroy that for a
+        gesture the user did not think of as destructive, so this declines
+        rather than clobbers, and the calibration stays preselected anyway.
+
+        Failing to remember is not worth interrupting a print for: the run
+        is already correct, only the memory of the choice is lost.
+
+        :param printer_name: the printer to key the profile by.
+        :returns: nothing.
+        """
+        data = self.profile_combo.currentData()
+        if data is None:
+            return
+        profile, is_saved = data
+        if is_saved:
+            return
+        try:
+            self._profile_loader(printer_name)
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        else:
+            return  # A stored profile exists. Never overwrite it from here.
+        try:
+            profile.save(printer_name)
+        except OSError as exc:
+            log_exception("profile_save_failed", exc, printer=printer_name)
+
     # -- starting a fresh print run ------------------------------------------
 
     def start_print(self) -> None:
@@ -265,7 +406,8 @@ class PrintDialog:
             session on disk, rather than raising.
         """
         printer_name = self.printer_combo.currentText()
-        profile = self._resolve_profile(printer_name)
+        profile = self._selected_profile(printer_name)
+        self._remember_profile_choice(printer_name)
         backend = self._backend_cls(profile)
         sheets = self.signature_combo.currentData()
         kwargs = {} if sheets is None else {"sheets": sheets}

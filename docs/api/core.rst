@@ -26,6 +26,7 @@ of it.
    core.signatures
    core.marks
    core.export
+   core.plan_digest
    core.render
    core.dummy
    core.locate

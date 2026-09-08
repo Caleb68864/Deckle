@@ -511,6 +511,115 @@ def test_load_refuses_a_session_whose_plan_has_changed():
     assert "start a new print run" in error.detail
 
 
+# -- the changes a resume used to sail straight through -------------------
+#
+# `_hash_plan` covered sheet index, side presence and source page indices,
+# and nothing else. Every parameter below survives that hash unchanged while
+# changing what lands on paper, so a back pass resumed after any of them
+# would print onto fronts it no longer lines up with -- discovered only once
+# the stack is ruined. They are the reason the session now shares the
+# exporter's digest rather than keeping a weaker one of its own.
+
+
+def _plan_with(pages, paper_pt=(612.0, 792.0), marks=()):
+    """One sheet carrying ``pages``, so a single field can be varied."""
+    front = Side(pages=tuple(pages), marks=tuple(marks)) if marks else Side(pages=tuple(pages))
+    return SheetPlan(
+        sheets=[Sheet(index=0, front=front, back=Side(pages=(_blank_output_page(),)))],
+        paper_pt=paper_pt,
+        warnings=[],
+    )
+
+
+def _placed(page_index=0, **placement):
+    base = dict(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
+    base.update(placement)
+    return OutputPage(
+        source_ref=SourceRef(
+            path="doc.pdf", page_index=page_index, sha256="0" * 64,
+            width_pt=612.0, height_pt=792.0,
+        ),
+        placement=Placement(**base),
+        is_filler=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "name, changed",
+    [
+        # A wider gutter shifts the page across the sheet.
+        ("gutter", _plan_with([_placed(tx=36.0)])),
+        # A different margin scales it.
+        ("margins", _plan_with([_placed(scale_x=0.94, scale_y=0.94)])),
+        # A2 instead of Letter.
+        ("paper", _plan_with([_placed()], paper_pt=(420.94, 595.28))),
+        # The Rotate button.
+        ("rotation", _plan_with([_placed(rotate_deg=90)])),
+    ],
+)
+def test_hash_plan_notices_a_change_that_moves_ink(name, changed):
+    """Each of these left the old hash identical."""
+    original = _plan_with([_placed()])
+
+    assert _hash_plan(original) != _hash_plan(changed), (
+        f"a change of {name} did not change the plan hash"
+    )
+
+
+def test_hash_plan_notices_a_different_document_with_the_same_pagination():
+    """The old hash recorded page *indices*, so any 2-page PDF matched any
+    other. The source's own digest is what tells them apart."""
+    original = _plan_with([_placed()])
+    other_book = SheetPlan(
+        sheets=[Sheet(
+            index=0,
+            front=Side(pages=(OutputPage(
+                source_ref=SourceRef(
+                    path="doc.pdf", page_index=0, sha256="f" * 64,
+                    width_pt=612.0, height_pt=792.0,
+                ),
+                placement=Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0,
+                                    rotate_deg=0),
+                is_filler=False,
+            ),)),
+            back=Side(pages=(_blank_output_page(),)),
+        )],
+        paper_pt=(612.0, 792.0),
+        warnings=[],
+    )
+
+    assert _hash_plan(original) != _hash_plan(other_book)
+
+
+def test_a_resume_after_a_re_imposition_is_refused_end_to_end():
+    """The whole point, driven through `load`: the operator has reloaded the
+    paper by now, so this refusal is the last thing standing between a
+    changed layout and sixty ruined sheets."""
+    plan = _plan_with([_placed()])
+    session_id = _started_session_id(plan)
+    wider_gutter = _plan_with([_placed(tx=36.0)])
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(wider_gutter, _profile(), StubBackend(), session_id)
+
+    assert exc_info.value.reason == "plan"
+
+
+def test_the_session_and_the_exporter_agree_on_what_a_plan_is():
+    """Two answers to "is this the same plan?" is how they drifted apart.
+
+    The session's is the exporter's, truncated -- so a plan the render cache
+    treats as new can never be one the resume guard treats as unchanged.
+    """
+    from deckle.core import export
+    from deckle.core.plan_digest import plan_digest
+
+    plan = _plan_with([_placed()])
+
+    assert _hash_plan(plan) == plan_digest(plan)[:16]
+    assert export._plan_hash(plan) == plan_digest(plan)
+
+
 def test_load_refuses_a_state_file_from_an_incompatible_version():
     import json
 

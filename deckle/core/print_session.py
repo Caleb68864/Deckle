@@ -38,6 +38,7 @@ from typing import Sequence
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
 from deckle.core.paths import write_text_atomic
+from deckle.core.plan_digest import plan_digest
 from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_passes
 from deckle.core.schema import StoredValueError, check_values
 from deckle.core.profiles import PrinterProfile
@@ -49,7 +50,13 @@ from deckle.core.profiles import PrinterProfile
 # every v1 hash is incomparable with a v2 one. Without the bump, a v1 session
 # would be reported to the user as "the document changed" -- which is a lie,
 # and a confusing one, when what actually changed was Deckle.
-STATE_VERSION = 2
+#
+# 3: ``_hash_plan`` now delegates to ``plan_digest``, which covers paper size,
+# placements, crops and marks rather than page indices alone. Same reasoning
+# as the v2 bump, and the same lie avoided: every v2 hash is incomparable with
+# a v3 one, so without this a session interrupted before the upgrade would be
+# refused on resume with "the document changed" when nothing about it had.
+STATE_VERSION = 3
 
 # Number of sheets submitted per chunk, mirroring SS-08's default.
 DEFAULT_CHUNK_SIZE = 10
@@ -89,42 +96,30 @@ def _state_dir() -> Path:
 
 
 def _hash_plan(plan: SheetPlan) -> str:
-    """A stable hash identifying a plan's sheet content.
+    """The plan fingerprint stored with a session and checked on resume.
 
-    Covers sheet index, side presence, and the **full ordered sequence** of
-    source page indices on each side. Presence plus a single index per side
-    was not enough: a ``Side`` carries as many ``OutputPage``s as the
-    imposition puts on that physical face -- two under ``fold_scheme="folio"``
-    -- so recording only the first collided two plans that laid the same
-    pages down in a different order. A resumed session could then bind to a
-    document that had since been re-imposed. See REQ-014.
+    Delegates to :func:`deckle.core.plan_digest.plan_digest`, which is the
+    single answer to "is this the same plan?" shared with the exporter's
+    render cache. This function used to have its own, much weaker one --
+    sheet index, side presence and source page indices, and nothing else --
+    so a session survived a change of gutter, margins, paper, crop, trim or
+    scale and happily resumed onto geometry that no longer matched the
+    sheets already sitting in the paper tray. Backs printed against fronts
+    they no longer lined up with, and nobody found out until the stack was
+    ruined. That is the precise failure ``StaleSessionError(reason="plan")``
+    is for, and it was not catching it.
 
-    A filler page has no ``source_ref`` and hashes as ``None``. An absent
-    side is ``None`` -- never ``Side(pages=())``, which ``Side.__post_init__``
-    rejects precisely so presence and content stay unambiguous here: the
-    ``front``/``back`` presence booleans are what keep an absent side
-    distinct from a side whose only page is filler.
+    Truncated to 16 hex characters. The full digest is a cache key, where a
+    collision silently serves the wrong page; here a collision means a
+    refusal that should have happened did not, and the value is written into
+    a state file a person may read. 64 bits is far past what an accidental
+    re-imposition will hit, and this comparison has no adversary -- the file
+    is written and read by the same user on the same machine.
+
+    :param plan: the plan being printed.
+    :returns: the first 16 hex characters of the plan digest.
     """
-    payload = json.dumps(
-        [
-            {
-                "index": s.index,
-                "front": s.front is not None,
-                "front_pages": None if s.front is None else [
-                    None if p.source_ref is None else p.source_ref.page_index
-                    for p in s.front.pages
-                ],
-                "back": s.back is not None,
-                "back_pages": None if s.back is None else [
-                    None if p.source_ref is None else p.source_ref.page_index
-                    for p in s.back.pages
-                ],
-            }
-            for s in plan.sheets
-        ],
-        sort_keys=True,
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return plan_digest(plan)[:16]
 
 
 @dataclass(frozen=True)
