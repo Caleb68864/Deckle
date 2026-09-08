@@ -493,3 +493,127 @@ def test_the_grid_offers_a_context_menu_at_all():
     assert (
         view.list_widget.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
     )
+
+
+# -- Rotate and Skip act on the selection, not on one row -----------------
+#
+# The grid is `ExtendedSelection` and the context menu already offered
+# "Move 12 pages to...", but Rotate and Skip both went through
+# `currentRow()`. Selecting twelve scanned pages and rotating turned
+# exactly one of them, from either the button or the menu, with nothing on
+# screen to say the other eleven had been ignored.
+
+
+def _select(view, rows):
+    from PySide6.QtCore import QItemSelectionModel
+
+    model = view.list_widget.selectionModel()
+    model.clearSelection()
+    for row in rows:
+        model.select(
+            view.list_widget.model().index(row, 0),
+            QItemSelectionModel.SelectionFlag.Select,
+        )
+
+
+def test_rotate_turns_every_selected_page():
+    state, view = _view(4)
+    _select(view, [0, 2, 3])
+
+    view._on_rotate_clicked()
+
+    assert [page.rotate_deg for page in state.project.pages] == [90, 0, 90, 90]
+
+
+def test_rotate_turns_each_page_from_its_own_angle():
+    """A selection that is not all facing the same way stays that way."""
+    state, view = _view(3)
+    from deckle.app.views.arrange_view import rotate_many
+
+    rotate_many(state, [1], 180)
+    _select(view, [0, 1, 2])
+
+    view._on_rotate_clicked()
+
+    assert [page.rotate_deg for page in state.project.pages] == [90, 270, 90]
+
+
+def test_rotating_a_selection_is_one_undo_step():
+    """Calling `rotate` in a loop would be simpler and wrong: forty pages
+    would bury forty entries in a bounded stack, so the single Ctrl+Z the
+    user expects would undo one page and lose the rest of their history."""
+    state, view = _view(4)
+    _select(view, [0, 1, 2, 3])
+    before = len(state._undo_stack)
+
+    view._on_rotate_clicked()
+
+    assert len(state._undo_stack) == before + 1
+    state.undo()
+    assert [page.rotate_deg for page in state.project.pages] == [0, 0, 0, 0]
+
+
+def test_skip_marks_the_whole_selection():
+    state, view = _view(4)
+    _select(view, [1, 2])
+
+    view._on_skip_clicked()
+
+    assert [page.skipped for page in state.project.pages] == [False, True, True, False]
+
+
+def test_skip_on_a_mixed_selection_skips_rather_than_inverting_it():
+    """Toggling each page independently is the obvious reading and the
+    wrong one: on a mixed selection it inverts the mixture instead of
+    resolving it, so "skip these" returns the same number of skipped pages
+    in different places."""
+    state, view = _view(4)
+    from deckle.app.views.arrange_view import skip_many
+
+    skip_many(state, [1])
+    _select(view, [0, 1, 2])
+
+    view._on_skip_clicked()
+
+    assert [page.skipped for page in state.project.pages] == [True, True, True, False]
+
+
+def test_skip_unskips_only_when_everything_selected_is_already_skipped():
+    state, view = _view(3)
+    from deckle.app.views.arrange_view import skip_many
+
+    skip_many(state, [0, 1])
+    _select(view, [0, 1])
+
+    view._on_skip_clicked()
+
+    assert [page.skipped for page in state.project.pages] == [False, False, False]
+
+
+def test_the_selection_survives_the_action_so_it_can_be_repeated():
+    """`refresh` rebuilds the list with `clear()`, which drops the
+    selection -- barely noticeable on one page, and fatal to a multi-page
+    gesture: rotating twelve pages 180 degrees means clicking Rotate
+    twice, and after the first click there was nothing left selected."""
+    state, view = _view(4)
+    _select(view, [0, 2])
+
+    view._on_rotate_clicked()
+
+    assert view._selected_indices() == [0, 2]
+
+    view._on_rotate_clicked()
+
+    assert [page.rotate_deg for page in state.project.pages] == [180, 0, 180, 0]
+
+
+def test_a_single_page_still_toggles():
+    """The one-page case is what it always was."""
+    state, view = _view(3)
+    _select(view, [1])
+
+    view._on_skip_clicked()
+    assert state.project.pages[1].skipped is True
+
+    view._on_skip_clicked()
+    assert state.project.pages[1].skipped is False

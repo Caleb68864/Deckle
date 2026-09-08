@@ -36,7 +36,7 @@ from deckle.app.state import (
     set_rotation,
     toggle_skip,
 )
-from deckle.core.models import SourcePage
+from deckle.core.models import Project, SourcePage
 from deckle.core.render import RenderedPage, thumbnails
 
 # How many thumbnails to request around the visible window on either
@@ -145,6 +145,65 @@ def skip(state: AppState, index: int) -> None:
     :raises IndexError: ``index`` is out of range.
     """
     state.mutate(lambda project: toggle_skip(project, index))
+
+
+def rotate_many(state: AppState, indices: Sequence[int], delta_deg: int = 90) -> None:
+    """Turn every page in ``indices`` by ``delta_deg``, as one change.
+
+    One ``mutate`` for the whole gesture, not one per page. Calling
+    :func:`rotate` in a loop would be simpler to write and wrong to use:
+    selecting forty scanned pages and turning them would bury forty
+    entries in a stack that only holds :data:`DEFAULT_UNDO_DEPTH`, so the
+    single Ctrl+Z the user expects would undo one page and the rest of
+    their history would be gone.
+
+    Each page turns from its own current angle, so a selection that is not
+    all facing the same way stays that way, only rotated.
+
+    :param state: the app state to mutate.
+    :param indices: which pages, in any order.
+    :param delta_deg: how far to turn each; normalised downstream.
+    :returns: nothing.
+    :raises IndexError: any index is out of range.
+    """
+    def apply(project: Project) -> Project:
+        for index in indices:
+            project = set_rotation(
+                project, index, project.pages[index].rotate_deg + delta_deg
+            )
+        return project
+
+    state.mutate(apply)
+
+
+def skip_many(state: AppState, indices: Sequence[int]) -> None:
+    """Skip every page in ``indices``, or unskip them if all are skipped.
+
+    Toggling each page independently is the obvious reading and the wrong
+    one: on a mixed selection it inverts the mixture rather than resolving
+    it, so the user asks "skip these" and gets back the same number of
+    skipped pages in different places. Deciding once for the whole
+    selection -- skip unless everything is already skipped -- is what makes
+    the gesture mean what it looks like. For a single page it is still an
+    ordinary toggle.
+
+    :param state: the app state to mutate.
+    :param indices: which pages, in any order.
+    :returns: nothing. An empty selection is a no-op.
+    :raises IndexError: any index is out of range.
+    """
+    rows = list(indices)
+    if not rows:
+        return
+
+    def apply(project: Project) -> Project:
+        skipping = not all(project.pages[index].skipped for index in rows)
+        for index in rows:
+            if project.pages[index].skipped != skipping:
+                project = toggle_skip(project, index)
+        return project
+
+    state.mutate(apply)
 
 
 def blank_insert_choices(page_count: int) -> list[tuple[str, int]]:
@@ -654,21 +713,61 @@ class ArrangeView:
         return row if row >= 0 else None
 
     def _on_rotate_clicked(self) -> None:
-        index = self._selected_index()
-        if index is None:
+        # The whole selection. The list is `ExtendedSelection` and the
+        # context menu already says "Move 12 pages to..." -- but Rotate and
+        # Skip both went through `currentRow()`, so selecting twelve pages
+        # and rotating turned exactly one of them, from either the button
+        # or the menu, with no indication that the other eleven were
+        # ignored.
+        rows = self._selected_indices()
+        if not rows:
             return
-        current = self.state.project.pages[index].rotate_deg
-        rotate(self.state, index, current + 90)
+        rotate_many(self.state, rows)
         self.refresh()
+        self._reselect(rows)
         self.pages_changed.emit()
 
     def _on_skip_clicked(self) -> None:
-        index = self._selected_index()
-        if index is None:
+        rows = self._selected_indices()
+        if not rows:
             return
-        skip(self.state, index)
+        skip_many(self.state, rows)
         self.refresh()
+        self._reselect(rows)
         self.pages_changed.emit()
+
+    def _reselect(self, rows: Sequence[int]) -> None:
+        """Put the selection back after a refresh that did not move anything.
+
+        ``refresh`` rebuilds the list with ``clear()``, which drops the
+        selection. That is barely noticeable on one page and makes a
+        multi-page gesture unusable: rotating twelve pages 180 degrees means
+        clicking Rotate twice, and after the first click there is nothing
+        selected to rotate again.
+
+        Called only from the handlers that leave the page *order* alone.
+        Restoring by row index is correct for those and wrong after a move
+        or an insert, where the same index names a different page -- which
+        is why this is not inside ``refresh`` itself.
+
+        :param rows: the rows to select again.
+        :returns: nothing.
+        """
+        from PySide6.QtCore import QItemSelectionModel
+
+        model = self.list_widget.selectionModel()
+        if model is None:
+            return
+        model.clearSelection()
+        page_count = self.list_widget.count()
+        for row in rows:
+            if 0 <= row < page_count:
+                model.select(
+                    self.list_widget.model().index(row, 0),
+                    QItemSelectionModel.SelectionFlag.Select,
+                )
+        if rows:
+            self.list_widget.setCurrentRow(rows[0], QItemSelectionModel.SelectionFlag.NoUpdate)
 
     def _default_choose_move_target(self, choices):
         """Ask where the selected pages should go.
@@ -722,8 +821,12 @@ class ArrangeView:
             "Move to..." if len(rows) == 1 else f"Move {len(rows)} pages to..."
         )
         menu.addSeparator()
-        rotate_action = menu.addAction("Rotate 90°")
-        skip_action = menu.addAction("Skip / unskip")
+        rotate_action = menu.addAction(
+            "Rotate 90°" if len(rows) == 1 else f"Rotate {len(rows)} pages 90°"
+        )
+        skip_action = menu.addAction(
+            "Skip / unskip" if len(rows) == 1 else f"Skip / unskip {len(rows)} pages"
+        )
         blank_action = menu.addAction("Insert blank...")
 
         chosen = menu.exec(self.list_widget.viewport().mapToGlobal(point))

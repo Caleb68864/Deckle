@@ -119,7 +119,17 @@ def _parse_paper(value: str) -> tuple[float, float]:
     preset = _PAPER_PRESETS.get(value.lower())
     if preset is not None:
         return preset
-    match = re.match(r"^\s*([0-9]*\.?[0-9]+)x([0-9]*\.?[0-9]+)(in|pt|mm)?\s*$", value, re.IGNORECASE)
+    # `cm` belongs here for the same reason it is in `_ACCEPTED_LENGTH_UNITS`
+    # and `_LENGTH_RE`: this parser's own error message lists it. A unit the
+    # program advertises and then rejects reads as a typo in the user's
+    # input rather than a gap in ours. The optional space matches
+    # `_parse_length_pt` too -- "20 x 28 cm" is how a paper size is written
+    # down. B25.
+    match = re.match(
+        r"^\s*([0-9]*\.?[0-9]+)\s*x\s*([0-9]*\.?[0-9]+)\s*(in|pt|mm|cm)?\s*$",
+        value,
+        re.IGNORECASE,
+    )
     if match:
         w, h, unit = match.groups()
         factor = _UNIT_TO_PT[(unit or "pt").lower()]

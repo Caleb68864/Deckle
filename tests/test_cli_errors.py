@@ -242,6 +242,23 @@ def test_failures_are_written_to_the_diagnostic_log(tmp_path):
         ("612x792", (612.0, 792.0)),
         ("612x792pt", (612.0, 792.0)),
         ("3x3pt", (3.0, 3.0)),
+        # `cm` was rejected while this parser's own error message listed it
+        # among the units it takes, and `_ACCEPTED_LENGTH_UNITS` and
+        # `_LENGTH_RE` both carry it. A unit the program advertises and then
+        # refuses reads as a typo in the user's input rather than a gap in
+        # ours. B25.
+        # Written as the conversion rather than as A4's rounded preset:
+        # 21cm is 595.2756pt and the preset says 595.28, which is a real
+        # difference and not the parser's to hide.
+        ("21x29.7cm", (21 * 72 / 2.54, 29.7 * 72 / 2.54)),
+        ("21X29.7CM", (21 * 72 / 2.54, 29.7 * 72 / 2.54)),
+        # Spaces, for the same reason: `_parse_length_pt` accepts "5 cm",
+        # and a paper size is written down with spaces in it. This moved
+        # here from the rejection list below, where it had been sitting
+        # among genuine nonsense with no reason recorded for why a legible
+        # size belonged there.
+        ("8.5 x 11in", (612.0, 792.0)),
+        ("8.5x11 in", (612.0, 792.0)),
     ],
 )
 def test_parse_paper_accepts(value, expected):
@@ -253,7 +270,7 @@ def test_parse_paper_accepts(value, expected):
 
 @pytest.mark.parametrize(
     "value",
-    ["", "x", "8.5x", "x11", "8.5*11", "letterx", "A5", "8.5 x 11in", "-1x5in"],
+    ["", "x", "8.5x", "x11", "8.5*11", "letterx", "A5", "-1x5in", "8.5x11furlongs"],
 )
 def test_parse_paper_rejects_nonsense(value):
     import argparse
