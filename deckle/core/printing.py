@@ -90,6 +90,14 @@ class PrintBackend(Protocol):
     cannot use correctly. ``PrintSession`` submitted five positional
     arguments against the old signature and every back pass silently took
     the front-side defaults.
+
+    A backend also **owns the session-log record** for what it submits:
+    exactly one ``log_print_job`` call per chunk that reached paper, and a
+    failure to write it reported through ``PrintResult.error`` rather than
+    raised. It is declared here because it is a contract and not an
+    implementation detail -- ``PrintSession`` logged each chunk a second
+    time, unguarded, which double-counted every entry and turned an
+    unwritable log into a reprint of the whole pass.
     """
 
     def submit(

@@ -45,6 +45,7 @@ import pytest
 from deckle.app import backend as backend_mod
 from deckle.app.backend import QtPrintBackend
 from deckle.core.models import OutputPage, Placement, Sheet, SheetPlan, Side
+from deckle.core import print_session as session_mod
 from deckle.core.print_session import PrintSession
 from deckle.core.profiles import BUILTIN_PRESETS
 
@@ -176,3 +177,82 @@ def test_a_real_print_failure_still_reports_nothing_submitted(backend, monkeypat
 
     assert result.submitted == 0
     assert "offline" in result.error
+
+
+# -- exactly one writer ----------------------------------------------------
+
+
+def test_a_chunk_reaches_the_session_log_once(backend, monkeypatch):
+    """The record is per chunk of paper, so it is written once per chunk.
+
+    ``PrintSession`` used to log every chunk a second time itself, straight
+    after handing it to the backend. Two entries per chunk is wrong on its
+    own -- the log is what a reprint decision gets made from -- but the
+    duplicate was also the unguarded one, which is the rest of this file's
+    subject.
+    """
+    recorded: list[tuple] = []
+
+    def record(printer, profile, sheets, dpi, pass_index):
+        recorded.append((printer, tuple(sheets), pass_index))
+
+    # Both namespaces, deliberately. `log_print_job` is imported *into* each
+    # module that calls it, so patching one rebinds one name and leaves any
+    # other caller running the real logger -- silently, into the session
+    # state dir. Patching only `backend_mod` is why the duplicate survived
+    # having a test file this thorough written about it. `raising=False`
+    # because the session is not supposed to have the symbol at all any
+    # more: if it reappears, this patch catches its calls rather than
+    # erroring, and the count below is what fails.
+    monkeypatch.setattr(backend_mod, "log_print_job", record)
+    monkeypatch.setattr(session_mod, "log_print_job", record, raising=False)
+
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10)
+
+    session.start()
+
+    assert len(recorded) == 1, f"one chunk, one record -- got {recorded}"
+    assert recorded[0] == ("P", (0, 1, 2), 0)
+
+
+def test_an_unwritable_log_reports_through_the_session_without_raising(backend, failing_log):
+    """Driven through the session, which is where the duplicate call lived.
+
+    Deleting the session's own unguarded ``log_print_job`` leaves exactly
+    one writer, inside the backend's ``try``. The failure now arrives as
+    ``PrintResult.error`` and is reported on ``last_error``; nothing
+    escapes ``start()``.
+    """
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10)
+
+    session.start()
+
+    assert session.last_error is not None, "the failure is still reported"
+    assert backend.printed == [0, 1, 2], "and the paper still came out"
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Open: the cursor does not follow the paper. `PrintResult.submitted` "
+        "is the backend's count of sheets that physically printed -- it is "
+        "set carefully on both branches and read by nobody. `_advance` "
+        "returns on `result.error` before `sheet_cursor += len(chunk)`, so a "
+        "chunk that printed and then failed to log leaves the cursor behind "
+        "it and a resume reprints that paper. Removing the session's "
+        "duplicate log call (B4) closed the traceback route into this; the "
+        "route through the error branch is untouched and is its own decision, "
+        "because advancing past a chunk that only partly printed would be "
+        "worse than reprinting it."
+    ),
+    strict=True,
+)
+def test_the_cursor_follows_the_paper_not_the_bookkeeping(backend, failing_log):
+    """The sheets came out. A resume should ask about three, not zero."""
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10)
+
+    session.start()
+
+    assert session._state.sheet_cursor == 3

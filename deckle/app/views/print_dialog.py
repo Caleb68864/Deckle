@@ -142,6 +142,8 @@ class PrintDialog:
     :param ask_resume_count: asked how many sheets physically emerged
         during the interrupted pass. Software cannot observe that, so it
         is taken as ground truth from the person holding the stack.
+        Returning ``None`` declines the resume and leaves the session
+        untouched; ``0`` is a genuine count, not a refusal.
     :param confirm_reload: shown the reload instruction between passes.
     :param confirm_test_sheet: asked whether the test sheet printed
         correctly.
@@ -163,7 +165,7 @@ class PrintDialog:
         backend_cls=None,
         resumable_lister: Callable[[], list[SessionSummary]] | None = None,
         confirm_resume: Callable[[list[SessionSummary]], SessionSummary | None] | None = None,
-        ask_resume_count: Callable[[SessionSummary], int] | None = None,
+        ask_resume_count: Callable[[SessionSummary], int | None] | None = None,
         confirm_reload: Callable[[str], None] | None = None,
         confirm_test_sheet: Callable[[], bool] | None = None,
         show_offline_error: Callable[[str, str], None] | None = None,
@@ -286,6 +288,11 @@ class PrintDialog:
         if chosen is None:
             return
         count = self._ask_resume_count(chosen)
+        if count is None:
+            # Cancelled at "how many sheets came out?". The session is left
+            # on disk exactly as it was, so the offer comes back next time;
+            # guessing a number here is the one thing that cannot be undone.
+            return
         profile = self._resolve_profile(chosen.printer_name)
         backend = self._backend_cls(profile)
         try:
@@ -363,17 +370,25 @@ class PrintDialog:
         answer = box.exec()
         return summary if answer == self._QMessageBox.StandardButton.Yes else None
 
-    def _default_ask_resume_count(self, summary: SessionSummary) -> int:
+    def _default_ask_resume_count(self, summary: SessionSummary) -> int | None:
+        """How many sheets emerged, or ``None`` if the question was cancelled.
+
+        ``0`` and cancel are different answers and must not collapse into
+        one. Zero is a real, useful reply -- the interrupted pass produced
+        nothing, resume the lot -- so returning it for a dismissed dialog
+        meant Cancel reprinted the entire interrupted pass onto a stack the
+        operator had already reloaded.
+        """
         from PySide6.QtWidgets import QInputDialog
 
-        count, _ok = QInputDialog.getInt(
+        count, ok = QInputDialog.getInt(
             self.widget,
             "Resume print job",
             "How many sheets came out?",
             0,
             0,
         )
-        return count
+        return count if ok else None
 
     def _default_confirm_reload(self, instruction: str) -> None:
         box = self._QMessageBox(self.widget)

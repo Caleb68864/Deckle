@@ -42,24 +42,6 @@ from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_pass
 from deckle.core.schema import StoredValueError, check_values
 from deckle.core.profiles import PrinterProfile
 
-try:
-    from deckle.core.session_log import log_print_job
-except ImportError:  # pragma: no cover - SS-07 (persistence/log) not yet landed
-    def log_print_job(
-        printer: str,
-        profile: PrinterProfile,
-        sheets: Sequence[int],
-        dpi: int,
-        pass_index: int,
-    ) -> None:
-        """Fallback no-op used only until ``deckle.core.session_log`` exists.
-
-        Mirrors the ``log_print_job`` shape from SS-07 exactly so callers
-        never have to change once the real module lands.
-        """
-        return None
-
-
 # Bumped whenever the on-disk state shape changes incompatibly.
 #
 # 2: ``_hash_plan``'s payload gained the full ordered page sequence per side
@@ -565,8 +547,19 @@ class PrintSession:
         index therefore have to be threaded through by hand -- omitting
         them takes the backend's front-side defaults and prints the fronts
         twice, which is what this did until 2026-09-06.
+
+        Writing the session-log record is the backend's job and not this
+        method's. It used to be both: the chunk was logged here as well,
+        so every chunk appeared in the log twice, and this copy was
+        unguarded. `log_print_job` raises rather than swallowing on
+        purpose, and the raise landed *after* the sheets were painted and
+        *before* the cursor was saved -- so a full-disk log turned a
+        successful chunk into a traceback out of `session.start()` and a
+        resume that reprinted every sheet of it. That is precisely the bug
+        the guard in `QtPrintBackend.submit` was written to fix, sitting
+        one call up the stack from the fix.
         """
-        result = self.backend.submit(
+        return self.backend.submit(
             self.plan,
             sheets,
             self.printer_name,
@@ -576,8 +569,6 @@ class PrintSession:
             rotate_backs=pass_.rotate_backs,
             pass_index=pass_.index,
         )
-        log_print_job(self.printer_name, self.profile, sheets, self.dpi, pass_.index)
-        return result
 
     def start(self) -> None:
         """Begin the session: submit the first chunk (or test sheet) of pass 1.

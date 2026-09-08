@@ -275,6 +275,67 @@ def test_reopening_with_interrupted_session_offers_resume_and_prompts_sheet_coun
     assert dialog._session.resumed_with == 7
 
 
+def test_cancelling_the_sheet_count_abandons_the_resume():
+    """Cancel is not "zero sheets came out".
+
+    The prompt asks the one thing software cannot observe, so it has to be
+    answerable with "I do not know" -- and the dialog it uses reports that
+    as a separate flag beside the number, which was being discarded. Cancel
+    therefore read as ``0``: resume from the very start of the interrupted
+    pass and reprint all of it, onto a stack the operator has by this point
+    already reloaded. Nothing about that is recoverable once the paper is
+    through the machine.
+    """
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=0,
+        sheet_cursor=3,
+        state_path="/tmp/abc123.json",
+    )
+    loaded = []
+
+    class WatchfulSession(_StubSession):
+        @classmethod
+        def load(cls, plan, profile, backend, session_id):
+            loaded.append(session_id)
+            return super().load(plan, profile, backend, session_id)
+
+    dialog = _make_dialog(
+        session_cls=WatchfulSession,
+        resumable_lister=lambda: [summary],
+        confirm_resume=lambda resumable: resumable[0],
+        ask_resume_count=lambda chosen: None,
+    )
+
+    assert loaded == [], "a declined resume must not even load the session"
+    assert dialog._session is None
+
+
+def test_zero_sheets_is_a_real_answer_and_still_resumes():
+    """The other half of the same rule. "Nothing came out" is exactly what
+    someone says when the printer jammed on the first sheet, and it must
+    still resume -- from 0, reprinting the pass on purpose."""
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=0,
+        sheet_cursor=3,
+        state_path="/tmp/abc123.json",
+    )
+
+    dialog = _make_dialog(
+        resumable_lister=lambda: [summary],
+        confirm_resume=lambda resumable: resumable[0],
+        ask_resume_count=lambda chosen: 0,
+    )
+
+    assert dialog._session is not None
+    assert dialog._session.resumed_with == 0
+
+
 def test_no_resumable_sessions_means_no_resume_prompt():
     calls = []
     dialog = _make_dialog(
