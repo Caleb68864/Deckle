@@ -260,15 +260,18 @@ def test_pages_that_keep_nothing_fails_cleanly(tmp_path, capsys, monkeypatch):
     """
     from dataclasses import replace
 
-    import deckle.cli as cli
+    from deckle.cli import commands
 
     source = _dummy(tmp_path, 4)
-    real = cli._load_source
+    real = commands._load_source
 
     def all_skipped(path):
         return [replace(page, skipped=True) for page in real(path)]
 
-    monkeypatch.setattr(cli, "_load_source", all_skipped)
+    # `deckle.cli._load_source` is a re-export -- a different binding --
+    # and patching it would leave `_load_source_or_report` calling the real
+    # loader.
+    monkeypatch.setattr(commands, "_load_source", all_skipped)
     out = tmp_path / "job.deckle"
 
     rc = main(["impose", source, "-o", str(out), "--pages", "1-4"])

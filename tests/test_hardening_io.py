@@ -262,13 +262,18 @@ def test_a_rejected_output_path_costs_no_imposition_work(tmp_path, monkeypatch, 
 
     Imposing a 300-page book and only then discovering the output folder
     does not exist wastes the user's time for no reason.
+
+    The patch targets the module that *calls* the name, not the package
+    that re-exports it: ``deckle.cli._load_source`` is a separate binding,
+    and patching it would bind nothing while this test kept passing -- the
+    error it asserts arrives before the loader is reached either way.
     """
-    from deckle import cli
+    from deckle.cli import commands
 
     def fail_if_called(path):
         raise AssertionError("the source was loaded despite a bad output path")
 
-    monkeypatch.setattr(cli, "_load_source", fail_if_called)
+    monkeypatch.setattr(commands, "_load_source", fail_if_called)
 
     rc = main(["export", FIXTURE, "-o", str(tmp_path / "nope" / "out.pdf")])
 

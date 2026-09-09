@@ -229,10 +229,11 @@ def _format_sheet_list(indices: Sequence[int]) -> str:
     """Sheet indices as a ``--sheets`` value, with runs collapsed.
 
     ``[0, 1, 2, 4]`` becomes ``0-2,4`` -- the same notation
-    :func:`_parse_sheet_selection` accepts, so what a dry run prints can be
-    pasted straight back into the real command. Order is preserved and
-    repeats are kept, because both are meaningful to ``--sheets`` and
-    tidying them here would describe a job other than the one planned.
+    :func:`deckle.cli.values._parse_sheet_selection` accepts, so what a dry
+    run prints can be pasted straight back into the real command. Order is
+    preserved and repeats are kept, because both are meaningful to
+    ``--sheets`` and tidying them here would describe a job other than the
+    one planned.
 
     :param indices: the sheets, in the order they will be written.
     :returns: the collapsed list, or ``"none"`` when empty.
