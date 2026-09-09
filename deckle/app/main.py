@@ -1001,6 +1001,25 @@ class MainWindow:
         # here rather than only at exit, because scrubbing one long
         # document and then opening another is an ordinary session.
         clear_sheet_cache()
+        # The outgoing AppState is about to become unreachable while it is
+        # still holding up to `autosave_delay_s` of edits behind a debounce
+        # timer, and dropping the reference does not cancel that timer.
+        # Both halves of that are bugs. The user loses the last half-second
+        # of work on the project they are leaving -- the interval autosave
+        # exists to protect -- and the orphaned daemon timer then fires
+        # against the *old* project and writes it to the old project's
+        # autosave, minutes after the user moved on, so the next open of
+        # that project offers back a file whose mtime says "you crashed".
+        #
+        # Flushing does both jobs at once: it cancels the timer and writes
+        # what the timer was holding. Same call `close()` makes, for the
+        # same reason -- swapping the project out is a close as far as the
+        # outgoing state is concerned.
+        #
+        # After `_recover_autosave_if_offered`, not before: the offer is
+        # decided on the autosave's mtime, and flushing first would make
+        # reopening the currently-loaded project always look like a crash.
+        self._flush_outgoing_state()
         self.state = AppState(project, project_path=path)
         self.import_view.state = self.state
         self.arrange_view.state = self.state
@@ -1013,6 +1032,21 @@ class MainWindow:
         )
         log_event("project_opened", path=path, pages=len(project.pages))
         return True
+
+    def _flush_outgoing_state(self) -> None:
+        """Write and disarm the ``AppState`` that is about to be replaced.
+
+        :returns: nothing, and never raises. An autosave that cannot be
+            written must not be what stops the user opening another
+            project -- they asked for the new project, and refusing it
+            would lose the new work as well as the old.
+        """
+        try:
+            self.state.flush_autosave()
+        except OSError as exc:
+            log_exception(
+                "autosave_flush_failed", exc, path=self.state.autosave_path
+            )
 
     def _on_save_project_clicked(self) -> None:
         """Save the current job as a ``.deckle``.
