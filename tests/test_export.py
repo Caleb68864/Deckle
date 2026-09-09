@@ -632,6 +632,100 @@ def test_a_pass_keeps_one_page_per_sheet_even_where_a_face_is_absent(tmp_path):
         assert len(pdf.pages) == 2, "a pass must not shift its own registration"
 
 
+# --- BEHAVIORAL: one answer to "which page is this face" ---------------
+#
+# `export` writes one page per face that EXISTS, front first, so a sheet
+# with a back and no front puts that back at page 0 and not page 1.
+# `render.render_sheet` used to work that out a second time from its own
+# `has_front`/`has_back` pair, under a comment naming this module. Two
+# implementations of a fold/face order can share a bug and agree -- unlike
+# `saddle_order` and the fold simulator in `tests/test_layout_saddle.py`,
+# which are two DELIBERATELY independent derivations checked against each
+# other, this pair was never checked against anything. It is now one
+# function, and the tests below are what would have caught them drifting.
+
+
+def _sheet_without_a_front(index: int = 0) -> Sheet:
+    return Sheet(
+        index=index,
+        front=None,
+        back=Side(
+            pages=(
+                OutputPage(
+                    source_ref=None,
+                    placement=Placement(
+                        scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0
+                    ),
+                    is_filler=True,
+                ),
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "sheet_factory",
+    [_sheet_without_a_back, _sheet_without_a_front],
+    ids=["front-only", "back-only"],
+)
+def test_face_page_index_matches_what_export_writes(tmp_path, sheet_factory):
+    """The helper's answer is checked against the artifact, not asserted.
+
+    A both-faces export is opened and every face that exists is looked up
+    through ``face_page_index``; the page count is the number of faces
+    that exist. The back-only sheet is the shape where a positional guess
+    and the real page numbering disagree, and it is the one no plan
+    Deckle currently produces -- ``_pad_to_even`` sees to it -- so the
+    ``Sheet`` is built by hand.
+    """
+    sheet = sheet_factory(0)
+    plan = SheetPlan(sheets=[sheet], paper_pt=LETTER, warnings=[])
+    out = os.path.join(str(tmp_path), "both.pdf")
+
+    export_fn(plan, out)
+
+    faces = export._sides(sheet, None)
+    with pikepdf.open(out) as pdf:
+        assert len(pdf.pages) == len(faces)
+        for side in ("front", "back"):
+            face = getattr(sheet, side)
+            if face is None:
+                continue
+            index = export.face_page_index(sheet, side)
+            assert index is not None
+            assert index < len(pdf.pages)
+            assert faces[index] is face
+
+
+def test_face_page_index_is_none_for_a_face_that_does_not_exist():
+    """``None`` means "nothing to read", not "page 0"."""
+    assert export.face_page_index(_sheet_without_a_back(0), "back") is None
+    assert export.face_page_index(_sheet_without_a_front(0), "front") is None
+
+
+def test_face_page_index_does_not_confuse_two_identical_faces():
+    """``Side`` is a frozen dataclass, so a sheet blank on both sides has
+    two faces that compare equal. A lookup by value -- ``_sides(sheet,
+    None).index(face)`` -- would find the front and report page 0 for the
+    back, on the one sheet shape where nobody would notice."""
+    blank = Side(
+        pages=(
+            OutputPage(
+                source_ref=None,
+                placement=Placement(
+                    scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0
+                ),
+                is_filler=True,
+            ),
+        )
+    )
+    sheet = Sheet(index=0, front=blank, back=blank)
+
+    assert sheet.front == sheet.back
+    assert export.face_page_index(sheet, "front") == 0
+    assert export.face_page_index(sheet, "back") == 1
+
+
 def test_asking_for_no_particular_side_still_writes_both(tmp_path):
     plan = _plan_from_source(tmp_path, 4)
     out = os.path.join(str(tmp_path), "both.pdf")

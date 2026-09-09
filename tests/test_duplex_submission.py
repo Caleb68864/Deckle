@@ -20,6 +20,11 @@ printer's registration would have had that measurement silently dropped
 -- on precisely the printers good enough to have a duplexer. Costless
 while nothing calls it, and a lost calibration the moment something does.
 
+A dead-code sweep will find this method and want to delete it. It is not
+scaffolding: it is the whole of F9, it is tested, and the offset trap
+above is the reason a rewrite from scratch would be worse than keeping
+it. ``test_nothing_in_deckle_calls_this_yet`` is what says so out loud.
+
 Whether a *hardware* duplexer should get an offset measured for a hand
 reload is a genuine open question, and this file does not settle it. It
 pins the weaker thing that is true either way: **a measured number is not

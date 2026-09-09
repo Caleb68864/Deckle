@@ -32,7 +32,7 @@ from PIL import Image
 from deckle.core.diagnostics import log_exception
 from deckle.core.models import LayoutWarning, SourcePage, SourceRef
 from deckle.core.paths import atomic_output, data_dir
-from deckle.core.render import pdfium_guard
+from deckle.core.pdfium_lock import pdfium_guard
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 
