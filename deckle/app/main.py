@@ -13,9 +13,18 @@ from __future__ import annotations
 import logging
 import os
 import warnings
+from dataclasses import dataclass
+from typing import Literal, Sequence
 
+from deckle.app.menus import MENUS, build_menu_bar
 from deckle.app.state import AppState, autosave_path_for
-from deckle.core.diagnostics import log_event, log_exception
+from deckle.core import about
+from deckle.core.diagnostics import (
+    diagnostics_log_path,
+    data_dir as diagnostics_dir,
+    log_event,
+    log_exception,
+)
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
@@ -36,6 +45,7 @@ from deckle.core.project_io import (
     load_project,
     save_project,
 )
+from deckle.core.printing import pass_export
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 from deckle.core import recent
 
@@ -51,10 +61,31 @@ empty Deckle led with a complaint about hardware the user does not need yet.
 The first message should name the first step.
 """
 
+UNSAVED_CHANGES_QUESTION = (
+    "{name} has changes you have not saved.\n\n"
+    "Save them before {action}?"
+)
+"""Asked before a document is thrown away.
+
+Deckle has autosaved on every edit since the MVP, and autosave is not a
+save: it writes `<project>.autosave` so it can never clobber the file the
+user named, and it is offered back only as crash recovery. So closing a
+window full of an afternoon's reordering has always lost that work from
+the user's own file, silently, with the recovery prompt as the only way
+back -- and the recovery prompt appears on the *next* open, which is not
+where anybody looks for it.
+"""
+
+UNTITLED_PROJECT_NAME = "This document"
+"""What the prompts call a project that has never been saved."""
+
+
 NOTHING_TO_SAVE_MESSAGE = "Nothing to save yet -- import a PDF or images first."
 
 SAVE_PROJECT_TOOLTIP = (
     "Save this job as a .deckle project so you can come back to it.\n\n"
+    "Saves straight back to the project's own file; a job that has never "
+    "been saved asks where to put it.\n\n"
     "Saves the page order, rotations, skips, blanks and every layout "
     "setting -- not the PDF. Use Save PDF for the imposed document."
 )
@@ -405,11 +436,112 @@ def _recent_label(path: str) -> str:
     return f"{os.path.basename(path)}  --  {os.path.dirname(path)}"
 
 
+PROJECT_SUFFIX = ".deckle"
+
+#: What a dropped *source* may be. A folder is accepted whatever it is
+#: called; `load_image_dir` is the one that decides whether it holds images,
+#: and it already says so in words a person can act on.
+DROPPABLE_SOURCE_SUFFIXES = (".pdf",)
+
+DROP_REJECTED_MESSAGE = (
+    "Deckle takes one PDF, one folder of images, or one .deckle project at "
+    "a time -- drop one of those."
+)
+
+
+@dataclass(frozen=True)
+class Drop:
+    """What a dropped path turned out to be.
+
+    :ivar kind: ``"project"`` for a ``.deckle`` to open, ``"source"`` for
+        something to import.
+    :ivar path: the local path.
+    """
+
+    kind: Literal["project", "source"]
+    path: str
+
+
+def classify_drop(paths: Sequence[str], is_dir=os.path.isdir) -> Drop | None:
+    """What, if anything, a drop of ``paths`` should do.
+
+    Dragging a PDF onto the window is how most people expect to get into an
+    imposition tool, and nothing in Deckle set ``acceptDrops`` at all. This
+    is the whole of the decision, kept out of the event handler so it can be
+    tested without a display or a drag.
+
+    One path, deliberately. Two PDFs dropped together look like one gesture
+    and are two imports, which the import view runs on one background thread
+    at a time; sequencing them is a queue, and a queue that silently
+    reorders someone's book is worse than a refusal that names the rule.
+
+    :param paths: the local paths carried by the drop, in the order Qt
+        reported them.
+    :param is_dir: how to ask whether a path is a directory. Injected so a
+        test can classify paths that do not exist.
+    :returns: the drop, or ``None`` when it is not something Deckle takes.
+    """
+    if len(paths) != 1:
+        return None
+    path = paths[0]
+    if path.lower().endswith(PROJECT_SUFFIX):
+        return Drop(kind="project", path=path)
+    if is_dir(path):
+        return Drop(kind="source", path=path)
+    if path.lower().endswith(DROPPABLE_SOURCE_SUFFIXES):
+        return Drop(kind="source", path=path)
+    return None
+
+
+def suggested_pass_export_name(source_name: str, side: str) -> str:
+    """The filename for a one-pass export of ``source_name``.
+
+    ``book-deckle.pdf`` becomes ``book-deckle-front.pdf``. The side is in
+    the name because the two files are indistinguishable once they leave
+    this machine -- the whole point of the feature is handing them to a
+    copy shop -- and printing the back pass first ruins the stack.
+
+    :param source_name: the name a whole-document export would get.
+    :param side: ``"front"`` or ``"back"``.
+    :returns: the suggested filename.
+    """
+    stem, ext = os.path.splitext(source_name)
+    return f"{stem}-{side}{ext or '.pdf'}"
+
+
+def _open_folder(path: str) -> bool:
+    """Show ``path`` in the desktop's file manager.
+
+    A patchable seam, like :func:`_new_thread`: a test must be able to
+    assert that Help > Open diagnostics folder asked for the right
+    directory without a file manager opening on the developer's screen.
+
+    Strictly a ``file://`` URL. Deckle does not contact the network for
+    anything, and the one function in the program that could is this one --
+    ``QDesktopServices.openUrl`` will happily open ``https://`` too, so the
+    URL is built from a local path and never from a string a caller supplied.
+
+    :param path: the directory to show.
+    :returns: whether the desktop accepted it.
+    """
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    return bool(QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+
+
 def _new_menu(parent):
     """A ``QMenu``. Patchable seam, like :func:`_new_thread`."""
     from PySide6.QtWidgets import QMenu
 
     return QMenu(parent)
+
+
+def _qt_selectable_text():
+    """``Qt.TextInteractionFlag.TextSelectableByMouse``, imported lazily."""
+    from PySide6.QtCore import Qt
+
+    return Qt.TextInteractionFlag.TextSelectableByMouse
 
 
 def _qt_message_box():
@@ -458,6 +590,12 @@ class MainWindow:
 
         self.state = AppState(default_project(), project_path=project_path)
 
+        #: ``{action name: QAction}`` for the menu bar, filled in by
+        #: :func:`deckle.app.menus.build_menu_bar`. Empty until then, so
+        #: the enable/disable helpers below can run at any point in
+        #: construction without asking whether the menus exist yet.
+        self.menu_actions: dict = {}
+
         #: How a saved calibration is loaded. Injected rather than reached
         #: for, so a test can drive a calibrated printer without writing
         #: one into the user's real config directory -- and so the preview
@@ -469,7 +607,11 @@ class MainWindow:
         self.profile = DEFAULT_PROFILE
 
         self.window = QMainWindow()
-        self.window.setWindowTitle("Deckle")
+        # `[*]` is Qt's placeholder for the modified marker; it is replaced
+        # by an asterisk (or the platform's own convention) when
+        # `setWindowModified(True)` and by nothing otherwise. The title is
+        # rewritten whenever the project changes -- see `_sync_title`.
+        self.window.setWindowTitle("Deckle[*]")
         # Closing the window is the usual way out, and it does not go
         # through `close()` below -- Qt calls closeEvent directly. Without
         # this, quitting mid-render crashed on exit.
@@ -533,21 +675,16 @@ class MainWindow:
         )
         controls_layout.addWidget(self.open_project_button)
 
-        # A menu rather than a submenu of Open: the list is the whole
-        # point, and burying it one click deeper than the dialog it
-        # exists to save you from would defeat it.
-        self.recent_button = QPushButton("Recent projects", controls)
-        self.recent_button.setToolTip(
-            "Projects you have opened or saved, most recent first.\n\n"
-            "A project on a drive that is not currently connected is "
-            "hidden rather than forgotten, and comes back when the "
-            "drive does."
-        )
-        self._recent_menu = _new_menu(self.recent_button)
-        self.recent_button.setMenu(self._recent_menu)
-        controls_layout.addWidget(self.recent_button)
+        # Recent projects lives in the File menu now that there is one.
+        # It used to be a button in this column, on the argument that
+        # burying the list a click deeper than the dialog it exists to
+        # replace would defeat it -- true when the alternative was a
+        # submenu of a submenu, and no longer true when File is one
+        # keystroke away and holds every other way into a document.
+        self._recent_menu = _new_menu(self.window)
+        self._recent_menu.setToolTipsVisible(True)
 
-        self.save_project_button = QPushButton("Save project...", controls)
+        self.save_project_button = QPushButton("Save project", controls)
         self.save_project_button.setToolTip(SAVE_PROJECT_TOOLTIP)
         controls_layout.addWidget(self.save_project_button)
 
@@ -613,12 +750,12 @@ class MainWindow:
         self.arrange_view.page_selected.connect(self._on_page_selected)
         self.layout_panel.layout_changed.connect(self._on_layout_changed)
         self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
-        self.print_button.clicked.connect(self._on_print_clicked)
-        self.save_pdf_button.clicked.connect(self._on_save_pdf_clicked)
+        self.print_button.clicked.connect(self.print_document)
+        self.save_pdf_button.clicked.connect(self.save_pdf)
         self.undo_button.clicked.connect(self.undo)
         self.redo_button.clicked.connect(self.redo)
-        self.open_project_button.clicked.connect(self._on_open_project_clicked)
-        self.save_project_button.clicked.connect(self._on_save_project_clicked)
+        self.open_project_button.clicked.connect(self.open_project_dialog)
+        self.save_project_button.clicked.connect(self.save_project)
 
         # Known-empty until the background query returns, so nothing reads
         # an undefined attribute if the user clicks Print immediately.
@@ -633,9 +770,33 @@ class MainWindow:
         #: bar has ONE writer and a later import cannot leave a stale
         #: instruction up.
         self._printer_message = ""
+        #: Asked, before a document is thrown away, what to do with the
+        #: unsaved work. Injected the way `confirm_recovery` is, so the
+        #: whole close/open flow is drivable without a modal.
+        self.confirm_discard_changes = self._default_confirm_discard_changes
+        #: Asked whether a dropped source is added to the document or
+        #: replaces it. Injected for the same reason.
+        self.confirm_drop_append = self._default_confirm_drop_append
+        #: Asked which pass a single-pass export should write.
+        self.choose_export_pass = self._default_choose_export_pass
+
+        # Dropping a PDF on the window is how most people expect to open
+        # one, and nothing in Deckle accepted a drop at all.
+        self.window.setAcceptDrops(True)
+        self.window.dragEnterEvent = self._on_drag_enter
+        self.window.dropEvent = self._on_drop
+
+        self.menu_actions = build_menu_bar(
+            self.window,
+            self,
+            MENUS,
+            scope_widgets={"grid": self.arrange_view.list_widget},
+        )
+
         self._refresh_recent_menu()
         self._sync_document_actions()
         self._sync_history_actions()
+        self._sync_title()
         self._install_shortcuts()
         self.refresh_printers()
 
@@ -650,6 +811,14 @@ class MainWindow:
         """
         has_pages = bool(self.state.project.pages)
         self.save_pdf_button.setEnabled(has_pages)
+        # The menu entries are the same commands as the buttons, so they
+        # have to be unavailable at the same moments -- a greyed button
+        # beside a live menu item is the app disagreeing with itself.
+        for name in ("save_pdf", "save_project", "save_project_as",
+                     "export_single_pass"):
+            action = self.menu_actions.get(name)
+            if action is not None:
+                action.setEnabled(has_pages)
         # Opening is always available; saving needs something to save.
         self.save_project_button.setEnabled(has_pages)
         self.save_project_button.setToolTip(
@@ -662,6 +831,9 @@ class MainWindow:
         # Hand the preview the settings too, so its content-box guide
         # tracks the gutter/margins rather than going stale.
         self.preview_view.on_layout_changed(plan, self.state.project.layout)
+        # A margin is as much a change to the job as a reordered page, and
+        # closing without saving loses it just as completely.
+        self._sync_title()
 
     def _on_imported(self, pages, warnings) -> None:
         self.arrange_view.refresh()
@@ -674,6 +846,7 @@ class MainWindow:
         # after an import means the app is giving an instruction the user has
         # already carried out.
         self._refresh_status_message()
+        self._sync_title()
         self.preview_view.on_layout_changed(recompute_plan(self.state.project))
 
     def _on_pages_changed(self) -> None:
@@ -693,6 +866,7 @@ class MainWindow:
         self._sync_document_actions()
         self._refresh_status_message()
         self._sync_history_actions()
+        self._sync_title()
 
     def _on_page_selected(self, page_index: int) -> None:
         """Follow the arrange grid's selection in the preview.
@@ -791,6 +965,9 @@ class MainWindow:
         self._printers = list(printers)
         has_printers = bool(printers)
         self.print_button.setEnabled(has_printers)
+        print_action = self.menu_actions.get("print_document")
+        if print_action is not None:
+            print_action.setEnabled(has_printers)
         if has_printers:
             self.print_button.setToolTip("")
             self._printer_message = ""
@@ -842,7 +1019,7 @@ class MainWindow:
         # border on screen until something else happened to refresh.
         self.preview_view.refresh()
 
-    def _on_print_clicked(self) -> None:
+    def print_document(self) -> None:
         # Use the cached list rather than re-enumerating: a second query
         # would re-introduce exactly the block this moved off the UI thread.
         printers = self._printers
@@ -864,6 +1041,305 @@ class MainWindow:
         # put the two halves of the same answer on screen at once.
         self.set_printer_profile(self.print_dialog.selected_profile())
         self.status_bar.showMessage(f"{len(printers)} printer(s) available.")
+
+    # -- menu commands -------------------------------------------------
+    # Every one of these is named by `deckle.app.menus.MENUS`. They are
+    # thin on purpose: the menu is a second way to reach the commands the
+    # buttons already reach, never a second implementation of them.
+
+    def import_pdf(self) -> None:
+        """Ask for a PDF and import it.
+
+        :returns: nothing.
+        """
+        self.import_view.pick_pdf()
+
+    def import_images(self) -> None:
+        """Ask for a folder of images and import it.
+
+        :returns: nothing.
+        """
+        self.import_view.pick_images()
+
+    def zoom_in(self) -> None:
+        """Step the preview one zoom stop closer."""
+        self.preview_view.zoom_in()
+
+    def zoom_out(self) -> None:
+        """Step the preview one zoom stop further away."""
+        self.preview_view.zoom_out()
+
+    def zoom_actual(self) -> None:
+        """Show the sheet at the size it will print."""
+        self.preview_view.zoom_actual()
+
+    def zoom_fit(self) -> None:
+        """Fit the whole sheet in the window."""
+        self.preview_view.zoom_fit()
+
+    def next_sheet(self) -> None:
+        """Show the next sheet."""
+        self.preview_view.next_sheet()
+
+    def previous_sheet(self) -> None:
+        """Show the previous sheet."""
+        self.preview_view.previous_sheet()
+
+    def first_sheet(self) -> None:
+        """Show the first sheet."""
+        self.preview_view.go_to_first_sheet()
+
+    def last_sheet(self) -> None:
+        """Show the last sheet."""
+        self.preview_view.go_to_last_sheet()
+
+    def rotate_selection(self) -> None:
+        """Turn the pages selected in the grid by 90 degrees."""
+        self.arrange_view.rotate_selection()
+
+    def skip_selection(self) -> None:
+        """Skip, or unskip, the pages selected in the grid.
+
+        :returns: nothing.
+
+        Bound to Delete as well as S. Deckle has no destructive page
+        removal -- a skipped page keeps its slot in the document, which is
+        what lets it come back -- so skipping is what "leave this one out"
+        means here, and it is what the Delete key should reach.
+        """
+        self.arrange_view.skip_selection()
+
+    def insert_blank(self) -> None:
+        """Ask where a blank page goes, and put one there."""
+        self.arrange_view.insert_blank_at_choice()
+
+    def quit(self) -> None:
+        """Close the window, prompting for unsaved work on the way out."""
+        self.window.close()
+
+    def show_about(self) -> None:
+        """Say what this build is, and where its diagnostic log lives.
+
+        The GUIDE tells anyone reporting a problem to send the output of
+        ``deckle --version`` and the JSON Lines log. Until now the app
+        offered neither, so a desktop user following those instructions
+        had to be talked through their operating system's data directory
+        by hand.
+
+        No network is touched, and the box says so: there is no update
+        check to make and no version to compare against.
+
+        :returns: nothing.
+        """
+        QMessageBox = _qt_message_box()
+        box = QMessageBox(self.window)
+        box.setWindowTitle("About Deckle")
+        box.setText(about.about_text(str(diagnostics_log_path())))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        # The log path is the one thing in here somebody has to act on,
+        # and reading a path off a screen and retyping it is how support
+        # requests end up naming a file that does not exist.
+        box.setTextInteractionFlags(_qt_selectable_text())
+        box.exec()
+
+    def open_diagnostics_folder(self) -> bool:
+        """Show the folder holding the diagnostic log.
+
+        Created if it is not there yet: a user asking for the folder
+        before anything has been logged should be shown an empty folder,
+        not told there isn't one.
+
+        :returns: whether the desktop opened it. A refusal is reported in
+            the status bar along with the path, which is the answer the
+            user actually needed.
+        """
+        folder = diagnostics_dir()
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log_exception("diagnostics_folder_create_failed", exc, path=str(folder))
+        opened = _open_folder(str(folder))
+        if opened:
+            self.status_bar.showMessage(f"Diagnostics folder: {folder}")
+        else:
+            self.status_bar.showMessage(
+                f"Could not open the diagnostics folder -- it is at {folder}"
+            )
+            log_event("diagnostics_folder_open_failed", path=str(folder))
+        return opened
+
+    # -- unsaved work ----------------------------------------------------
+
+    def _sync_title(self) -> None:
+        """Put the project's name, and whether it is modified, in the title.
+
+        Qt's own mechanism: the title carries a ``[*]`` placeholder and
+        ``setWindowModified`` decides whether it renders as an asterisk.
+        That is what makes the marker look native -- on macOS it is a dot
+        in the close button, not an asterisk at all -- and it is why this
+        is not a string Deckle assembles itself.
+
+        :returns: nothing.
+        """
+        path = self.state.project_path
+        name = os.path.basename(path) if path else "Untitled"
+        self.window.setWindowTitle(f"{name}[*] -- Deckle")
+        self.window.setWindowModified(self.state.dirty)
+
+    def has_unsaved_changes(self) -> bool:
+        """Whether there is work worth stopping to ask about.
+
+        An empty document is never worth a prompt: there is nothing in it
+        to lose, and a prompt on the way out of a window the user never
+        put anything into is how people learn to dismiss prompts without
+        reading them.
+
+        :returns: whether to ask before discarding.
+        """
+        return self.state.dirty and bool(self.state.project.pages)
+
+    def _confirm_discard(self, action: str) -> bool:
+        """Ask about unsaved work, and act on the answer.
+
+        :param action: what is about to happen, as a phrase that completes
+            "Save them before ...?" -- ``"closing"``, ``"opening another
+            project"``.
+        :returns: whether to go ahead. ``False`` means the user cancelled,
+            or asked to save and the save did not happen -- a failed save
+            must not be followed by the discard it was meant to prevent.
+        """
+        if not self.has_unsaved_changes():
+            return True
+        path = self.state.project_path
+        name = os.path.basename(path) if path else UNTITLED_PROJECT_NAME
+        answer = self.confirm_discard_changes(name, action)
+        if answer == "cancel":
+            return False
+        if answer == "discard":
+            log_event("unsaved_changes_discarded", pages=len(self.state.project.pages))
+            return True
+        return self.save_project()
+
+    def _default_confirm_discard_changes(self, name: str, action: str) -> str:
+        """Ask whether to save, discard or stay. Replaceable for tests.
+
+        :param name: the project's file name, or
+            :data:`UNTITLED_PROJECT_NAME`.
+        :param action: the phrase completing the question.
+        :returns: ``"save"``, ``"discard"`` or ``"cancel"``.
+        """
+        QMessageBox = _qt_message_box()
+        box = QMessageBox(self.window)
+        box.setWindowTitle("Unsaved changes")
+        box.setText(UNSAVED_CHANGES_QUESTION.format(name=name, action=action))
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel
+        )
+        # Cancel is the default so that a reflexive Return keeps the work.
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        answer = box.exec()
+        if answer == QMessageBox.StandardButton.Save:
+            return "save"
+        if answer == QMessageBox.StandardButton.Discard:
+            return "discard"
+        return "cancel"
+
+    # -- drag and drop ---------------------------------------------------
+
+    def _dropped_paths(self, event) -> list[str]:
+        """The local paths a drag event carries.
+
+        :param event: the ``QDragEnterEvent`` or ``QDropEvent``.
+        :returns: the local file paths, ignoring any URL that does not name
+            one -- a link dragged out of a browser is not a document.
+        """
+        mime = event.mimeData()
+        if not mime.hasUrls():
+            return []
+        return [url.toLocalFile() for url in mime.urls() if url.isLocalFile()]
+
+    def _on_drag_enter(self, event) -> None:
+        """Accept the drag only if the drop would do something.
+
+        :param event: the ``QDragEnterEvent``.
+        :returns: nothing. Refusing here is what makes the cursor say no
+            over a file Deckle cannot take, instead of accepting the drop
+            and then explaining.
+        """
+        if classify_drop(self._dropped_paths(event)) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def _on_drop(self, event) -> None:
+        """Open or import what was dropped on the window.
+
+        :param event: the ``QDropEvent``.
+        :returns: nothing. Anything Deckle does not take is refused with a
+            message naming what it does take.
+        """
+        drop = classify_drop(self._dropped_paths(event))
+        if drop is None:
+            self.status_bar.showMessage(DROP_REJECTED_MESSAGE)
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        log_event("dropped", kind=drop.kind, path=drop.path)
+        if drop.kind == "project":
+            self.open_project(drop.path)
+            return
+        self.import_dropped_source(drop.path)
+
+    def import_dropped_source(self, path: str) -> None:
+        """Import a dropped PDF or image folder, asking what to do with it.
+
+        A drop onto an empty Deckle can only mean one thing, so it does
+        not ask. A drop onto a document that already has pages is genuinely
+        ambiguous -- the import bar offers "Add to the current document"
+        precisely because both answers are normal for the books this
+        program is for -- and picking one silently would either throw away
+        the user's document or bury a replacement at the end of it.
+
+        :param path: the dropped source.
+        :returns: nothing. Cancelling imports nothing at all.
+        """
+        if not self.state.project.pages:
+            self.import_view.import_path(path, append=False)
+            return
+        append = self.confirm_drop_append(os.path.basename(path))
+        if append is None:
+            return
+        self.import_view.import_path(path, append=append)
+
+    def _default_confirm_drop_append(self, name: str) -> bool | None:
+        """Ask whether a dropped source adds to the document or replaces it.
+
+        :param name: the dropped file's name.
+        :returns: ``True`` to add, ``False`` to replace, ``None`` to
+            cancel.
+        """
+        QMessageBox = _qt_message_box()
+        box = QMessageBox(self.window)
+        box.setWindowTitle("Add or replace?")
+        box.setText(
+            f"{name}\n\nAdd these pages to the document you already have, "
+            "or replace it?"
+        )
+        add = box.addButton("Add", QMessageBox.ButtonRole.AcceptRole)
+        replace_button = box.addButton("Replace", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        # Adding is the safe answer, so it is the one a reflexive Return
+        # takes: replacing throws a document away.
+        box.setDefaultButton(add)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is add:
+            return True
+        if clicked is replace_button:
+            return False
+        return None
 
     def suggested_export_name(self) -> str:
         """A default filename derived from the first imported source.
@@ -936,6 +1412,10 @@ class MainWindow:
         """Enable each button only when it would do something."""
         self.undo_button.setEnabled(self.state.can_undo)
         self.redo_button.setEnabled(self.state.can_redo)
+        for name, enabled in (("undo", self.state.can_undo), ("redo", self.state.can_redo)):
+            action = self.menu_actions.get(name)
+            if action is not None:
+                action.setEnabled(enabled)
 
     def _recover_autosave_if_offered(self, path: str, project: Project) -> Project:
         """Offer a newer autosave in place of the project just loaded.
@@ -1012,13 +1492,15 @@ class MainWindow:
                 action = menu.addAction(_recent_label(path))
                 action.setToolTip(path)
                 action.triggered.connect(
-                    lambda _checked=False, target=path: self.open_project(target)
+                    lambda _checked=False, target=path: self.open_project_with_prompt(
+                        target
+                    )
                 )
-            self.recent_button.setEnabled(bool(paths))
+            menu.setEnabled(bool(paths))
         except Exception as exc:  # noqa: BLE001 -- convenience, never fatal
             log_exception("recent_menu_refresh_failed", exc)
 
-    def _on_open_project_clicked(self) -> None:
+    def open_project_dialog(self) -> None:
         """Open a saved project, replacing whatever is loaded.
 
         :returns: nothing. Every failure is reported in the status bar; a
@@ -1038,7 +1520,17 @@ class MainWindow:
         )
         if not path:
             return
-        self.open_project(path)
+        self.open_project_with_prompt(path)
+
+    def open_project_with_prompt(self, path: str) -> bool:
+        """Open ``path``, offering to save the document it replaces.
+
+        :param path: the ``.deckle`` to open.
+        :returns: whether it opened.
+        """
+        if not self._confirm_discard("opening another project"):
+            return False
+        return self.open_project(path)
 
     def open_project(self, path: str) -> bool:
         """Load ``path`` into the window.
@@ -1089,7 +1581,9 @@ class MainWindow:
             log_exception("project_open_failed", exc, path=path)
             return False
 
+        loaded = project
         project = self._recover_autosave_if_offered(path, project)
+        recovered = project is not loaded
 
         recent.record(path)
         self._refresh_recent_menu()
@@ -1125,6 +1619,14 @@ class MainWindow:
         self.arrange_view.refresh()
         self.layout_panel.refresh_from_project()
         self._on_pages_changed()
+        # A project just read off disk is not modified. A recovered
+        # autosave is: that work exists nowhere but in memory until the
+        # user saves it, which is exactly what the marker is for -- and
+        # without this, accepting a recovery and closing the window would
+        # throw it away a second time.
+        if recovered:
+            self.state.mark_unsaved()
+        self._sync_title()
         self.status_bar.showMessage(
             f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s)."
         )
@@ -1146,20 +1648,40 @@ class MainWindow:
                 "autosave_flush_failed", exc, path=self.state.autosave_path
             )
 
-    def _on_save_project_clicked(self) -> None:
-        """Save the current job as a ``.deckle``.
+    def save_project(self) -> bool:
+        """Save the job back to the file it came from.
 
-        :returns: nothing. Uses the same wording as the CLI for a
-            destination it cannot write -- see :mod:`deckle.core.outputs`.
+        The Ctrl+S a person's hands already know: a project that has a
+        file writes to it without a dialog. One that has never been saved
+        has nowhere to go, so it falls through to
+        :meth:`save_project_as`.
+
+        :returns: whether the project was written. ``False`` covers a
+            cancelled dialog and a destination that could not be written,
+            because both leave the work unsaved -- and this answer is what
+            the close prompt uses to decide whether it may proceed.
+        """
+        if not self.state.project.pages:
+            self.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
+            return False
+        if self.state.project_path is None:
+            return self.save_project_as()
+        return self._write_project(self.state.project_path)
+
+    def save_project_as(self) -> bool:
+        """Ask where to save the job, and save it there.
+
+        :returns: whether the project was written; ``False`` for a
+            cancelled dialog.
         """
         from PySide6.QtWidgets import QFileDialog
 
         if not self.state.project.pages:
             self.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
-            return
+            return False
 
         source = self.state.project.pages[0].ref.path
-        suggested = os.path.join(
+        suggested = self.state.project_path or os.path.join(
             os.path.dirname(source) or os.getcwd(),
             os.path.splitext(os.path.basename(source))[0] + ".deckle",
         )
@@ -1167,31 +1689,48 @@ class MainWindow:
             self.window, "Save project", suggested, "Deckle projects (*.deckle)"
         )
         if not path:
-            return
+            return False
         if not path.lower().endswith(".deckle"):
             path += ".deckle"
+        return self._write_project(path)
 
+    def _write_project(self, path: str) -> bool:
+        """Write the project to ``path`` and record that it is saved.
+
+        :param path: where to write.
+        :returns: whether it was written. Uses the same wording as the CLI
+            for a destination it cannot write -- see
+            :mod:`deckle.core.outputs`.
+        """
         problem = output_path_problem(path)
         if problem is not None:
             self.status_bar.showMessage(problem)
             log_event("project_path_rejected", path=path, detail=problem)
-            return
+            return False
 
         try:
             save_project(self.state.project, path)
         except OSError as exc:
             self.status_bar.showMessage(describe_write_failure(path, exc))
             log_exception("project_write_failed", exc, path=path)
-            return
+            return False
         self.state.project_path = path
+        # This, and only this, is what clears the modified marker. An
+        # autosave does not: it writes `<project>.autosave` precisely so it
+        # never touches the file the user named, and treating it as a save
+        # would stop the window saying "unsaved" while the user's own file
+        # was still stale.
+        self.state.mark_saved()
         # Saving is how a project first comes into existence, so it
         # belongs in the list as much as opening one does.
         recent.record(path)
         self._refresh_recent_menu()
+        self._sync_title()
         self.status_bar.showMessage(f"Saved project to {path}")
         log_event("project_saved", path=path, pages=len(self.state.project.pages))
+        return True
 
-    def _on_save_pdf_clicked(self) -> None:
+    def save_pdf(self) -> None:
         from PySide6.QtWidgets import QFileDialog
 
         if not self.state.project.pages:
@@ -1241,6 +1780,119 @@ class MainWindow:
             return
         self.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
 
+    def export_single_pass(self) -> None:
+        """Write one pass -- fronts or backs -- as its own PDF.
+
+        For printing somewhere that is not this machine: a copy shop, a
+        second computer, a friend's laser. Deckle's manual duplex is two
+        passes through a printer with a reload in between, and the CLI has
+        been able to write one of them (``--pass front``) since the
+        beginning while the app could only ever write the whole document.
+        Someone taking a job out of the house had no way to produce the two
+        files they needed.
+
+        The pass comes from :func:`deckle.core.printing.pass_export`, which
+        is the same function the CLI calls -- the sheet order and the half
+        turn are the profile's answer, not this method's, and a second
+        implementation of them would be free to disagree with the first
+        while both looked right.
+
+        The reload instruction goes in the status bar and is worth reading:
+        the file is going to be printed by someone who has never seen
+        Deckle, and it is the sentence that decides whether the backs land
+        on the right fronts.
+
+        :returns: nothing. Every failure is reported in the status bar.
+        """
+        from PySide6.QtWidgets import QFileDialog
+
+        if not self.state.project.pages:
+            self.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
+            return
+
+        side = self.choose_export_pass()
+        if side is None:
+            return
+
+        plan = self.preview_view.plan
+        # The profile the window is already drawing against -- the selected
+        # printer's calibration when it has one. Exporting a pass against a
+        # different profile from the one on screen would be the same lie
+        # B16 was about.
+        export_pass = pass_export(plan, self.profile, side)
+
+        start_dir = os.path.dirname(self.state.project.pages[0].ref.path) or os.getcwd()
+        suggested = suggested_pass_export_name(self.suggested_export_name(), side)
+        path, _ = QFileDialog.getSaveFileName(
+            self.window,
+            f"Save {side} pass",
+            os.path.join(start_dir, suggested),
+            "PDF files (*.pdf)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+
+        source = self.state.project.pages[0].ref.path
+        problem = output_path_problem(path, source)
+        if problem is not None:
+            self.status_bar.showMessage(problem)
+            log_event("output_path_rejected", path=path, detail=problem)
+            return
+
+        try:
+            export(
+                plan,
+                path,
+                sheets=export_pass.sheets,
+                side=export_pass.side,
+                rotate_180=export_pass.rotate_180,
+                back_offset_pt=export_pass.back_offset_pt,
+            )
+        except OSError as exc:
+            message = describe_write_failure(path, exc)
+            self.status_bar.showMessage(message)
+            log_exception("pass_write_failed", exc, path=path, side=side)
+            return
+        except Exception as exc:  # noqa: BLE001 -- surfaced, never swallowed
+            self.status_bar.showMessage(f"Export failed: {exc}")
+            log_exception("pass_export_failed", exc, path=path, side=side)
+            return
+        self.status_bar.showMessage(
+            f"Saved the {side} pass ({len(export_pass.sheets)} sheet(s)) to "
+            f"{path} -- {export_pass.reload_instruction}"
+        )
+        log_event(
+            "pass_exported",
+            path=path,
+            side=side,
+            sheets=len(export_pass.sheets),
+        )
+
+    def _default_choose_export_pass(self) -> str | None:
+        """Ask which pass to write. Replaceable for tests.
+
+        :returns: ``"front"``, ``"back"``, or ``None`` if cancelled.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        choices = [
+            "Fronts (pass 1 -- print this first)",
+            "Backs (pass 2 -- print after reloading the paper)",
+        ]
+        label, ok = QInputDialog.getItem(
+            self.window,
+            "Save one pass",
+            "Which pass?",
+            choices,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        return "front" if label == choices[0] else "back"
+
     def show(self) -> None:
         """Show the window.
 
@@ -1261,10 +1913,16 @@ class MainWindow:
     def _on_close_event(self, event) -> None:
         """Shut down cleanly however the window was closed.
 
-        :param event: the ``QCloseEvent``; always accepted. Refusing to
-            close because a render is running would trap the user.
+        :param event: the ``QCloseEvent``. Accepted unless the user
+            cancels out of the unsaved-changes prompt -- the one reason
+            worth refusing a close, since the alternative is losing the
+            work the prompt exists to protect. A running render is never
+            a reason: refusing for that would trap the user.
         :returns: nothing.
         """
+        if not self._confirm_discard("closing"):
+            event.ignore()
+            return
         self.state.flush_autosave()
         self.stop_background_work()
         event.accept()

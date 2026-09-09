@@ -374,3 +374,80 @@ def test_300_page_import_completes_well_under_100ms_on_calling_thread(tmp_path, 
     load_and_apply_import(state, str(tmp_path / "big.pdf"))
     elapsed_ms = (time.monotonic() - started) * 1000
     assert elapsed_ms < 100
+
+
+# -- unsaved work ------------------------------------------------------
+#
+# Autosave has run on every edit since the MVP and is not a save: it writes
+# `<project>.autosave` precisely so it can never clobber the file the user
+# named, and it is only ever offered back as crash recovery. So an
+# afternoon's reordering has always been lost from the user's own file on
+# close, silently. `dirty` is what lets the window say so and stop to ask.
+
+
+def test_a_freshly_loaded_project_is_not_modified():
+    state = AppState(_make_project(3))
+    assert state.dirty is False
+
+
+def test_any_edit_marks_the_project_modified():
+    state = AppState(_make_project(3))
+    state.mutate(lambda p: set_rotation(p, 0, 90))
+    assert state.dirty is True
+
+
+def test_saving_clears_the_marker():
+    state = AppState(_make_project(3))
+    state.mutate(lambda p: set_rotation(p, 0, 90))
+    state.mark_saved()
+    assert state.dirty is False
+
+
+def test_editing_after_a_save_marks_it_again():
+    state = AppState(_make_project(3))
+    state.mark_saved()
+    state.mutate(lambda p: toggle_skip(p, 0))
+    assert state.dirty is True
+
+
+def test_undoing_back_to_the_saved_state_clears_the_marker():
+    """`Project` is frozen, so undo restores the very object that was
+    saved. A window still titled "modified" over a document identical to
+    the one on disk teaches its user to ignore the marker."""
+    state = AppState(_make_project(3))
+    state.mark_saved()
+    state.mutate(lambda p: set_rotation(p, 0, 90))
+    state.undo()
+    assert state.dirty is False
+
+
+def test_redoing_marks_it_again():
+    state = AppState(_make_project(3))
+    state.mark_saved()
+    state.mutate(lambda p: set_rotation(p, 0, 90))
+    state.undo()
+    state.redo()
+    assert state.dirty is True
+
+
+def test_an_autosave_is_not_a_save(tmp_path):
+    """The distinction the whole feature rests on. An autosave that cleared
+    the marker would stop the window saying "unsaved" while the file the
+    user named was still stale, and the close prompt -- the thing standing
+    between a session's work and the bin -- would never appear."""
+    state = AppState(_make_project(3), project_path=str(tmp_path / "book.deckle"))
+    state.mutate(lambda p: set_rotation(p, 0, 90))
+    state.flush_autosave()
+
+    assert os.path.exists(str(tmp_path / "book.deckle.autosave"))
+    assert state.dirty is True
+
+
+def test_recovered_work_can_be_declared_unsaved():
+    """Content loaded from an autosave exists nowhere but in memory until
+    the user saves it, so the window that accepted the recovery must not
+    open clean and let them close it again."""
+    state = AppState(_make_project(3))
+    assert state.dirty is False
+    state.mark_unsaved()
+    assert state.dirty is True

@@ -42,6 +42,11 @@ from dataclasses import replace
 from deckle.core.loader import load_pdf
 
 window = am.MainWindow()
+# Closing a window with unsaved work now asks about it. That prompt is a
+# real modal and would block this probe forever; what is under test here
+# is the thread shutdown behind it, so the answer is injected the same way
+# the print dialog's confirmations are.
+window.confirm_discard_changes = lambda name, action: "discard"
 pages = list(load_pdf(sys.argv[1])) * 8
 window.state.mutate(lambda p: replace(p, pages=list(pages)))
 window._on_imported(list(pages), [])
