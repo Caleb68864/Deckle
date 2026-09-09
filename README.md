@@ -393,7 +393,7 @@ Not released. Expect breaking changes.
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |
 
-The test suite is **1,720 passing, 22 skipped** at `5e7280a` — verified by
+The test suite is **1,720 passing, 22 skipped** at `8e2e8d2` — verified by
 running `python -m pytest -q` at the repository root (on Linux, with
 `QT_QPA_PLATFORM=offscreen`). Fourteen of the skips are packaging-audit tests
 that need a built bundle in `dist/`, four are Windows-only path cases, three
