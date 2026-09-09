@@ -186,29 +186,57 @@ def test_render_sheet_side_paints_every_page_in_a_two_page_side(tmp_path, monkey
     assert rendered.height > 0
 
 
-def test_apply_rotate_backs_rotates_every_page(tmp_path):
+def test_the_turn_is_asked_of_export_rather_than_applied_afterwards(
+    tmp_path, monkeypatch
+):
+    """The half turn goes in as ``rotate_180=``, because ``export`` is the
+    only code that knows the turn also negates the registration
+    correction. Turning the page here afterwards would leave the
+    correction un-negated and land the ink at twice the measured error --
+    see ``tests/test_registration.py``."""
+    import pikepdf
+
+    src = tmp_path / "src.pdf"
+    with pikepdf.new() as pdf:
+        pdf.add_blank_page(page_size=(300.0, 400.0))
+        pdf.save(str(src))
+
+    placement = Placement(scale_x=1.0, scale_y=1.0, tx=0.0, ty=0.0, rotate_deg=0)
+    ref = SourceRef(
+        path=str(src), page_index=0, sha256="a" * 64, width_pt=150.0, height_pt=200.0
+    )
+    side = Side(pages=(OutputPage(source_ref=ref, placement=placement, is_filler=False),))
+    plan = SheetPlan(
+        sheets=[Sheet(index=0, front=side, back=side)],
+        paper_pt=(300.0, 400.0),
+        warnings=[],
+    )
+
+    seen: dict = {}
+    real_export = export_module.export
+
+    def spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real_export(*args, **kwargs)
+
+    monkeypatch.setattr(export_module, "export", spy)
+
+    _render_sheet_side(plan, 0, "back", 36, True, False, back_offset_pt=(4.0, 0.0))
+
+    assert seen["rotate_180"] is True
+    assert seen["back_offset_pt"] == (4.0, 0.0)
+
+
+def test_bake_rotation_flattens_for_drivers_that_ignore_rotate(tmp_path):
     import pikepdf
 
     src = tmp_path / "sheet.pdf"
     with pikepdf.new() as pdf:
-        pdf.add_blank_page(page_size=(200, 300))
+        page = pdf.add_blank_page(page_size=(200, 300))
+        page.rotate(180, relative=True)
         pdf.save(str(src))
 
-    backend_mod._apply_rotate_backs(str(src), ignore_rotate=False)
-
-    with pikepdf.open(str(src)) as pdf:
-        assert int(pdf.pages[0].Rotate) == 180
-
-
-def test_apply_rotate_backs_flattens_for_drivers_that_ignore_rotate(tmp_path):
-    import pikepdf
-
-    src = tmp_path / "sheet.pdf"
-    with pikepdf.new() as pdf:
-        pdf.add_blank_page(page_size=(200, 300))
-        pdf.save(str(src))
-
-    backend_mod._apply_rotate_backs(str(src), ignore_rotate=True)
+    backend_mod._bake_rotation(str(src))
 
     with pikepdf.open(str(src)) as pdf:
         # flatten_rotation() bakes the rotation into content and removes
