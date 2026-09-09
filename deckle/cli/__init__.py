@@ -265,11 +265,13 @@ def _layout_dests() -> set[str]:
     return {action.dest for action in probe._actions if action.option_strings}
 
 
-def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
+def _layout_flags_given(args: argparse.Namespace) -> list[str]:
     """Which layout options the user actually typed, as flag names.
 
-    :param args: the parsed arguments.
-    :param parser: the parser they came from, for its defaults.
+    :param args: the parsed arguments. Both things this needs are on the
+        namespace, put there by :func:`build_parser`: ``_subparser`` is the
+        subparser they came from, for its defaults, and ``_layout_dests``
+        is the set :func:`_layout_dests` derived once.
     :returns: the flags whose value differs from the default.
 
     Used to warn rather than silently ignore. Comparing against defaults is
@@ -285,15 +287,22 @@ def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParse
     telling the user the opposite of what happened. The list could only
     grow: every non-layout flag added to any of these commands, including
     ``--json`` and ``--dry-run``, would have joined it.
+
+    This used to take a parser and be handed a **freshly built one**: six
+    subparsers and every flag and help string in the program, constructed
+    on every ``.deckle`` load, then walked for a private
+    ``argparse._SubParsersAction`` and indexed by ``args._command`` to
+    rediscover the subparser the arguments had just come out of. It then
+    built a *second* throwaway parser, in :func:`_layout_dests`, to read
+    back the dests of the flags that subparser already carried.
+    ``set_defaults`` carries both instead -- which is how ``_command``
+    already reached here -- so ``build_parser`` runs exactly once per
+    invocation and this function constructs nothing at all.
     """
-    sub = None
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            sub = action.choices.get(getattr(args, "_command", ""))
-            break
+    sub = getattr(args, "_subparser", None)
     if sub is None:
         return []
-    layout = _layout_dests()
+    layout = getattr(args, "_layout_dests", frozenset())
     given = []
     for action in sub._actions:
         if not action.option_strings or action.dest not in layout:
@@ -346,7 +355,7 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
         project = _load_project_or_report(args.source)
         if project is None:
             return None
-        ignored = _layout_flags_given(args, build_parser())
+        ignored = _layout_flags_given(args)
         if ignored:
             print(
                 "note: "
@@ -1460,6 +1469,10 @@ def build_parser() -> argparse.ArgumentParser:
         what :func:`main` dispatches on.
     """
     parser = argparse.ArgumentParser(prog="deckle", description="Impose and print booklets.")
+    # Derived once, here, rather than by each `.deckle` load building a
+    # throwaway parser to read it back off. `_layout_flags_given` needs it
+    # and has no other way to tell a layout flag from `--sheets`.
+    layout_dests = _layout_dests()
     # A-6: --version must work without a subcommand. argparse's "version"
     # action exits immediately when encountered, before the subparsers'
     # required-argument check runs, so this is reachable even though
@@ -1479,7 +1492,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="say what would be written and write nothing",
     )
     _add_layout_args(impose_parser)
-    impose_parser.set_defaults(func=_cmd_impose, _command="impose")
+    impose_parser.set_defaults(
+        func=_cmd_impose, _command="impose",
+        _subparser=impose_parser, _layout_dests=layout_dests,
+    )
 
     export_parser = subparsers.add_parser("export", help="impose and export a source directly to PDF")
     export_parser.add_argument("source", help="a PDF file or a directory of images")
@@ -1546,7 +1562,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_layout_args(export_parser)
-    export_parser.set_defaults(func=_cmd_export, _command="export")
+    export_parser.set_defaults(
+        func=_cmd_export, _command="export",
+        _subparser=export_parser, _layout_dests=layout_dests,
+    )
 
     info_parser = subparsers.add_parser("info", help="print page count, sizes, and layout warnings")
     info_parser.add_argument("source", help="a PDF file or a directory of images")
@@ -1558,7 +1577,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_layout_args(info_parser)
-    info_parser.set_defaults(func=_cmd_info, _command="info")
+    info_parser.set_defaults(
+        func=_cmd_info, _command="info",
+        _subparser=info_parser, _layout_dests=layout_dests,
+    )
 
     schedule_parser = subparsers.add_parser(
         "schedule",
@@ -1579,7 +1601,10 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_layout_args(schedule_parser)
-    schedule_parser.set_defaults(func=_cmd_schedule, _command="schedule")
+    schedule_parser.set_defaults(
+        func=_cmd_schedule, _command="schedule",
+        _subparser=schedule_parser, _layout_dests=layout_dests,
+    )
 
     preview_parser = subparsers.add_parser(
         "crop-preview",
@@ -1612,7 +1637,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--dpi", type=int, default=72,
         help="rasterisation resolution (default: 72)",
     )
-    preview_parser.set_defaults(func=_cmd_crop_preview, _command="crop-preview")
+    preview_parser.set_defaults(
+        func=_cmd_crop_preview, _command="crop-preview", _subparser=preview_parser,
+    )
 
     dummy_parser = subparsers.add_parser(
         "dummy",
@@ -1632,7 +1659,9 @@ def build_parser() -> argparse.ArgumentParser:
             "are standing in for (default: letter)"
         ),
     )
-    dummy_parser.set_defaults(func=_cmd_dummy, _command="dummy")
+    dummy_parser.set_defaults(
+        func=_cmd_dummy, _command="dummy", _subparser=dummy_parser,
+    )
 
     print_parser = subparsers.add_parser(
         "print",
@@ -1670,7 +1699,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit the pass plan as one JSON document with stable key names",
     )
     _add_layout_args(print_parser)
-    print_parser.set_defaults(func=_cmd_print, _command="print")
+    print_parser.set_defaults(
+        func=_cmd_print, _command="print",
+        _subparser=print_parser, _layout_dests=layout_dests,
+    )
 
     profile_parser = subparsers.add_parser(
         "profile",
@@ -1687,7 +1719,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="emit the listing as one JSON document with stable key names",
     )
-    profile_list_parser.set_defaults(func=_cmd_profile_list, _command="profile")
+    profile_list_parser.set_defaults(
+        func=_cmd_profile_list, _command="profile", _subparser=profile_list_parser,
+    )
 
     profile_show_parser = profile_subparsers.add_parser(
         "show", help="print one profile's stored values in full"
@@ -1697,7 +1731,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true",
         help="emit the profile as one JSON document with stable key names",
     )
-    profile_show_parser.set_defaults(func=_cmd_profile_show, _command="profile")
+    profile_show_parser.set_defaults(
+        func=_cmd_profile_show, _command="profile", _subparser=profile_show_parser,
+    )
 
     profile_set_parser = profile_subparsers.add_parser(
         "set",
@@ -1761,7 +1797,9 @@ def build_parser() -> argparse.ArgumentParser:
             "shown field by field and refused"
         ),
     )
-    profile_set_parser.set_defaults(func=_cmd_profile_set, _command="profile")
+    profile_set_parser.set_defaults(
+        func=_cmd_profile_set, _command="profile", _subparser=profile_set_parser,
+    )
 
     return parser
 
