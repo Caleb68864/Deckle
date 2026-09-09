@@ -237,6 +237,51 @@ def _render_sheet_side(
             os.remove(tmp_path)
 
 
+def _render_ruled_sheet_side(
+    plan: SheetPlan,
+    sheet_index: int,
+    side: Literal["front", "back"],
+    dpi: int,
+) -> RenderedPage:
+    """Render one face with a labelled ruler drawn across it.
+
+    The proof sheet. ``render_sheet``'s cache is keyed on the plan alone,
+    which knows nothing about a rule, so this exports for itself rather
+    than risking a ruled render being served back to the preview -- the
+    same reasoning that makes a back-offset correction export for itself
+    in :func:`_render_sheet_side`.
+
+    Exported with ``side=`` so the temporary PDF holds exactly the one face
+    asked for, which is what makes the page index unambiguously zero.
+
+    :param plan: the imposed sheets.
+    :param sheet_index: which sheet to proof.
+    :param side: which face of it.
+    :param dpi: rasterization resolution.
+    :returns: the rasterised face, or an empty page when the sheet has no
+        such face.
+    """
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    try:
+        export.export(plan, tmp_path, sheets=[sheet_index], side=side, rule=True)
+        # pdfium is process-global and this rasterizes on the GUI thread;
+        # see `_render_sheet_side` for why the guard is held this wide.
+        with pdfium_guard():
+            pdf = pdfium.PdfDocument(tmp_path)
+            try:
+                if len(pdf) == 0:
+                    return RenderedPage(width=0, height=0, rgba=b"")
+                pil_image = rasterize_page(pdf, 0, scale=dpi / 72).convert("RGBA")
+                width, height = pil_image.size
+                return RenderedPage(width=width, height=height, rgba=pil_image.tobytes())
+            finally:
+                pdf.close()
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @dataclass(frozen=True)
 class DuplexModes:
     """Duplex options a given printer can offer for a pass.
@@ -478,6 +523,71 @@ class QtPrintBackend:
         self.unsubmitted_sheets = []
         return PrintResult(submitted=submitted_total, job_id=None, error=None)
 
+    def submit_proof(
+        self,
+        plan: SheetPlan,
+        sheet_index: int,
+        printer_name: str,
+        dpi: int,
+    ) -> PrintResult:
+        """Print one sheet's front with a ruler on it, and nothing else.
+
+        Sheets print at actual size (roadmap B6) -- an inch of the design
+        is an inch of paper. That is a claim about someone else's printer,
+        made by a program that cannot see it, and a driver preset saying
+        "fit to page" quietly falsifies it. The rule is the only evidence
+        available: print it, measure it against a tape, and if it is short
+        the claim is not true on this machine.
+
+        Deliberately **not** a :class:`~deckle.core.print_session.PrintSession`.
+        A proof is not a job: it has one face, no reload, no back pass, and
+        nothing worth resuming. Routing it through a session would leave a
+        resumable run on disk that the next print dialog would offer to
+        finish, which is how a proof turns into a ruined stack of paper.
+
+        The front, because that is the face a proof needs -- the check is
+        the geometry of the sheet, and reloading paper to measure the same
+        rule on the other side proves nothing new.
+
+        :param plan: the imposed sheets.
+        :param sheet_index: the sheet to proof.
+        :param printer_name: the target queue.
+        :param dpi: rasterization resolution.
+        :returns: a ``PrintResult`` counting the one sheet, or carrying the
+            failure. Never raises, for the same reason :meth:`submit` does
+            not: the caller's job is to say what happened, not to unwind.
+        """
+        if not printer_is_available(printer_name):
+            error = f"printer {printer_name!r} is no longer available"
+            log_event(
+                "proof_printer_unavailable",
+                level=logging.WARNING,
+                printer=printer_name,
+                sheet=sheet_index,
+            )
+            return PrintResult(submitted=0, job_id=None, error=error)
+        try:
+            self._submit_chunk(
+                plan,
+                [sheet_index],
+                printer_name,
+                1,
+                dpi,
+                "front",
+                False,
+                rule=True,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported as PrintResult.error
+            log_exception(
+                "proof_failed", exc, printer=printer_name, sheet=sheet_index, dpi=dpi
+            )
+            return PrintResult(submitted=0, job_id=None, error=str(exc))
+        # No `log_print_job`: the session log records the paper a *job*
+        # consumed, and a proof is not part of one. Counting it there would
+        # put a sheet in the record that no pass ever fed.
+        log_event("proof_printed", printer=printer_name, sheet=sheet_index, dpi=dpi)
+        return PrintResult(submitted=1, job_id=None, error=None)
+
     # -- internals ---------------------------------------------------------
 
     def _submit_chunk(
@@ -489,6 +599,7 @@ class QtPrintBackend:
         dpi: int,
         side: Literal["front", "back"],
         rotate_backs: bool,
+        rule: bool = False,
     ) -> None:
         printer = _new_qprinter()
         if printer_name:
@@ -505,18 +616,24 @@ class QtPrintBackend:
             for i, sheet_index in enumerate(sheets):
                 if i > 0:
                     printer.newPage()
-                rendered = _render_sheet_side(
-                    plan,
-                    sheet_index,
-                    side,
-                    dpi,
-                    rotate_backs,
-                    printer_name in self._drivers_ignoring_rotate,
-                    back_offset_pt=(
-                        self.profile.back_offset_x_pt,
-                        self.profile.back_offset_y_pt,
-                    ),
-                )
+                if rule:
+                    # A proof measures the sheet, so it carries no back
+                    # correction: the offset moves the image and would be
+                    # read as the printer having scaled it.
+                    rendered = _render_ruled_sheet_side(plan, sheet_index, side, dpi)
+                else:
+                    rendered = _render_sheet_side(
+                        plan,
+                        sheet_index,
+                        side,
+                        dpi,
+                        rotate_backs,
+                        printer_name in self._drivers_ignoring_rotate,
+                        back_offset_pt=(
+                            self.profile.back_offset_x_pt,
+                            self.profile.back_offset_y_pt,
+                        ),
+                    )
                 self._paint_rendered_page(painter, printer, rendered, dpi)
         finally:
             painter.end()
