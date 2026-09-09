@@ -226,3 +226,58 @@ def test_live_threads_survives_a_view_with_no_widget():
         _thread = None
 
     assert _live_threads(_Bare()) == []
+
+
+# -- the composite thread joins the list ---------------------------------
+#
+# `stop_background_work` iterates a hard-coded set of views. The Crop &
+# trim tab started rendering off-thread (N11), and a third render source
+# that is not on that list is the exact shutdown crash `_live_threads`
+# exists to prevent.
+
+
+class _FakeWorker:
+    def __init__(self) -> None:
+        import threading
+
+        self.cancel = threading.Event()
+
+
+class _StubWindow:
+    """Just enough of ``MainWindow`` for ``stop_background_work``."""
+
+    def __init__(self) -> None:
+        self.preview_view = _FakeView(_FakeThread(), [])
+        self.preview_view._worker = _FakeWorker()
+        self.arrange_view = _FakeView(_FakeThread(), [])
+        self.arrange_view._worker = _FakeWorker()
+        self.layout_panel = _FakeView(_FakeThread(), [])
+        self.layout_panel._worker = _FakeWorker()
+
+
+def test_shutdown_cancels_and_waits_for_the_composite_thread():
+    from deckle.app.main import MainWindow
+
+    window = _StubWindow()
+
+    MainWindow.stop_background_work(window, timeout_ms=10)
+
+    assert window.layout_panel._worker.cancel.is_set(), (
+        "the panel's composite kept rasterising into interpreter teardown"
+    )
+    assert window.layout_panel._thread.waited_ms == 10, (
+        "nobody waited for the composite thread"
+    )
+
+
+def test_shutdown_still_covers_the_two_original_views():
+    """The regression the third view must not introduce."""
+    from deckle.app.main import MainWindow
+
+    window = _StubWindow()
+
+    MainWindow.stop_background_work(window, timeout_ms=10)
+
+    for view in (window.preview_view, window.arrange_view):
+        assert view._worker.cancel.is_set()
+        assert view._thread.waited_ms == 10

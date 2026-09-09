@@ -202,3 +202,82 @@ def test_an_all_pages_composite_gets_an_all_pages_crop(tmp_path):
     reported = capsys_stdout()
     left = float(reported.split("--crop ")[1].split(",")[0].rstrip("pt"))
     assert left < 60.0, f"drew an odd-only crop over an all-pages composite: {reported}"
+
+
+# -- cancellation --------------------------------------------------------
+#
+# The composite rasterises EVERY unskipped page, and the panel restarts it
+# on every crop edit (N11). A superseded 300-page run is 300 rasterisations
+# nobody will look at, so it has to be interruptible -- the same contract
+# `render_sheet` already gives.
+
+
+def test_a_cancelled_composite_returns_a_degenerate_page(tmp_path):
+    """Already-set cancel: back out before rasterising anything."""
+    import threading
+
+    path = _pdf(tmp_path, [(20.0, 500.0, 80.0, 560.0), None])
+    cancel = threading.Event()
+    cancel.set()
+
+    rendered = composite_pages(_pages(path, 2), dpi=DPI, cancel=cancel)
+
+    assert (rendered.width, rendered.height, rendered.rgba) == (0, 0, b"")
+
+
+def test_a_cancelled_composite_does_not_raise_on_an_empty_selection(tmp_path):
+    """Cancellation outranks the "nothing to composite" ValueError.
+
+    A caller that has already moved on must not have to catch an error
+    about the state it abandoned.
+    """
+    import threading
+
+    path = _pdf(tmp_path, [(20.0, 500.0, 80.0, 560.0)])
+    cancel = threading.Event()
+    cancel.set()
+
+    rendered = composite_pages(
+        _pages(path, 1, skipped=(0,)), dpi=DPI, cancel=cancel
+    )
+
+    assert rendered.rgba == b""
+
+
+def test_cancelling_partway_stops_rasterising(tmp_path, monkeypatch):
+    """The point of the parameter: work stops, it does not merely go unused."""
+    import threading
+
+    from deckle.core import render as render_mod
+
+    path = _pdf(tmp_path, [(20.0, 500.0, 80.0, 560.0)] * 6)
+    cancel = threading.Event()
+    calls = []
+    real = render_mod._rasterize_for_bbox
+
+    def counting(ref, dpi):
+        calls.append(ref)
+        if len(calls) == 2:
+            cancel.set()
+        return real(ref, dpi)
+
+    monkeypatch.setattr(render_mod, "_rasterize_for_bbox", counting)
+
+    rendered = composite_pages(_pages(path, 6), dpi=DPI, cancel=cancel)
+
+    assert rendered.rgba == b""
+    assert len(calls) == 2, f"kept rasterising after cancellation: {len(calls)}"
+
+
+def test_an_unset_cancel_composites_normally(tmp_path):
+    """A cancel that never fires must change nothing at all."""
+    import threading
+
+    path = _pdf(tmp_path, [(20.0, 500.0, 80.0, 560.0), (320.0, 40.0, 380.0, 100.0)])
+    pages = _pages(path, 2)
+
+    with_event = composite_pages(pages, dpi=DPI, cancel=threading.Event())
+    without = composite_pages(pages, dpi=DPI)
+
+    assert with_event.rgba == without.rgba
+    assert (with_event.width, with_event.height) == (without.width, without.height)

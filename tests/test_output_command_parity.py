@@ -179,3 +179,26 @@ def test_a_missing_parent_folder_is_refused_with_a_message(
     assert code == 1
     assert "Traceback" not in err
     assert err.startswith("error:")
+
+
+# -- the CLI and the app describe the same picture ------------------------
+
+
+def test_the_panel_and_crop_preview_say_the_same_thing_about_the_rectangle():
+    """Two front ends, one picture, one sentence.
+
+    The Crop & trim tab now shows the composite `crop-preview` writes
+    (N11). If the two explanations of the red rectangle drift, a user who
+    learned the CLI's wording has to work out whether the panel is drawing
+    the same thing -- and the answer is only obvious while the words match.
+    """
+    import inspect
+
+    from deckle import cli
+    from deckle.app.views.layout_panel import COMPOSITE_RECTANGLE_SENTENCE
+
+    source = inspect.getsource(cli._cmd_crop_preview)
+    # The CLI's own sentence, reassembled from the wrapped string literal.
+    flattened = " ".join(source.split())
+
+    assert COMPOSITE_RECTANGLE_SENTENCE.replace('" "', "") in flattened.replace('" "', "")

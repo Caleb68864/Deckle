@@ -1281,6 +1281,11 @@ class MainWindow:
         Both workers already support cancellation; they simply were never
         asked, and nobody waited.
 
+        ``layout_panel`` joined the list when the Crop & trim tab started
+        compositing the document off-thread (N11). A third render source
+        that is not on this list is the exact shutdown crash
+        :func:`_live_threads` was written for.
+
         :param timeout_ms: how long to wait per thread. A render that
             ignores cancellation must not hang the quit -- a stuck thread
             is a worse outcome than an abandoned one, and the wait is
@@ -1289,7 +1294,7 @@ class MainWindow:
             closing, and an exception here would replace a clean exit with
             the crash it exists to prevent.
         """
-        for view in (self.preview_view, self.arrange_view):
+        for view in (self.preview_view, self.arrange_view, self.layout_panel):
             try:
                 worker = getattr(view, "_worker", None)
                 if worker is not None:
@@ -1297,7 +1302,7 @@ class MainWindow:
             except Exception as exc:  # pragma: no cover - defensive
                 log_exception("shutdown_cancel_failed", exc)
 
-        for view in (self.preview_view, self.arrange_view):
+        for view in (self.preview_view, self.arrange_view, self.layout_panel):
             try:
                 # Every live thread, not just `view._thread` -- see
                 # `_live_threads`. Waiting only for the current one left
