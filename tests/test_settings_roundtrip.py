@@ -119,6 +119,7 @@ def test_no_layout_field_round_trips_as_a_list(tmp_path):
         "crop_odd_pt": (1.0, 2.0, 3.0, 4.0),
         "crop_even_pt": (4.0, 3.0, 2.0, 1.0),
         "signature_lengths": (1, 1),
+        "sewing_station_positions_pt": (36.0, 144.0),
     }
     project, _ = _project(tmp_path, fold_scheme="folio", **{
         k: v for k, v in tuple_defaults.items() if k != "paper"
@@ -131,3 +132,35 @@ def test_no_layout_field_round_trips_as_a_list(tmp_path):
         assert not isinstance(value, list), (
             f"{field.name} came back as a list: {value!r}"
         )
+
+
+def test_station_positions_survive_a_project_round_trip(tmp_path):
+    project, _ = _project(
+        tmp_path, fold_scheme="folio", sewing_station_positions_pt=(36.0, 144.0)
+    )
+
+    loaded = _roundtrip(tmp_path, project)
+
+    assert loaded.sewing_station_positions_pt == (36.0, 144.0)
+    assert isinstance(loaded.sewing_station_positions_pt, tuple)
+    assert loaded == project.layout
+
+
+def test_a_project_written_before_stations_still_opens(tmp_path):
+    """The no-migration claim, pinned. A `.deckle` from before the field
+    existed loads with it at None and behaves exactly as it did."""
+    import json
+
+    project, _ = _project(tmp_path, fold_scheme="folio")
+    path = os.path.join(str(tmp_path), "old.deckle")
+    save_project(project, path)
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    del data["layout"]["sewing_station_positions_pt"]
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+
+    loaded = load_project(path, check_sources=False).layout
+
+    assert loaded.sewing_station_positions_pt is None
+    assert loaded.sewing_stations == 3

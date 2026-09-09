@@ -348,3 +348,44 @@ def test_a_unit_change_then_a_nudge_does_not_rewrite_trim_in_the_new_unit():
     panel._on_trim_changed(panel.trim_spinbox.value())
 
     assert state.project.layout.trim_pt == pytest.approx(18.0)
+
+
+# -- station positions, and the unit they are displayed in ----------------
+
+
+def test_refreshing_shows_the_projects_station_positions():
+    state, panel = _panel()
+    _load(state, sewing_station_positions_pt=(36.0, 144.0))
+
+    panel.refresh_from_project()
+
+    assert panel.station_positions_edit.text() == "0.5, 2"
+    assert state.can_undo is False, "the refresh wrote back through a handler"
+
+
+def test_switching_units_redisplays_the_same_positions():
+    """B11's exact shape. A length the model keeps in points that is not
+    re-rendered on a unit change keeps its old number under the new unit,
+    and the next edit writes that number back as though it were typed --
+    `0.5, 2` inches silently becoming 0.5mm and 2mm."""
+    state, panel = _panel(sewing_station_positions_pt=(36.0, 144.0))
+
+    panel._on_unit_changed("mm")
+
+    assert panel.station_positions_edit.text() == "12.7, 50.8"
+
+    panel._on_station_positions_changed()
+
+    positions = state.project.layout.sewing_station_positions_pt
+    assert [round(p, 3) for p in positions] == [36.0, 144.0]
+
+
+def test_a_bad_position_is_reported_not_raised():
+    state, panel = _panel()
+    messages = []
+    panel.schedule_saved.connect(messages.append)
+    panel.station_positions_edit.setText("two")
+
+    panel._on_station_positions_changed()
+
+    assert messages and messages[0].startswith("Station positions:")

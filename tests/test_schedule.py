@@ -242,6 +242,39 @@ def test_zero_sewing_stations_says_none_were_marked():
     assert "No sewing stations" in text
 
 
+def test_the_schedule_lists_stated_positions_from_the_tail():
+    """Every position, in capitals about which end they are measured from:
+    an asymmetric pattern pierced upside down is a ruined signature."""
+    text = format_schedule_text(
+        _folio_schedule(16, sewing_station_positions_pt=(36.0, 144.0, 162.0))
+    )
+
+    assert "Pierce 3 sewing station(s)" in text
+    assert "Measured up from the TAIL:" in text
+    assert "1.  36.0pt  (0.50in)" in text
+    assert "2.  144.0pt  (2.00in)" in text
+    assert "3.  162.0pt  (2.25in)" in text
+
+
+def test_stated_positions_replace_the_evenly_spaced_wording():
+    text = format_schedule_text(
+        _folio_schedule(16, sewing_stations=7, sewing_station_positions_pt=(144.0,))
+    )
+
+    assert "Pierce 1 sewing station(s)" in text
+    assert "from head and tail" not in text
+
+
+def test_the_schedule_still_describes_an_evenly_spaced_count():
+    """Pins that stated positions did not change the default path."""
+    text = format_schedule_text(
+        _folio_schedule(16, sewing_stations=3, sewing_station_positions_pt=None)
+    )
+
+    assert "The first and last sit 36pt" in text
+    assert "Measured up from the TAIL" not in text
+
+
 def test_the_title_appears_when_given():
     text = format_schedule_text(_folio_schedule(16), "Traveller.pdf")
 
@@ -589,3 +622,94 @@ def test_the_two_opinions_agree_on_every_combination(caliper, trim, sheets):
         32, sheets_per_signature=sheets, paper_thickness_pt=caliper, trim_pt=trim
     )
     assert layout_warns == schedule_warns, (caliper, trim, sheets)
+
+
+# -- the flat-sheet block, and the thickness boards are cut against -------
+#
+# The number was computed for every plan since spine_width_pt existed and
+# the flat branch of the formatter returned before printing it. A value
+# computed on a dataclass and never rendered looks exactly like a value
+# that does not exist.
+
+
+def _flat_schedule(n_pages: int = 10, **overrides):
+    base = dict(paper=(612.0, 792.0), gutter_pt=36.0, binding_edge="left")
+    base.update(overrides)
+    settings = LayoutSettings(**base)
+    plan = GutterShiftStrategy().impose(_pages(n_pages), settings)
+    return build_schedule(plan, settings)
+
+
+def test_block_width_is_sheets_times_caliper():
+    from deckle.core.schedule import block_width_pt
+
+    assert round(block_width_pt(5, 0.3), 9) == 1.5
+    assert round(block_width_pt(200, 0.288), 9) == 57.6
+
+
+def test_block_width_is_none_without_a_thickness_or_sheets():
+    from deckle.core.schedule import block_width_pt
+
+    assert block_width_pt(5, 0.0) is None
+    assert block_width_pt(0, 0.3) is None
+    assert block_width_pt(5, -1.0) is None
+
+
+def test_a_flat_sheet_schedule_gives_a_block_thickness():
+    """10 pages one per side is 5 sheets; at 0.3pt caliper that is 1.5pt,
+    which reads as 0.02in / 2pt at the schedule's precision."""
+    schedule = _flat_schedule(10, paper_thickness_pt=0.3)
+
+    text = format_schedule_text(schedule)
+
+    assert schedule.sheets_total == 5
+    assert "BINDING THE STACK" in text
+    assert "Block thickness: about 0.02in (2pt)" in text
+
+
+def test_a_thicker_stock_gives_a_proportionally_thicker_block():
+    """A worked example a binder can check: 200 sheets of 0.288pt stock
+    (about 80gsm offset) is 57.6pt, or 0.80in."""
+    from deckle.core.schedule import block_width_pt
+
+    block = block_width_pt(200, 0.288)
+
+    assert round(block, 6) == 57.6
+    assert round(block / 72.0, 4) == 0.8
+
+
+def test_the_flat_sheet_block_carries_no_swell():
+    """Swell is thread accumulating in a fold, and a glued or side-sewn
+    stack has neither. Reusing spine_width_pt's 10-25% range here would
+    overstate the block by up to a quarter -- a recut set of boards."""
+    text = format_schedule_text(_flat_schedule(10, paper_thickness_pt=0.3))
+
+    assert "No swell is added" in text
+    assert "10-25%" not in text
+    assert "swell from the sewing thread" not in text
+
+
+def test_a_flat_sheet_schedule_without_thickness_says_so():
+    text = format_schedule_text(_flat_schedule(10))
+
+    assert "Block thickness is not estimated" in text
+    assert "Note: Paper thickness is not set" in text
+
+
+def test_the_folio_schedule_still_reports_a_sewn_range():
+    """Pins that N12 did not change the folio path."""
+    text = format_schedule_text(_folio_schedule(16, paper_thickness_pt=0.3))
+
+    assert "Spine thickness: about" in text
+    assert "swell from the sewing thread" in text
+    assert "BINDING THE STACK" not in text
+
+
+def test_the_flat_sheet_schedule_still_names_the_flip_edge():
+    text = format_schedule_text(_flat_schedule(10))
+
+    assert "Duplex: turn the sheet about its" in text
+
+
+def test_the_flat_sheet_schedule_still_counts_its_sheets():
+    assert "Sheets to print: 5" in format_schedule_text(_flat_schedule(10))

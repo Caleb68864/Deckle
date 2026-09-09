@@ -207,10 +207,17 @@ def _isolated_store(monkeypatch, tmp_path):
     return store
 
 
-def test_the_stored_pdf_is_not_somewhere_the_os_empties(tmp_path):
+def test_the_stored_pdf_is_not_somewhere_the_os_empties(tmp_path, monkeypatch):
     """The reboot half. A source under the system temp directory is gone
     after the crash the project was supposed to survive, and on Linux tmpfs
-    it does not even need the reboot to be tmpfs-sized."""
+    it does not even need the reboot to be tmpfs-sized.
+
+    Asserted in two steps, because the suite now runs with its data root
+    redirected into a scratch directory (``tests/conftest.py``), which is
+    itself under the system temp directory: an import lands in whatever
+    store is configured, and the store an *unconfigured* environment
+    resolves is the one that must be durable.
+    """
     import tempfile
 
     from deckle.core.loader import import_store_dir
@@ -221,14 +228,18 @@ def test_the_stored_pdf_is_not_somewhere_the_os_empties(tmp_path):
 
     stored = load_image_dir(str(source))[0].ref.path
 
-    temp_root = os.path.realpath(tempfile.gettempdir())
-    assert os.path.commonpath([os.path.realpath(stored), temp_root]) != temp_root, (
-        "a saved project's only source is sitting in the system temp "
-        f"directory: {stored}"
-    )
     assert os.path.realpath(stored).startswith(
         os.path.realpath(import_store_dir())
     ), stored
+
+    for key in ("XDG_DATA_HOME", "APPDATA"):
+        monkeypatch.delenv(key, raising=False)
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    real_store = os.path.realpath(import_store_dir())
+    assert os.path.commonpath([real_store, temp_root]) != temp_root, (
+        "a saved project's only source would sit in the system temp "
+        f"directory: {real_store}"
+    )
 
 
 def test_a_later_import_does_not_delete_an_earlier_one(tmp_path, monkeypatch):

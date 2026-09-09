@@ -30,6 +30,7 @@ This module must not import any Qt binding -- see
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import os
 import sys
 import tempfile
@@ -169,6 +170,64 @@ def evict_lru_files(directory: str | os.PathLike[str], max_bytes: int,
             report("cache_eviction_failed", exc, file_path)
             continue
         total -= size
+
+
+def evict_oldest_files(directory: str | os.PathLike[str], keep: int,
+                       pattern: str = "*", on_error=None) -> None:
+    """Delete all but the ``keep`` most recently MODIFIED matching files.
+
+    A sibling of :func:`evict_lru_files`, not a variant of it. That one
+    bounds a *cache* by bytes and ranks by access time, which is right for
+    a cache and wrong here twice over: a recovery store's budget is "how
+    many offers is a person willing to read", not a byte count, and merely
+    *listing* the offers at startup stats and reads every file, which would
+    reorder an atime ranking and evict the wrong ones.
+
+    :param directory: the store. A missing one is not an error.
+    :param keep: how many files to keep, newest first. ``<= 0`` deletes
+        everything matching.
+    :param pattern: an ``fnmatch`` pattern the filename must satisfy, so a
+        directory holding more than one kind of file can be pruned by kind.
+    :param on_error: called with ``(event, exception, path)`` when a file
+        cannot be measured or deleted, with the events
+        ``"autosave_scan_failed"``, ``"autosave_entry_stat_failed"`` and
+        ``"autosave_eviction_failed"``. A callback rather than logging
+        here, for the reason :func:`evict_lru_files` gives.
+    :returns: nothing, and raises nothing. A store that cannot be pruned
+        must not be what stops an autosave.
+    """
+    def report(event, exc, path):
+        if on_error is not None:
+            on_error(event, exc, path)
+
+    if not os.path.isdir(directory):
+        return
+
+    entries: list[tuple[float, str]] = []
+    try:
+        scanned = list(os.scandir(directory))
+    except OSError as exc:
+        report("autosave_scan_failed", exc, str(directory))
+        return
+    for entry in scanned:
+        try:
+            if not entry.is_file() or not fnmatch.fnmatch(entry.name, pattern):
+                continue
+            stat = entry.stat()
+        except OSError as exc:
+            report("autosave_entry_stat_failed", exc, entry.path)
+            continue
+        entries.append((stat.st_mtime, entry.path))
+
+    if len(entries) <= max(0, keep):
+        return
+
+    entries.sort(key=lambda item: item[0], reverse=True)  # newest first
+    for _mtime, file_path in entries[max(0, keep):]:
+        try:
+            os.remove(file_path)
+        except OSError as exc:
+            report("autosave_eviction_failed", exc, file_path)
 
 
 @contextlib.contextmanager

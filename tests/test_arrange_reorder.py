@@ -617,3 +617,188 @@ def test_a_single_page_still_toggles():
 
     view._on_skip_clicked()
     assert state.project.pages[1].skipped is False
+
+
+# --- Skip range..., and Remove -------------------------------------------
+#
+# Two gestures that look adjacent and are not. "Skip range..." STATES a
+# skip and never deletes; Remove deletes and is the only thing in the grid
+# that does. Both are a single `mutate`, so each is one Ctrl+Z.
+
+
+def _view_with(n, **kwargs):
+    from deckle.app.state import AppState
+    from deckle.app.views.arrange_view import ArrangeView
+
+    state = AppState(
+        Project(
+            pages=_pages(n),
+            layout=LayoutSettings(paper=LETTER, gutter_pt=18.0, binding_edge="left"),
+            printer=None,
+        )
+    )
+    return state, ArrangeView(state, **kwargs)
+
+
+def test_parse_page_range_matches_the_cli_grammar():
+    from deckle.app.views.arrange_view import parse_page_range
+
+    assert parse_page_range("1-6, 309-312", 312) == (
+        list(range(0, 6)) + list(range(308, 312))
+    )
+
+
+def test_parse_page_range_agrees_with_the_cli_parser():
+    """The grammar exists twice, because `deckle.app` must not import
+    `deckle.cli`. This is what keeps them from drifting."""
+    from deckle.cli import _parse_page_selection
+    from deckle.app.views.arrange_view import parse_page_range
+
+    for text in ("7", "1,3", "7-12,20", " 2 , 4 - 6 "):
+        assert parse_page_range(text, 400) == sorted(
+            set(_parse_page_selection(text))
+        )
+
+
+@pytest.mark.parametrize("text", ["0", "313", "one to six", "", "6-1", "1,,2"])
+def test_parse_page_range_refuses_what_it_cannot_honour(text):
+    from deckle.app.views.arrange_view import parse_page_range
+
+    with pytest.raises(ValueError) as excinfo:
+        parse_page_range(text, 312)
+
+    assert str(excinfo.value), "the message is shown to the user"
+
+
+def test_skip_range_marks_the_named_pages():
+    state, view = _view_with(6, ask_skip_range=lambda n: "1-2")
+
+    view.skip_range_button.click()
+
+    assert [p.skipped for p in state.project.pages] == [
+        True, True, False, False, False, False
+    ]
+
+
+def test_skip_range_is_one_undo_step():
+    """Sixteen pages of front matter skipped one call at a time would bury
+    sixteen entries in a bounded undo stack."""
+    state, view = _view_with(10, ask_skip_range=lambda n: "1-6")
+
+    view._on_skip_range_clicked()
+    state.undo()
+
+    assert all(page.skipped is False for page in state.project.pages)
+    assert state.can_undo is False
+
+
+def test_skip_range_states_rather_than_toggles():
+    """Naming a page that is already skipped is not a request to bring it
+    back -- that is what the Skip button is for."""
+    from deckle.app.views.arrange_view import skip_many
+
+    state, view = _view_with(4, ask_skip_range=lambda n: "1-2")
+    skip_many(state, [0])
+
+    view._on_skip_range_clicked()
+
+    assert [p.skipped for p in state.project.pages] == [True, True, False, False]
+
+
+def test_a_cancelled_skip_range_changes_nothing():
+    state, view = _view_with(4, ask_skip_range=lambda n: None)
+
+    view._on_skip_range_clicked()
+
+    assert state.can_undo is False
+
+
+def test_a_malformed_skip_range_reports_on_the_button():
+    state, view = _view_with(4, ask_skip_range=lambda n: "one to six")
+
+    view._on_skip_range_clicked()
+
+    assert state.can_undo is False
+    assert "page number" in view.skip_range_button.toolTip()
+
+
+def test_remove_deletes_the_selection():
+    state, view = _view_with(5, confirm_remove=lambda n: True)
+    _select(view, [0, 1])
+
+    view.remove_selection()
+
+    assert _order(state) == [2, 3, 4]
+
+
+def test_remove_asks_first():
+    state, view = _view_with(5, confirm_remove=lambda n: False)
+    _select(view, [0, 1])
+
+    view.remove_selection()
+
+    assert len(state.project.pages) == 5
+    assert state.can_undo is False
+
+
+def test_remove_is_told_how_many():
+    asked: list[int] = []
+    state, view = _view_with(5, confirm_remove=lambda n: asked.append(n) or True)
+    _select(view, [0, 2, 4])
+
+    view.remove_selection()
+
+    assert asked == [3]
+
+
+def test_remove_is_one_undo_step():
+    """A loop over a one-page helper would push three entries, so the
+    single Ctrl+Z the user expects would bring back one page and cost the
+    rest of their history."""
+    state, view = _view_with(5, confirm_remove=lambda n: True)
+    _select(view, [0, 1, 2])
+
+    view.remove_selection()
+    state.undo()
+
+    assert _order(state) == [0, 1, 2, 3, 4]
+    assert state.can_undo is False
+
+
+def test_remove_announces_the_change():
+    state, view = _view_with(4, confirm_remove=lambda n: True)
+    seen: list[int] = []
+    view.pages_changed.connect(lambda: seen.append(1))
+    _select(view, [0])
+
+    view.remove_selection()
+
+    assert seen == [1], "the preview would keep showing the pre-removal plan"
+
+
+def test_remove_leaves_the_cursor_where_the_pages_were():
+    state, view = _view_with(5, confirm_remove=lambda n: True)
+    _select(view, [1, 2])
+
+    view.remove_selection()
+
+    assert view.list_widget.currentRow() == 1
+
+
+def test_removing_everything_leaves_no_current_row():
+    state, view = _view_with(3, confirm_remove=lambda n: True)
+    _select(view, [0, 1, 2])
+
+    view.remove_selection()
+
+    assert state.project.pages == []
+
+
+def test_remove_with_nothing_selected_does_nothing():
+    state, view = _view_with(3, confirm_remove=lambda n: True)
+    view.list_widget.clearSelection()
+
+    view.remove_selection()
+
+    assert len(state.project.pages) == 3
+    assert state.can_undo is False

@@ -35,6 +35,14 @@ def report(tmp_path_factory):
     env = dict(os.environ)
     env["PYTHONPATH"] = REPO_ROOT
     env["QT_QPA_PLATFORM"] = "offscreen"
+    # A fresh `MainWindow` offers back any never-saved autosave it finds
+    # under `data_dir("autosave")`, through a modal that a headless probe
+    # cannot answer. Point the data root at a scratch directory so the
+    # probe sees an empty store -- and so it cannot leave recovery offers
+    # in the developer's real one either.
+    data_root = tmp_path_factory.mktemp("data")
+    env["XDG_DATA_HOME"] = str(data_root)
+    env["APPDATA"] = str(data_root)
 
     result = subprocess.run(
         [sys.executable, "-u", SCRIPT, FIXTURE, str(out_pdf)],

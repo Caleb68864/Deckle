@@ -12,6 +12,8 @@ import os
 import threading
 import time
 
+import pytest
+
 
 from deckle.app.state import (
     AppState,
@@ -32,6 +34,21 @@ def _make_page(index: int) -> SourcePage:
         path="src.pdf", page_index=index, sha256="abc", width_pt=612.0, height_pt=792.0
     )
     return SourcePage(ref=ref, rotate_deg=0, skipped=False)
+
+
+@pytest.fixture(autouse=True)
+def data_root(tmp_path_factory, monkeypatch):
+    """Point the never-saved autosave store at a temporary directory.
+
+    Autouse and unconditional: `paths._root` reads the environment at call
+    time, so a test that does not set both variables writes into the
+    developer's real `~/.local/share/deckle` and leaves recovery offers
+    behind that their next launch will show them.
+    """
+    root = tmp_path_factory.mktemp("data")
+    monkeypatch.setenv("XDG_DATA_HOME", str(root))
+    monkeypatch.setenv("APPDATA", str(root))
+    return root
 
 
 def _make_project(n_pages: int = 3) -> Project:
@@ -153,18 +170,23 @@ def test_autosave_survives_kill_and_reopen(tmp_path):
     assert reopened.pages[0].rotate_deg == 180
 
 
-def test_autosave_follows_the_path_a_first_save_gives_the_project(tmp_path):
+def test_autosave_follows_the_path_a_first_save_gives_the_project(
+    tmp_path, data_root
+):
     """A project that starts unnamed autosaves once Save names it.
 
-    This is the ordinary session, not an edge case: ``main()`` opens a blank
-    project with no path, so ``autosave_path`` is ``None`` and autosave is
-    correctly a no-op. Save is what supplies the path. When the path was
-    computed once in ``__init__`` it stayed ``None`` for the life of the
-    window, so from the first save onward the project autosaved nowhere --
-    the whole session was unprotected by the feature meant to protect it.
+    This is the ordinary session, not an edge case: ``main()`` opens a
+    blank project with no path, and Save is what supplies one. When the
+    path was computed once in ``__init__`` it stayed ``None`` for the life
+    of the window, so from the first save onward the project autosaved
+    nowhere -- the whole session was unprotected by the feature meant to
+    protect it.
+
+    Before Save the autosave now goes to the never-saved store rather than
+    nowhere; what matters here is that it MOVES to the project's own file.
     """
     state = AppState(_make_project(2), timer_factory=_ImmediateTimer)
-    assert state.autosave_path is None
+    assert state.autosave_path.startswith(str(data_root))
 
     project_path = str(tmp_path / "proj.deckle")
     # What Save does, and all it does -- see `MainWindow._save_project_to`.
@@ -219,12 +241,27 @@ def test_flush_autosave_cancels_pending_timer_and_saves_immediately(tmp_path):
     assert loaded.pages[0].skipped is True
 
 
-def test_no_project_path_means_autosave_is_a_noop():
-    state = AppState(_make_project(1))
+def test_a_project_with_no_sources_has_no_autosave(data_root):
+    """The one case that still writes nothing.
+
+    This test used to assert the same of a project with three real pages,
+    which pinned the hole rather than the rule: a never-saved project is
+    now keyed on what it was imported from. A window with nothing imported
+    has nothing worth recovering, so it still has nowhere to write -- and
+    flushing must still not be an error.
+    """
+    state = AppState(Project(
+        pages=[],
+        layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0,
+                              binding_edge="left"),
+        printer=None,
+    ))
+
     assert state.autosave_path is None
-    # Should not raise even though there is nowhere to write.
-    state.mutate(lambda p: toggle_skip(p, 0))
+
     state.flush_autosave()
+
+    assert not (data_root / "deckle" / "autosave").exists()
 
 
 # -- import: populates state, virtualized thumbnails, off-thread ---------
@@ -374,3 +411,89 @@ def test_300_page_import_completes_well_under_100ms_on_calling_thread(tmp_path, 
     load_and_apply_import(state, str(tmp_path / "big.pdf"))
     elapsed_ms = (time.monotonic() - started) * 1000
     assert elapsed_ms < 100
+
+
+# --- removing and skipping whole ranges ----------------------------------
+
+
+def test_remove_pages_deletes_them():
+    from deckle.app.state import remove_pages
+
+    result = remove_pages(_make_project(5), [1, 3])
+
+    assert [p.ref.page_index for p in result.pages] == [0, 2, 4]
+
+
+def test_remove_pages_ignores_order_and_repeats():
+    from deckle.app.state import remove_pages
+
+    project = _make_project(5)
+
+    assert remove_pages(project, [3, 1, 3]) == remove_pages(project, [1, 3])
+
+
+def test_remove_pages_does_not_mutate_the_original():
+    from deckle.app.state import remove_pages
+
+    project = _make_project(5)
+
+    remove_pages(project, [0])
+
+    assert len(project.pages) == 5
+
+
+def test_remove_pages_rejects_a_bad_index():
+    """Raises rather than skipping it, matching `set_rotation` and
+    `toggle_skip` -- a silently ignored index removes the wrong page."""
+    import pytest
+
+    from deckle.app.state import remove_pages
+
+    with pytest.raises(IndexError):
+        remove_pages(_make_project(5), [9])
+
+
+def test_removing_every_page_leaves_an_empty_document():
+    from deckle.app.state import remove_pages
+
+    assert remove_pages(_make_project(5), list(range(5))).pages == []
+
+
+def test_remove_is_undoable():
+    from deckle.app.state import remove_pages
+
+    state = AppState(_make_project(5))
+
+    state.mutate(lambda p: remove_pages(p, [0, 1]))
+    state.undo()
+
+    assert [p.ref.page_index for p in state.project.pages] == [0, 1, 2, 3, 4]
+
+
+def test_skip_pages_states_rather_than_toggles():
+    """A range is stated, so naming a page that is already skipped is not
+    a request to bring it back."""
+    from deckle.app.state import skip_pages
+
+    project = skip_pages(_make_project(4), [0])
+
+    result = skip_pages(project, [0, 1])
+
+    assert [p.skipped for p in result.pages] == [True, True, False, False]
+
+
+def test_skip_pages_never_removes_anything():
+    from deckle.app.state import skip_pages
+
+    result = skip_pages(_make_project(4), [1, 2])
+
+    assert [p.ref.page_index for p in result.pages] == [0, 1, 2, 3]
+
+
+def test_skip_pages_rejects_a_page_the_document_does_not_have():
+    import pytest
+
+    from deckle.app.state import skip_pages
+
+    with pytest.raises(ValueError, match="no page 400"):
+        skip_pages(_make_project(4), [399])

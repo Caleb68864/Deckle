@@ -35,6 +35,7 @@ modules sit underneath all of it.
    core.schema
    core.paper
    core.project_io
+   core.defaults
    core.outputs
    core.printing
    core.recent

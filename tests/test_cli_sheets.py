@@ -15,7 +15,7 @@ import os
 
 import pytest
 
-from deckle.cli import _parse_sheet_selection, main
+from deckle.cli import _parse_page_selection, _parse_sheet_selection, main
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "sample.pdf")
 
@@ -56,6 +56,68 @@ def test_a_malformed_selection_is_rejected_while_the_user_is_still_looking(value
 
     with pytest.raises(argparse.ArgumentTypeError):
         _parse_sheet_selection(value)
+
+
+# --- --pages: the same grammar, one base along ---------------------------
+#
+# `--sheets` is 0-based because it names Deckle's own artefact; `--pages` is
+# 1-based because it names the user's document and a person types what
+# their PDF viewer's counter shows. That is deliberate, and the two share
+# one implementation so they cannot drift apart in any other respect.
+
+
+def test_pages_are_one_based():
+    assert _parse_page_selection("1") == [0]
+    assert _parse_page_selection("7-9") == [6, 7, 8]
+
+
+def test_pages_rejects_zero():
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError) as excinfo:
+        _parse_page_selection("0")
+
+    assert "numbered from 1" in str(excinfo.value)
+
+
+def test_pages_rejects_a_backwards_range():
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError) as excinfo:
+        _parse_page_selection("9-7")
+
+    assert "runs backwards" in str(excinfo.value)
+
+
+def test_pages_keeps_the_order_it_was_given():
+    assert _parse_page_selection("8,2") == [7, 1]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "a", "1,", "-1", "1-", "3-1", "0..2", "1,,2", "0"],
+)
+def test_a_malformed_page_selection_is_rejected_too(value):
+    import argparse
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        _parse_page_selection(value)
+
+
+@pytest.mark.parametrize("value", ["0", "2,0", "1-3", "0,2-4", " 0 , 2 - 3 "])
+def test_pages_and_sheets_share_one_grammar(value):
+    """Parsing the same shape one base along must give the same indices.
+
+    The two flags differ by exactly one thing -- where the user counts
+    from -- and this is what pins that. A divergence in whitespace
+    handling, range inclusivity or ordering would show up here.
+    """
+    shifted = ",".join(
+        "-".join(str(int(part) + 1) for part in item.strip().split("-"))
+        for item in value.split(",")
+    )
+
+    assert _parse_page_selection(shifted) == _parse_sheet_selection(value)
 
 
 # --- the CLI ------------------------------------------------------------

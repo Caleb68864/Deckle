@@ -416,7 +416,13 @@ app layer stays replaceable.
 ```
 deckle/core/    models, loader, layout, export, render, printing, profiles,
                 marks, schedule, signatures, print_session, plan_digest,
+<<<<<<< HEAD
                 project_io, outputs, report, session_log, diagnostics,
+||||||| 12cd9fc
+                project_io, outputs, session_log, diagnostics,
+=======
+                project_io, defaults, outputs, session_log, diagnostics,
+>>>>>>> feat/n-domain
                 paper, paths, locate, schema, recent, dummy
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli.py   headless entry point, imports only deckle.core

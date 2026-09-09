@@ -209,6 +209,11 @@ _MARKS_CALL_ARGS = {
     # disables the function would let this test pass on an empty tuple.
     "trim_pt": 18.0,
     "fore_edges": ("left", "right"),
+    # Non-empty and on the sheet, for the same reason `trim_pt` is
+    # non-zero: `positions=()` returns an empty tuple, which would let this
+    # test pass without ever constructing a Mark on the branch that takes
+    # stated station positions.
+    "positions": (36.0, 144.0, 162.0),
 }
 
 

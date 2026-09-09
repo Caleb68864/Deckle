@@ -847,6 +847,7 @@ server with no display libraries installed at all.
 | `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`), `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
 | `print SOURCE --profile NAME` | Plan a manual-duplex run: which sheets go through in which order on each pass, whether the backs need turning, and what to do at the printer in between. **Submits nothing** — see below. With `-o job.pdf` it also writes `job.front.pdf` and `job.back.pdf`, with the profile's registration correction already applied. `--sheets SPEC` narrows it. |
 | `profile list\|show\|set` | The calibrated printer profiles on this machine. Takes no `SOURCE` and no layout options. |
+| `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`) — here a *count*, not the page selection the layout options below describe, because `dummy` has no source to select from — and `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
 
 `-o`, or `--output`, is the destination in every command that writes one.
 `schedule` is the only one where it is optional; without it the schedule goes
@@ -891,7 +892,9 @@ is the plan `export` writes.
 | `--auto-crop` | off | Measure the crop from where the ink actually is. Odd and even pages are measured separately, and the values found are printed so you can pin them with `--crop`. |
 | `--auto-crop-margin LENGTH` | `0` | Keep this much back from every edge `--auto-crop` found, for descenders and hairline rules a low-dpi scan can miss. |
 | `--trim LENGTH` | `0` | Draw cut lines this far in from head, tail and fore-edge, where the block is trimmed square after sewing. The spine is never cut. |
-| `--sewing-stations N` | `3` | Folio only. `0` disables the marks. |
+| `--sewing-stations N` | `3` | Folio only. `0` disables the marks. Spreads that many ticks evenly between a 36pt inset at head and tail — a pamphlet stitch. |
+| `--stations Y,Y,Y` | unset | Folio only. Exactly where the sewing stations go, **measured up from the tail** — `0.5in,2in,2.25in,9.5in`. Wins over `--sewing-stations` when both are given. Even spacing describes a pamphlet stitch and nothing else: sewing on tapes needs a *pair* of stations either side of each tape at the tape's width, kettle stitches sit at a fixed inset from head and tail with the rest between them, and a long-stitch pattern is chosen for the cover. No integer produces any of those. Sorted and de-duplicated for you; a position that does not fall between the two edges of the sheet is refused rather than moved. The binding schedule lists every one of them. |
+| `--pages SPEC` | every page | Use only these pages of the source, counting from **1** as your PDF viewer does — `7-312`, `1,3`, `7-312,400`. A public-domain scan carries a scanner target, a bookplate and a colophon, and none of them belong in the book. The pages you leave out are marked *skipped*, not deleted: a `.deckle` written this way keeps the whole source and the decision, so reopening it shows what was excluded rather than a document that mysteriously starts at page 7. Applied before `--auto-crop`, so a scanner target's calibration bar cannot widen the measured ink extent of the book. Ignored for a `.deckle` source, which carries its own. |
 
 **Lengths** accept `in`, `pt`, `mm` or `cm`, with or without a space:
 `0.75in`, `18pt`, `5 mm`. A bare number means points.

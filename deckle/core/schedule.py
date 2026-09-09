@@ -100,7 +100,10 @@ class Schedule:
     :ivar blank_total: blank pages padding forced across the document.
     :ivar sewing_stations: how many holes per signature, 0 for none.
     :ivar sewing_margin_pt: how far the first and last holes sit from the
-        head and tail.
+        head and tail. Only meaningful for evenly spaced stations; stated
+        positions do not consult it.
+    :ivar sewing_station_positions_pt: where the holes go, in points from
+        the tail, or ``None`` when they are evenly spaced.
     :ivar paper_thickness_pt: the stock thickness used for the creep
         estimate, or 0 if unset.
     :ivar fold_scheme: the imposition this schedule describes.
@@ -122,6 +125,7 @@ class Schedule:
     sewing_margin_pt: float
     paper_thickness_pt: float
     fold_scheme: str
+    sewing_station_positions_pt: tuple[float, ...] | None = None
     spine_width_pt: tuple[float, float] | None = None
     duplex_flip_edge: str = "long"
     notes: tuple[str, ...] = field(default_factory=tuple)
@@ -175,6 +179,29 @@ def _page_numbers(
 #: RANGE and names the assumption rather than printing a single number.
 SWELL_FRACTION_LOW = 0.10
 SWELL_FRACTION_HIGH = 0.25
+
+
+def block_width_pt(sheet_count: int, thickness_pt: float) -> float | None:
+    """The thickness of an unsewn stack of ``sheet_count`` sheets.
+
+    :param sheet_count: pieces of paper in the whole job.
+    :param thickness_pt: caliper of one sheet, in points.
+    :returns: the thickness in points, or ``None`` if thickness or sheet
+        count is unset.
+
+    A single number rather than the range :func:`spine_width_pt` gives,
+    because that range is **swell** -- thread accumulating in a fold -- and
+    a flat-sheet job has neither folds nor thread. Reporting a sewn range
+    over a glued or side-sewn block would overstate it by up to a quarter,
+    which is a recut set of boards.
+
+    Still an estimate: paper caliper varies a few percent with humidity,
+    and a perfect binder's glue adds a little. Measure the real block
+    before covering, which is what the schedule says.
+    """
+    if thickness_pt <= 0 or sheet_count <= 0:
+        return None
+    return sheet_count * thickness_pt
 
 
 def spine_width_pt(sheet_count: int, thickness_pt: float) -> tuple[float, float] | None:
@@ -288,16 +315,23 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
         )
 
     notes: list[str] = []
+    # Outside the `if signatures:` guard: a flat-sheet job needs the block
+    # thickness to cut boards against just as much as a sewn one needs a
+    # spine width, and this note used to be hidden behind a guard that
+    # every flat-sheet schedule failed.
+    if settings.paper_thickness_pt <= 0:
+        notes.append(
+            "Paper thickness is not set, so the block thickness is not "
+            "estimated. Measure your stock and set it if you are cutting "
+            "boards."
+        )
     if signatures:
         widest = max(sig.sheet_count for sig in signatures)
+        # Creep stays inside the guard: it is a folding phenomenon, and a
+        # flat sheet has none.
         creep = _creep_note(widest, settings.paper_thickness_pt, settings.trim_pt)
         if creep is not None:
             notes.append(creep)
-        elif settings.paper_thickness_pt <= 0:
-            notes.append(
-                "Paper thickness is not set, so creep is not estimated. "
-                "Measure your stock and set it if the fore-edge matters."
-            )
         uneven = len(signatures) > 1 and len({s.sheet_count for s in signatures}) > 1
         if uneven and settings.signature_lengths:
             # The binder stated these lengths. Explaining their own choice
@@ -321,6 +355,7 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
         sewing_margin_pt=SEWING_MARGIN_PT,
         paper_thickness_pt=settings.paper_thickness_pt,
         fold_scheme=settings.fold_scheme,
+        sewing_station_positions_pt=settings.sewing_station_positions_pt,
         spine_width_pt=spine_width_pt(len(plan.sheets), settings.paper_thickness_pt),
         duplex_flip_edge=duplex_flip_edge(plan.paper_pt),
         notes=tuple(notes),
@@ -378,6 +413,54 @@ def _printer_lines(schedule: Schedule) -> list[str]:
     return lines
 
 
+def _binding_the_stack_lines(schedule: Schedule) -> list[str]:
+    """What to do with a flat stack once it is printed.
+
+    The counterpart to the folio path's AFTER SEWING block, and the reason
+    a flat-sheet schedule is worth reaching at all. A flat-sheet job is
+    bound by gluing, punching or side-sewing, and the one number needed
+    before any of those -- and not measurable until it is too late to
+    matter -- is how thick the block will be. It is what boards and a spine
+    piece are cut against.
+
+    Deliberately does **not** reuse :func:`spine_width_pt`. That range is
+    swell from sewing thread; there is no thread here, and a 10-25% range
+    over a glued block is a recut set of boards.
+
+    :param schedule: the schedule being rendered.
+    :returns: the block's lines, ending in a blank one.
+    """
+    block = block_width_pt(schedule.sheets_total, schedule.paper_thickness_pt)
+    lines = ["BINDING THE STACK", "-" * len("BINDING THE STACK")]
+    lines.append("  Collate the sheets in the order they came off the")
+    lines.append("  printer. The gutter alternates side by side, so the")
+    lines.append("  spine margins line up once the stack is in order.")
+    lines.append("")
+    if block is None:
+        lines.append(
+            "  Block thickness is not estimated -- set paper thickness to"
+        )
+        lines.append("  get a figure to cut boards against.")
+    else:
+        lines.append(
+            f"  Block thickness: about {block / 72:.2f}in ({block:.0f}pt)."
+        )
+        lines.append(
+            f"    {schedule.sheets_total} sheets at "
+            f"{schedule.paper_thickness_pt:.3f}pt. No swell is added:"
+        )
+        lines.append(
+            "    swell is thread accumulating in a fold, and there are"
+        )
+        lines.append("    no folds here.")
+        lines.append(
+            "    Cut boards and spine against this, then measure the real"
+        )
+        lines.append("    block before covering.")
+    lines.append("")
+    return lines
+
+
 def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
     """Render a schedule as plain text, for printing or piping.
 
@@ -411,6 +494,11 @@ def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
         # A job with no folding is still a job, and the two settings that
         # ruin it are the same ones folio has to get right.
         lines.extend(_printer_lines(schedule))
+        lines.extend(_binding_the_stack_lines(schedule))
+        if schedule.notes:
+            for note in schedule.notes:
+                lines.append(f"  Note: {note}")
+            lines.append("")
         return "\n".join(lines) + "\n"
 
     lines.append(
@@ -444,7 +532,19 @@ def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
             lines.append(f"        back:   {_format_pages(sheet.back_pages)}")
         lines.append("")
         lines.append("  Fold the gathered stack in half along the printed fold line.")
-        if schedule.sewing_stations > 0:
+        positions = schedule.sewing_station_positions_pt
+        if positions:
+            lines.append(
+                f"  Pierce {len(positions)} sewing station(s) on the fold, "
+                "at the printed marks."
+            )
+            # In capitals because head-versus-tail is the one thing a
+            # binder can get backwards here, and an asymmetric pattern
+            # pierced upside down is a ruined signature.
+            lines.append("  Measured up from the TAIL:")
+            for index, y in enumerate(positions, start=1):
+                lines.append(f"    {index}.  {y:.1f}pt  ({y / 72:.2f}in)")
+        elif schedule.sewing_stations > 0:
             lines.append(
                 f"  Pierce {schedule.sewing_stations} sewing station(s) on the fold, "
                 f"at the printed marks."

@@ -122,6 +122,10 @@ WRONG_TYPE = [
     pytest.param("trim_pt", None, id="trim-is-null"),
     pytest.param("crop_odd_pt", [1.0, 2.0], id="crop-has-two-numbers"),
     pytest.param("signature_lengths", ["a"], id="lengths-hold-text"),
+    pytest.param("sewing_station_positions_pt", "0.5in", id="positions-are-text"),
+    pytest.param(
+        "sewing_station_positions_pt", ["36"], id="positions-hold-text"
+    ),
 ]
 
 

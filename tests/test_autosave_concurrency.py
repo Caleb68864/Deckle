@@ -137,14 +137,22 @@ def test_the_autosave_never_clobbers_the_saved_project(state, tmp_path):
         assert handle.read() == "explicitly saved, not JSON"
 
 
-def test_an_unsaved_project_has_nothing_to_race_over(tmp_path):
-    """A project that has never been saved has no autosave path, and
-    flushing it must be a no-op rather than an error -- shutdown calls
-    flush unconditionally."""
+def test_an_unsaved_project_writes_to_the_recovery_store(tmp_path, monkeypatch):
+    """Flushing a never-saved project must not be an error -- shutdown
+    calls flush unconditionally -- and it must now actually write.
+
+    This test used to assert `autosave_path is None` over six real-path
+    pages and an empty directory afterwards, which pinned the hole rather
+    than the property its docstring wanted. A never-saved project is keyed
+    on its sources and lands under `data_dir("autosave")`.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
     fresh = AppState(_project(36.0), project_path=None)
 
     fresh.mutate(lambda p: _project(1.0))
     fresh.flush_autosave()
 
-    assert fresh.autosave_path is None
-    assert list(tmp_path.iterdir()) == []
+    store = tmp_path / "deckle" / "autosave"
+    assert fresh.autosave_path.startswith(str(store))
+    assert os.path.exists(fresh.autosave_path)

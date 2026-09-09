@@ -56,3 +56,7 @@ graphify-out/
 
 # Local planning/notes vault (not for the repo)
 vault/
+
+# Agent worktrees. Each is its own checkout of this repo; committing them as
+# gitlinks puts an unreachable submodule reference in the history.
+.claude/worktrees/
