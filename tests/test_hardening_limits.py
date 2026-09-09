@@ -19,7 +19,7 @@ from unittest import mock
 import pikepdf
 import pytest
 
-from deckle.core import export, render
+from deckle.core import export, paths, render
 from deckle.core.layout import GutterShiftStrategy
 from deckle.core.models import (
     LayoutSettings,
@@ -264,10 +264,16 @@ def test_export_cleanup_failure_does_not_mask_the_real_error(tmp_path, monkeypat
     """A locked scratch file must not replace the real cause of a failure.
 
     On Windows the scratch PDF can still be held by a handle the failing
-    export was using, so ``os.remove`` in the ``finally`` raises
-    ``PermissionError`` -- and that, not the actual fault, is what reaches
-    the user and the log. Cleanup now routes through ``_safe_remove``,
-    which records the failure and lets the original exception through.
+    export was using, so removing it raises ``PermissionError`` -- and
+    that, not the actual fault, is what reaches the user and the log.
+
+    The guarantee is unchanged; only its owner moved. ``export`` used to
+    do its own scratch-and-rename and swallow the cleanup failure through
+    ``_safe_remove``; it now goes through
+    :func:`deckle.core.paths.atomic_output`, whose unlink is wrapped in
+    ``except OSError: pass`` before the original exception is re-raised.
+    So this patches ``os.unlink`` where the previous version patched
+    ``os.remove``, and asserts the same thing about the same export.
     """
     plan = _plan_from_source(tmp_path, 4)
     out_path = os.path.join(str(tmp_path), "out.pdf")
@@ -277,16 +283,16 @@ def test_export_cleanup_failure_does_not_mask_the_real_error(tmp_path, monkeypat
 
     monkeypatch.setattr(export, "_export_batched", boom)
 
-    real_remove = os.remove
+    real_unlink = os.unlink
     removed = []
 
-    def stubborn_remove(path):
+    def stubborn_unlink(path):
         if str(path).endswith(".pdf") and "out.pdf" not in str(path):
             removed.append(path)
             raise PermissionError("file is in use by another process")
-        return real_remove(path)
+        return real_unlink(path)
 
-    monkeypatch.setattr(export.os, "remove", stubborn_remove)
+    monkeypatch.setattr(paths.os, "unlink", stubborn_unlink)
 
     with pytest.raises(RuntimeError, match="the actual problem"):
         export.export(plan, out_path)

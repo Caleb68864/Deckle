@@ -217,6 +217,34 @@ def test_apply_rotate_backs_flattens_for_drivers_that_ignore_rotate(tmp_path):
         assert rotate is None or int(rotate) % 360 == 0
 
 
+def test_no_driver_is_on_the_ignore_list_yet():
+    """The empty allow-list is a decision, not an oversight.
+
+    ``DRIVERS_IGNORING_ROTATE`` is empty because no driver has yet been
+    *observed* to discard a PDF's ``/Rotate``; the comment beside it names
+    ``docs/spikes/qprinter-capability-report.md`` as the source of truth
+    for additions. A dead-code sweep reading "empty frozenset, never
+    added to" would delete it, and with it the only switch on a capability
+    that is reached and tested (see the test above).
+
+    This is ``test_nothing_in_deckle_calls_this_yet``'s shape: it has an
+    end condition. It fails exactly once, when somebody adds a driver, and
+    at that moment its failure is the message -- update it, and cite the
+    observation in the spike report.
+    """
+    assert backend_mod.DRIVERS_IGNORING_ROTATE == frozenset()
+
+
+def test_an_ignoring_driver_would_actually_flatten():
+    """...and the switch is wired, so the emptiness above is an empty
+    list rather than a dead parameter."""
+    backend = QtPrintBackend(
+        _profile(), drivers_ignoring_rotate=frozenset({"Fake Driver"})
+    )
+
+    assert backend._drivers_ignoring_rotate == frozenset({"Fake Driver"})
+
+
 def test_rotate_backs_never_assigns_page_rotate_directly():
     """Older qpdf has mishandled a direct assignment to the rotation key,
     and a relative turn is the only correct one for a page that already

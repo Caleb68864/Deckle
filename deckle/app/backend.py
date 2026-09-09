@@ -50,24 +50,7 @@ from deckle.core.profiles import PrinterProfile
 from deckle.core.render import (
     pdfium_guard, rasterize_page, RenderedPage, render_sheet,
 )
-
-try:
-    from deckle.core.session_log import log_print_job
-except ImportError:  # pragma: no cover - SS-07 (persistence/log) not yet landed
-    def log_print_job(
-        printer: str,
-        profile: PrinterProfile,
-        sheets: Sequence[int],
-        dpi: int,
-        pass_index: int,
-    ) -> None:
-        """Fallback no-op used only until ``deckle.core.session_log`` exists.
-
-        Mirrors the ``log_print_job`` shape from SS-07 exactly so callers
-        never have to change once the real module lands.
-        """
-        return None
-
+from deckle.core.session_log import log_print_job
 
 # Default bound on sheets submitted as a single Qt print job. Chunking
 # bounds the blast radius of a mid-job failure to one chunk, not a ream.

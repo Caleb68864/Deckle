@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PACKAGE = os.path.join(ROOT, "deckle")
@@ -81,11 +83,12 @@ def test_only_paths_replaces_a_file_in_place():
 
     Every store Deckle keeps is written by rename so a failure leaves the
     previous copy intact, and the guarantee is only as good as its least
-    careful implementation. ``export`` is the documented exception: it
-    builds a PDF through pikepdf rather than writing bytes it holds, so it
-    does its own scratch-and-rename and says so in its docstring.
+    careful implementation. ``export`` was the documented exception until
+    it stopped being one: it builds a PDF through pikepdf rather than
+    writing bytes it holds, which is precisely the case ``atomic_output``
+    yields a path for.
     """
-    allowed = {"deckle/core/paths.py", "deckle/core/export.py"}
+    allowed = {"deckle/core/paths.py"}
     offenders = [
         f"{path}:{number}"
         for path, number, code in _package_lines()
@@ -96,6 +99,42 @@ def test_only_paths_replaces_a_file_in_place():
     assert offenders == [], (
         "file replacement outside paths.py -- use write_text_atomic() or "
         f"atomic_output() instead: {offenders}"
+    )
+
+
+def test_importing_a_pdf_does_not_import_the_exporter():
+    """``loader`` reached the pdfium lock through the rasteriser.
+
+    ``from deckle.core.render import pdfium_guard`` was one function's
+    worth of need that pulled in ``deckle.core.export`` -- and with it
+    pikepdf, the printing module and the diagnostics log -- because
+    ``render`` imports the exporter. Importing a PDF does not depend on
+    rendering or exporting one, and an import graph that says it does is
+    read as though it were true. The lock now lives in
+    ``deckle.core.pdfium_lock``, which imports ``threading`` and nothing
+    else.
+
+    Run in a **subprocess**. By the time pytest reaches this file some
+    earlier test has certainly imported ``export`` already, and an
+    in-process ``sys.modules`` check would assert nothing -- the mistake
+    ``tests/test_core_purity.py`` records having made and fixed in itself.
+    """
+    probe = (
+        "import sys, deckle.core.loader;"
+        "print(sorted(m for m in ('deckle.core.export', 'deckle.core.render')"
+        " if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]", (
+        "importing deckle.core.loader dragged in the rasteriser/exporter: "
+        f"{result.stdout.strip()}"
     )
 
 

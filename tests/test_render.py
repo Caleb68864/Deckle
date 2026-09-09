@@ -121,6 +121,75 @@ def test_render_sheet_front_and_back(tmp_path):
     assert front.width > 0 and back.width > 0
 
 
+# --- Which page of the exported sheet is this face ---------------------
+#
+# `export` writes one page per face that EXISTS, front first, so a sheet
+# with a back and no front puts that back at page 0. `render_sheet` used
+# to re-derive that from its own `has_front`/`has_back` pair; it now asks
+# `export.face_page_index`. The two tests below are what would have caught
+# the two copies drifting: each renders a face that is identifiable by its
+# ink and compares it against the same content rendered where its page
+# index is not in doubt.
+
+
+def _write_marked_pdf(tmp_path, n_pages: int, page_size=(400.0, 600.0)) -> str:
+    """A source whose pages are told apart by where their ink sits.
+
+    ``_write_source_pdf`` makes blank pages, which rasterise identically,
+    so a test built on one cannot tell which page it got back.
+    """
+    path = os.path.join(str(tmp_path), "marked.pdf")
+    pdf = pikepdf.Pdf.new()
+    for i in range(n_pages):
+        page = pdf.add_blank_page(page_size=page_size)
+        page.contents_add(f"q\n0 0 0 rg\n0 {i * 120} 100 50 re\nf\nQ\n".encode())
+    pdf.save(path)
+    pdf.close()
+    return path
+
+
+def test_a_sheet_with_no_front_renders_its_back_from_page_zero(tmp_path):
+    """The one sheet shape where the two implementations could disagree.
+
+    No plan Deckle currently produces reaches it -- ``_pad_to_even`` gives
+    every gutter-shift sheet both faces -- so a preview showing the wrong
+    face here would go unnoticed. The back's ink must be the ink that
+    comes back, which pins the page index to 0 and not 1.
+    """
+    src = _write_marked_pdf(tmp_path, 2)
+    ink = _make_ref(src, 1)
+
+    try:
+        back_only = render.render_sheet(_one_sheet_plan(None, ink), 0, "back", dpi=36)
+        as_a_front = render.render_sheet(_one_sheet_plan(ink, None), 0, "front", dpi=36)
+    finally:
+        export_module.clear_sheet_cache()
+
+    assert back_only.rgba != b""
+    assert back_only.rgba == as_a_front.rgba
+
+
+def test_a_back_beside_a_front_renders_from_page_one(tmp_path):
+    """The other half of the rule, so the test above cannot be satisfied
+    by a ``render_sheet`` that simply always reads page 0."""
+    src = _write_marked_pdf(tmp_path, 2)
+    front_ref = _make_ref(src, 0)
+    back_ref = _make_ref(src, 1)
+
+    try:
+        beside_a_front = render.render_sheet(
+            _one_sheet_plan(front_ref, back_ref), 0, "back", dpi=36
+        )
+        alone = render.render_sheet(
+            _one_sheet_plan(back_ref, None), 0, "front", dpi=36
+        )
+    finally:
+        export_module.clear_sheet_cache()
+
+    assert beside_a_front.rgba != b""
+    assert beside_a_front.rgba == alone.rgba
+
+
 def test_render_sheet_already_cancelled_returns_promptly(tmp_path, monkeypatch):
     src = _write_source_pdf(tmp_path, 1)
     ref = _make_ref(src, 0)

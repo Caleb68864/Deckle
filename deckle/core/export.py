@@ -43,7 +43,7 @@ from deckle.core.plan_digest import (
     update_delimited,
 )
 from deckle.core.models import Mark, OutputPage, Placement, Sheet, SheetPlan, Side
-from deckle.core.paths import evict_lru_files
+from deckle.core.paths import atomic_output, evict_lru_files
 from deckle.core.printing import duplex_flip_edge
 
 _CACHE_DIR_NAME = "deckle_export_cache"
@@ -367,6 +367,32 @@ def _sides(sheet: Sheet, side: str | None = None) -> list[Side | None]:
     return [sheet.front if side == "front" else sheet.back]
 
 
+def face_page_index(sheet: Sheet, side: str) -> int | None:
+    """Which page of a whole-sheet export carries ``side``.
+
+    :func:`export` with ``side=None`` writes one page per face that
+    *exists*, front first -- see :func:`_sides` -- so a sheet with a back
+    and no front puts that back at page ``0`` and not page ``1``. Anything
+    reading one face back out of an exported sheet has to know that, and
+    :func:`deckle.core.render.render_sheet` knew it a second time, under a
+    comment naming this module, which is the tell.
+
+    :param sheet: the sheet as exported.
+    :param side: ``"front"`` or ``"back"``.
+    :returns: the zero-based page index, or ``None`` when that face does
+        not exist on this sheet and there is nothing to read.
+    """
+    # Positional rather than `_sides(sheet, None).index(face)`: `Side` is a
+    # frozen dataclass, so a sheet whose two faces are structurally equal
+    # -- a blank both ways -- would find the front and report page 0 for
+    # the back.
+    if side == "front":
+        return 0 if sheet.front is not None else None
+    if sheet.back is None:
+        return None
+    return 1 if sheet.front is not None else 0
+
+
 _DASHED_MARK_KINDS = frozenset({"fold_line"})
 
 
@@ -573,10 +599,12 @@ def export(
     partial file never appears on disk.
 
     The scratch file is removed on every exit path -- success, exception, or
-    cancellation upstream. Cleanup itself never raises: on Windows the
+    cancellation upstream -- by :func:`deckle.core.paths.atomic_output`,
+    which is the single implementation of write-then-rename for every
+    output Deckle names. Cleanup itself never raises: on Windows the
     scratch file can still be held briefly by a handle the failing export
-    was using, and letting that ``PermissionError`` escape the ``finally``
-    would replace the real cause of the failure with a misleading one.
+    was using, and letting that ``PermissionError`` escape would replace
+    the real cause of the failure with a misleading one.
 
     :param plan: the imposed sheets to render.
     :param out_path: the PDF to write. Written atomically -- composition
@@ -623,9 +651,10 @@ def export(
 
     _check_writable(out_path)
 
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".pdf", dir=os.path.dirname(os.path.abspath(out_path)) or None)
-    os.close(tmp_fd)
-    try:
+    # `atomic_output` creates the scratch file the moment it is entered, so
+    # it opens *after* `_check_writable` above -- otherwise the "raises
+    # before any bytes are written" promise would be false by one file.
+    with atomic_output(out_path) as tmp_path:
         _export_batched(
             plan,
             selected,
@@ -648,10 +677,6 @@ def export(
             expected_pages=sum(len(_sides(sheet, side)) for sheet in selected),
             paper_pt=plan.paper_pt,
         )
-        os.replace(tmp_path, out_path)
-    finally:
-        if os.path.exists(tmp_path):
-            _safe_remove(tmp_path)
 
 
 def _is_back_face(sheet: Sheet, side: str | None, position: int) -> bool:

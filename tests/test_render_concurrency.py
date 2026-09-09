@@ -40,8 +40,9 @@ import pytest
 
 from deckle.core.dummy import make_numbered_pdf
 from deckle.core.loader import load_pdf
+from deckle.core.pdfium_lock import pdfium_guard
 from deckle.core.render import (
-    _PDFIUM_LOCK, clear_ink_bbox_cache, ink_bbox, rasterize_page, thumbnails,
+    clear_ink_bbox_cache, ink_bbox, rasterize_page, thumbnails,
 )
 
 WORKERS = 8
@@ -133,13 +134,17 @@ def test_the_guard_is_reentrant(pages):
     """``render_sheet`` holds the lock across a document's lifetime and
     calls ``rasterize_page``, which takes it again on the same thread. A
     plain ``Lock`` deadlocks there, and a deadlock in a GUI worker is a
-    hang rather than a crash -- quieter, and harder to diagnose."""
-    assert _PDFIUM_LOCK.acquire(blocking=False)
+    hang rather than a crash -- quieter, and harder to diagnose.
+
+    Asked through ``pdfium_guard()`` rather than through the private lock
+    it returns: reentrancy is a promise the guard's docstring makes to
+    callers, and callers only ever see the function."""
+    assert pdfium_guard().acquire(blocking=False)
     try:
-        assert _PDFIUM_LOCK.acquire(blocking=False), "not reentrant"
-        _PDFIUM_LOCK.release()
+        assert pdfium_guard().acquire(blocking=False), "not reentrant"
+        pdfium_guard().release()
     finally:
-        _PDFIUM_LOCK.release()
+        pdfium_guard().release()
 
 
 def test_rasterizing_is_serialised(pages, monkeypatch):

@@ -429,16 +429,11 @@ data, so they are testable with no display and no printer attached, and the
 app layer stays replaceable.
 
 ```
-deckle/core/    models, loader, layout, export, render, printing, profiles,
-                marks, schedule, signatures, print_session, plan_digest,
-                project_io, outputs, report, session_log, diagnostics,
-                project_io, defaults, outputs, session_log, diagnostics,
-                paper, paths, locate, schema, recent, dummy
-||||||| 12cd9fc
-                paper, paths, locate, schema, recent, dummy
-=======
-                paper, paths, locate, schema, recent, dummy, about
->>>>>>> feat/n-gui-shell
+deckle/core/    models, loader, layout, export, render, pdfium_lock,
+                printing, profiles, marks, schedule, signatures,
+                print_session, plan_digest, project_io, outputs, report,
+                defaults, session_log, diagnostics, paper, paths, locate,
+                schema, recent, dummy, about
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli.py   headless entry point, imports only deckle.core
 ```
