@@ -440,7 +440,7 @@ deckle/core/    models, loader, layout, export, render, printing, profiles,
                 paper, paths, locate, schema, recent, dummy, about
 >>>>>>> feat/n-gui-shell
 deckle/app/     PySide6 shell, views, Qt print backend
-deckle/cli.py   headless entry point, imports only deckle.core
+deckle/cli/     headless entry point, imports only deckle.core
 ```
 
 The packaged CLI is built without Qt entirely, so it runs on a server with no

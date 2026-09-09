@@ -14,9 +14,11 @@ which are the point rather than incidental:
    level of every document. Renaming or dropping one fails the suite --
    which is the whole value of the flag, because a caller cannot see the
    rename until their pipeline quietly produces nothing.
-2. **The shapes are built here, not in the CLI.** ``deckle/cli.py`` is
-   already ~1400 lines and interleaves seven value parsers with six
-   commands (roadmap M4); another 150 lines of dict-building would make
+2. **The shapes are built here, not in the CLI.** ``deckle/cli.py`` was
+   already ~1400 lines and interleaved seven value parsers with six
+   commands when this module was written (roadmap M4, since done -- it is
+   ``deckle/cli/`` now, and ``deckle.cli.report`` only *prints* these
+   documents); another 150 lines of dict-building would have made
    that worse, and the shapes are worth unit-testing without going
    through argparse.
 3. **Every document is self-describing.** ``report`` names which shape it
