@@ -71,7 +71,7 @@ gui_analysis = Analysis(
 # them ever starts mattering, something has imported Qt from the core and
 # `test_core_purity` should have caught it first.
 cli_analysis = Analysis(
-    ["../deckle/cli.py"],
+    ["../deckle/cli/__main__.py"],
     pathex=[".."],
     binaries=[],
     datas=_METADATA,

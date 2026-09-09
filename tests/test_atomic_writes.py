@@ -27,6 +27,7 @@ import pytest
 
 from deckle.core.models import LayoutSettings, Project, SourcePage, SourceRef
 from deckle.core.paths import write_text_atomic
+from deckle.core import project_io
 from deckle.core.project_io import load_project, save_project
 
 
@@ -94,21 +95,32 @@ def test_the_project_file_is_never_observed_half_written(tmp_path):
     save_project(_project(36.0), path)
 
     seen: list[float] = []
-    real_dump = json.dump
+    real_dump = project_io.json.dump
 
     def watching_dump(payload, fp, **kwargs):
         real_dump(payload, fp, **kwargs)
         with open(path, "r", encoding="utf-8") as f:
             seen.append(json.load(f)["layout"]["gutter_pt"])
 
-    original = json.dump
-    json.dump = watching_dump
+    # Patched on `project_io`'s own `json`, not the global module. Patching
+    # `json.dump` itself makes every caller in the process an observation:
+    # this failed once on CI with `[36.0, 36.0]` -- twice through the hook,
+    # both readings correct -- because something else serialised during the
+    # window. The property was never in doubt; the count was.
+    project_io.json.dump = watching_dump
     try:
         save_project(_project(72.0), path)
     finally:
-        json.dump = original
+        project_io.json.dump = real_dump
 
-    assert seen == [36.0]
+    # The property, not the number of observations. Every look at the target
+    # during the write must show a *complete* document, and the old one --
+    # a truncating writer shows a prefix, which `json.load` cannot parse at
+    # all, so a partial write fails above rather than here.
+    assert seen, "the hook never fired -- this test is not watching the save"
+    assert all(value == 36.0 for value in seen), (
+        f"the target held something other than the previous document: {seen}"
+    )
     assert _load(path).layout.gutter_pt == 72.0
 
 

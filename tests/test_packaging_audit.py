@@ -27,6 +27,7 @@ for ordinary development. They are the gate for a release, and
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -134,6 +135,45 @@ def test_both_executables_are_produced():
     expected = {"deckle.exe", "deckle-cli.exe"} if os.name == "nt" else {"deckle", "deckle-cli"}
     missing = expected - names
     assert not missing, f"missing executables in dist/: {sorted(missing)}"
+
+
+def test_every_script_the_spec_builds_from_exists():
+    """The spec names two entry points. Both have to be real files.
+
+    This needs no bundle, deliberately -- it is the one check in this file
+    that runs in an ordinary `pytest` and therefore on every push.
+
+    It exists because the spec silently stopped working. M4 turned
+    `deckle/cli.py` into the package `deckle/cli/`, and the spec went on
+    naming `../deckle/cli.py`. Nothing noticed: the suite does not build, the
+    other tests in this file skip without a bundle, and the workflow that
+    would have built one was ubuntu-only while `run.bat package` is a batch
+    file. The break was found by the first CI run that ever executed the
+    build -- `ERROR: script 'D:\a\Deckle\Deckle\deckle\cli.py' not found`
+    -- which is a long way to travel to learn that a path in a text file is
+    wrong.
+
+    The sibling tests check that the spec is *tracked* and *not ignored*,
+    which is the same class of question: can somebody else actually build
+    from this. Whether the paths in it resolve was the half nobody asked.
+    """
+    spec = (REPO_ROOT / "packaging" / "deckle.spec").read_text(encoding="utf-8")
+    scripts = re.findall(r'Analysis\(\s*\[\s*"([^"]+)"', spec)
+
+    assert len(scripts) == 2, (
+        f"expected the GUI and CLI entry points, found {scripts!r}. If the "
+        "spec has gained or lost an Analysis block, this test needs to know."
+    )
+    missing = [
+        script
+        for script in scripts
+        if not (REPO_ROOT / "packaging" / script).resolve().exists()
+    ]
+    assert not missing, (
+        f"packaging/deckle.spec builds from {missing}, which does not exist. "
+        "The bundle cannot be built, and every other test in this file skips "
+        "rather than failing, because there is no bundle to judge."
+    )
 
 
 def test_the_spec_records_why_pyinstallers_licence_permits_this():
