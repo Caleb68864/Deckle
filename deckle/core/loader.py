@@ -5,6 +5,13 @@ ever sees an image -- ``Imposer`` and ``Exporter`` only ever deal with PDF
 pages. Import is metadata-only: no rasterization, no page copying. This
 module intentionally reads page geometry via cheap metadata calls
 (``PdfPage.get_size`` / PDF media boxes) and never renders a bitmap.
+
+Every ``SourceRef`` this module builds carries an **absolute** path, and
+for a folder of images that path names a file in :func:`import_store_dir`
+that is kept for good. Both facts exist for the same reason: a ``.deckle``
+records references rather than content, so the reference has to still mean
+something when it is read from another directory, another day, or after a
+reboot.
 """
 
 from __future__ import annotations
@@ -12,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-import tempfile
 from pathlib import Path
 
 import img2pdf
@@ -23,7 +29,7 @@ from PIL import Image
 
 from deckle.core.diagnostics import log_exception
 from deckle.core.models import LayoutWarning, SourcePage, SourceRef
-from deckle.core.paths import evict_lru_files
+from deckle.core.paths import atomic_output, data_dir
 from deckle.core.render import pdfium_guard
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
@@ -34,33 +40,88 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 # page instead of trusting an invented DPI.
 _FALLBACK_PAGE_PT = (612.0, 792.0)  # US Letter, matching Project defaults.
 
-_CACHE_DIR_NAME = "deckle_import_cache"
-
-# A-7 (docs/specs/2026-08-04-deckle-mvp.md, Edge Cases "Red-team advisories,
-# resolved"): the img2pdf normalization cache is bounded and cleaned. Cap at
-# 2 GB, evict least-recently-used on startup -- heavy image import otherwise
-# accumulates silently in temp.
-_CACHE_MAX_BYTES = 2 * 1024 ** 3
+_IMPORT_STORE_DIR_NAME = "imported"
 
 
-def _evict_lru_cache_entries(cache_dir: str, max_bytes: int) -> None:
-    """Evict least-recently-used files from ``cache_dir`` until its total
-    size is at or under ``max_bytes``.
+def import_store_dir() -> str:
+    """Where an image folder's normalised PDF is kept, for good.
 
-    Runs at the start of every ``load_image_dir`` call -- the only place
-    that touches this cache -- so the bound is enforced "on startup" of the
-    next import rather than requiring a separate app-lifecycle hook.
+    A folder of scans has no PDF of its own, so ``load_image_dir`` makes
+    one -- and every ``SourceRef`` for those pages names *that* file, not
+    the images. A ``.deckle`` referencing it is therefore only as durable
+    as the file is.
 
-    The implementation moved to :func:`deckle.core.paths.evict_lru_files`
-    when the *export* cache turned out to need the same rule and had none:
-    its in-memory LRU bounds what it hands back and does nothing about
-    files a killed process left behind. Measured at 8,297 files and 50 MB
-    on one development machine.
+    It used to live in ``<tempdir>/deckle_import_cache/`` under a 2 GB
+    least-recently-used budget (A-7), which made it exactly as durable as
+    a cache: **Deckle deleted its own saved projects' sources.** Import a
+    book of scans, save the project, import anything else months later,
+    and the eviction pass took the least-recently-used entry -- which is
+    the one belonging to the project you have not opened in months. The
+    OS emptied the directory on the next reboot in any case. Either way
+    the project opened to "a source file is missing", naming a path like
+    ``/tmp/deckle_import_cache/tmpq4k1z0.pdf`` that the user never chose
+    and cannot go and find.
+
+    So this is not a cache and is not evicted. It lives under
+    :func:`deckle.core.paths.data_dir` beside the session log, which is
+    where things Deckle accumulates and must not lose already live -- the
+    same move B27 makes for print-session state, for the same reason.
+
+    :returns: the directory. Nothing is created; the writer makes it.
     """
-    evict_lru_files(
-        cache_dir, max_bytes,
-        on_error=lambda event, exc, path: log_exception(event, exc, path=path),
-    )
+    return str(data_dir(_IMPORT_STORE_DIR_NAME))
+
+
+def _import_key(per_image_pdfs: list[bytes]) -> str:
+    """A name for the normalised PDF a set of images will produce.
+
+    Content-addressed, which is what keeps a store nobody prunes from
+    growing without limit in the case that actually repeats: the same
+    folder of scans imported again -- after a cancelled job, or to start a
+    second project from the same book -- lands on the name already there
+    and costs nothing.
+
+    Derived from the per-image PDFs the caller is already holding rather
+    than from the merged file, so the answer is known *before* anything is
+    written and a repeat import can skip the merge entirely. Each page's
+    digest is folded in rather than its bytes concatenated, so where one
+    page ends and the next begins is part of the key.
+
+    :param per_image_pdfs: one single-page PDF per image, in page order.
+    :returns: a hex digest, used as the stored file's stem.
+    """
+    digest = hashlib.sha256()
+    for pdf_bytes in per_image_pdfs:
+        digest.update(hashlib.sha256(pdf_bytes).digest())
+    return digest.hexdigest()
+
+
+def _merge_image_pdfs(per_image_pdfs: list[bytes], out_path: str) -> None:
+    """Concatenate single-page PDFs into ``out_path``, one page each.
+
+    Written through :func:`deckle.core.paths.atomic_output`, like every
+    other file Deckle names: an import killed partway must not leave a
+    truncated PDF under a name a project will later trust, and this one is
+    named by content, so a truncated file would sit there claiming to be
+    the whole book.
+
+    :param per_image_pdfs: one single-page PDF per image, in page order.
+    :param out_path: the file to end up with.
+    :raises OSError: the file cannot be written.
+    """
+    merged = pikepdf.Pdf.new()
+    opened = []
+    try:
+        for pdf_bytes in per_image_pdfs:
+            single = pikepdf.open(io.BytesIO(pdf_bytes))
+            opened.append(single)
+            merged.pages.extend(single.pages)
+        with atomic_output(out_path) as scratch:
+            merged.save(scratch)
+    finally:
+        for single in opened:
+            single.close()
+        merged.close()
 
 
 class SourceLoadError(Exception):
@@ -308,7 +369,10 @@ def load_pdf(path: str) -> list[SourcePage]:
     """Load an existing PDF's pages, metadata-only (no rasterization).
 
     :param path: the PDF file to read.
-    :returns: one :class:`~deckle.core.models.SourcePage` per PDF page.
+    :returns: one :class:`~deckle.core.models.SourcePage` per PDF page,
+        each carrying the **absolute** path, so a project saved from one
+        directory opens from another. Error messages still name the path
+        as the caller typed it.
     :raises MissingSourceError: the path does not exist.
     :raises UnreadableSourceError: the path is a directory, or cannot be
         opened for reading.
@@ -332,6 +396,27 @@ def _read_pdf_pages(path: str) -> list[SourcePage]:
     whole life, not just the open, because a render on another thread is
     just as fatal while this one is measuring pages.
     """
+    # The path a `SourceRef` records is written into `.deckle` files and
+    # resolved by whoever opens one next, from whatever directory they
+    # happen to be in. Stored as typed, `deckle impose ./book.pdf` recorded
+    # `./book.pdf`, and the project then failed to open from anywhere but
+    # the directory it was made in -- reported as "a source file is
+    # missing", naming a file that had not moved.
+    #
+    # `abspath` rather than `realpath`: joining against the cwd is the fix,
+    # and resolving symlinks as well would record a name the user did not
+    # choose -- scans under a symlinked ~/Books would be filed as
+    # /mnt/volume-3/..., which is the same file only until the mount point
+    # changes. `project_io._path_within_roots` still uses `realpath` on
+    # both sides, where "is this the same file" is the actual question.
+    #
+    # Absolutised here and nowhere else. `os.path.abspath("")` is the
+    # current working directory, and `BLANK_SOURCE_PATH` is `""` -- so the
+    # same call applied to an inserted blank would turn every blank into a
+    # reference to whatever folder Deckle was launched from, and
+    # `is_blank_page` tests for equality with `""`, so `load_project` would
+    # start demanding those folders exist as files.
+    stored_path = os.path.abspath(path)
     with pdfium_guard():
         try:
             doc = pdfium.PdfDocument(path)
@@ -366,7 +451,7 @@ def _read_pdf_pages(path: str) -> list[SourcePage]:
                     # against a closed document -- see render.rasterize_page.
                     page.close()
                 ref = SourceRef(
-                    path=path,
+                    path=stored_path,
                     page_index=index,
                     sha256=sha256,
                     width_pt=float(width_pt),
@@ -493,24 +578,19 @@ def _single_image_pdf_bytes(image_path: str, dpi: tuple[float, float] | None) ->
     return img2pdf.convert(raw, **kwargs)
 
 
-def load_image_dir(
-    path: str, cache_max_bytes: int | None = None
-) -> list[SourcePage]:
+def load_image_dir(path: str) -> list[SourcePage]:
     """Import a directory of images as one normalized PDF, metadata-only.
 
     Writes a single normalized PDF (one page per image, in natural sort
-    order) into a cache directory under the OS temp dir, and returns
-    ``SourcePage``\\ s whose ``SourceRef``\\ s point at that cached PDF.
+    order) into :func:`import_store_dir`, named by its own content hash,
+    and returns ``SourcePage``\\ s whose ``SourceRef``\\ s point at it.
 
-    The cache directory is bounded (A-7): before writing, least-recently-used
-    entries are evicted until the directory's total size is at or under
-    ``cache_max_bytes`` (default 2 GB, ``_CACHE_MAX_BYTES``). The parameter
-    exists mainly so tests can exercise eviction without writing 2 GB of
-    fixtures; production callers should leave it at the default.
+    That file is the only PDF those pages will ever have, so it is kept
+    rather than cached -- see :func:`import_store_dir` for what went wrong
+    while it was a cache, and :doc:`the decisions log </decisions>` for
+    what that costs.
 
     :param path: the directory of images to import.
-    :param cache_max_bytes: the normalization cache's size budget, or
-        ``None`` for the 2 GB default.
     :returns: an :class:`ImportedPages` -- a ``list[SourcePage]`` that also
         carries ``.warnings``. Do **not** wrap it in ``list()``; that
         discards the mixed-DPI and skipped-file advisories.
@@ -521,7 +601,6 @@ def load_image_dir(
         decoded or converted. Fatal to the whole import by design -- a page
         quietly missing from a book is discovered after it is folded.
     """
-    max_bytes = _CACHE_MAX_BYTES if cache_max_bytes is None else cache_max_bytes
     image_paths, skipped_names = _scan_image_dir(path)
 
     if not image_paths:
@@ -578,24 +657,15 @@ def load_image_dir(
         for img_path, dpi in zip(image_paths, dpis)
     ]
 
-    merged = pikepdf.Pdf.new()
-    opened = []
-    try:
-        for pdf_bytes in per_image_pdfs:
-            single = pikepdf.open(io.BytesIO(pdf_bytes))
-            opened.append(single)
-            merged.pages.extend(single.pages)
-
-        cache_dir = os.path.join(tempfile.gettempdir(), _CACHE_DIR_NAME)
-        os.makedirs(cache_dir, exist_ok=True)
-        _evict_lru_cache_entries(cache_dir, max_bytes)
-        fd, out_path = tempfile.mkstemp(suffix=".pdf", dir=cache_dir)
-        os.close(fd)
-        merged.save(out_path)
-    finally:
-        for single in opened:
-            single.close()
-        merged.close()
+    store_dir = import_store_dir()
+    out_path = os.path.join(store_dir, f"{_import_key(per_image_pdfs)}.pdf")
+    if not os.path.exists(out_path):
+        os.makedirs(store_dir, exist_ok=True)
+        _merge_image_pdfs(per_image_pdfs, out_path)
+    # Otherwise this exact set of images has been imported before and the
+    # merge is skipped entirely. The existing file is left alone rather
+    # than rewritten with the same bytes -- another project is already
+    # referencing it, and its content hash is what that project checks.
 
     sha256 = _sha256_file(out_path)
     pages: list[SourcePage] = []

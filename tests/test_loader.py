@@ -153,94 +153,152 @@ def test_load_image_dir_missing_dpi_counts_as_differing(tmp_path):
     assert any(w.kind == "mixed_dpi" for w in pages.warnings)
 
 
-def test_load_image_dir_writes_cache_pdf_under_temp_dir(tmp_path):
+def test_load_image_dir_writes_its_pdf_into_the_import_store(tmp_path):
     _make_image(str(tmp_path / "a.jpg"), dpi=(150, 150))
 
     pages = load_image_dir(str(tmp_path))
 
-    cache_path = pages[0].ref.path
-    assert os.path.isfile(cache_path)
-    assert cache_path.endswith(".pdf")
+    stored = pages[0].ref.path
+    assert os.path.isfile(stored)
+    assert stored.endswith(".pdf")
+    assert os.path.isabs(stored)
 
 
-# --- A-7: normalization cache is bounded and evicts LRU -------------------
+# --- B26: the normalised PDF is storage, not a cache ---------------------
+#
+# It used to be written into `<tempdir>/deckle_import_cache/` under a 2 GB
+# least-recently-used budget, and every `SourceRef` for a folder of scans
+# points at it -- so a saved project's only source was a file Deckle's own
+# eviction pass deleted, by preferring the least-recently-used entry, which
+# is precisely the project you have not opened in months. The OS emptied
+# the directory on the next reboot regardless.
+#
+# The bound it replaced was A-7 (docs/specs/2026-08-04-deckle-mvp.md, Edge
+# Cases, "Red-team advisories, resolved"), whose concern was heavy image
+# import accumulating silently in temp. That concern is answered by
+# content-addressing rather than by deletion -- see
+# `test_reimporting_the_same_folder_adds_nothing_to_the_store` below and
+# the entry in docs/decisions.md. `evict_lru_files` itself is unchanged and
+# still bounds the *export* cache, which references nothing.
+#
+# **Which of these actually fail against the old code, and why.** Only
+# `test_the_stored_pdf_is_not_somewhere_the_os_empties` does so for the
+# real reason: the referenced PDF was under `tempfile.gettempdir()`. The
+# three below it fail against the old code merely because
+# `import_store_dir` did not exist to patch -- reproducing the eviction
+# itself needed either the real 2 GB budget or the `cache_max_bytes`
+# parameter the fix removes, so there is no honest way to drive it here.
+# They pin the invariant going forward rather than the bug going back, and
+# say so rather than implying coverage they do not have.
 
 
-def test_load_image_dir_evicts_lru_cache_entries_when_over_cap(tmp_path, monkeypatch):
-    """A-7 (docs/specs/2026-08-04-deckle-mvp.md, Edge Cases "Red-team
-    advisories, resolved"): the img2pdf normalization cache must be bounded
-    (2 GB in production) and evict least-recently-used entries on startup
-    rather than growing forever. Uses a tiny injectable cap so the test
-    doesn't need to write gigabytes of fixtures.
+def _isolated_store(monkeypatch, tmp_path):
+    """Point the import store at a directory of this test's own.
+
+    Patched on the module rather than via ``XDG_DATA_HOME`` because the
+    environment variable only steers ``data_dir`` on Linux -- Windows and
+    macOS read the home directory, so an env-based test would silently
+    write into the developer's real store there.
     """
-    import tempfile
-    import time
-
     from deckle.core import loader
 
-    # The real cache dir lives under the OS temp dir and is shared/persistent
-    # across test runs and other tests in this file -- redirect it to an
-    # isolated tmp_path so this test's size/eviction accounting can't be
-    # skewed by unrelated cache files left over from elsewhere.
-    fake_temp_root = tmp_path / "fake_os_temp"
-    fake_temp_root.mkdir()
-    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_temp_root))
+    store = tmp_path / "store"
+    monkeypatch.setattr(loader, "import_store_dir", lambda: str(store))
+    return store
 
-    # Each single-image import writes one cache PDF. Force several separate
-    # imports (rather than one directory of many images -> one merged PDF)
-    # so multiple distinct cache files accumulate to evict between.
-    src_dir_a = tmp_path / "import_a"
-    src_dir_a.mkdir()
-    _make_image(str(src_dir_a / "a.jpg"), size=(400, 300), dpi=(150, 150))
 
-    src_dir_b = tmp_path / "import_b"
-    src_dir_b.mkdir()
-    _make_image(str(src_dir_b / "b.jpg"), size=(400, 300), dpi=(150, 150))
+def test_the_stored_pdf_is_not_somewhere_the_os_empties(tmp_path):
+    """The reboot half. A source under the system temp directory is gone
+    after the crash the project was supposed to survive, and on Linux tmpfs
+    it does not even need the reboot to be tmpfs-sized."""
+    import tempfile
 
-    src_dir_c = tmp_path / "import_c"
-    src_dir_c.mkdir()
-    _make_image(str(src_dir_c / "c.jpg"), size=(400, 300), dpi=(150, 150))
+    from deckle.core.loader import import_store_dir
 
-    pages_a = load_image_dir(str(src_dir_a), cache_max_bytes=10 * 1024 * 1024)
-    cache_path_a = pages_a[0].ref.path
-    assert os.path.isfile(cache_path_a)
+    source = tmp_path / "scans"
+    source.mkdir()
+    _make_image(str(source / "a.jpg"), dpi=(150, 150))
 
-    # Ensure distinguishable access/modify times across platforms with
-    # coarse timestamp resolution.
-    time.sleep(0.05)
+    stored = load_image_dir(str(source))[0].ref.path
 
-    pages_b = load_image_dir(str(src_dir_b), cache_max_bytes=10 * 1024 * 1024)
-    cache_path_b = pages_b[0].ref.path
-    assert os.path.isfile(cache_path_b)
-
-    # Now import a third time with a cap so small that eviction must run --
-    # it should remove the least-recently-used entry (cache_path_a) to make
-    # room, while the more-recently-written cache_path_b survives.
-    size_b = os.path.getsize(cache_path_b)
-    cap_after_b = size_b + 1  # only room for roughly one existing entry
-
-    time.sleep(0.05)
-    pages_c = load_image_dir(str(src_dir_c), cache_max_bytes=cap_after_b)
-    cache_path_c = pages_c[0].ref.path
-
-    assert not os.path.exists(cache_path_a), (
-        "least-recently-used cache entry should have been evicted once the "
-        "cache exceeded its cap"
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    assert os.path.commonpath([os.path.realpath(stored), temp_root]) != temp_root, (
+        "a saved project's only source is sitting in the system temp "
+        f"directory: {stored}"
     )
-    assert os.path.isfile(cache_path_c)
+    assert os.path.realpath(stored).startswith(
+        os.path.realpath(import_store_dir())
+    ), stored
 
-    # Sanity check the eviction primitive directly against an arbitrary
-    # cache directory too, independent of load_image_dir's plumbing.
-    direct_dir = tmp_path / "direct_cache"
-    direct_dir.mkdir()
-    old_file = direct_dir / "old.pdf"
-    old_file.write_bytes(b"x" * 100)
-    old_time = time.time() - 100
-    os.utime(str(old_file), (old_time, old_time))
-    new_file = direct_dir / "new.pdf"
-    new_file.write_bytes(b"y" * 100)
 
-    loader._evict_lru_cache_entries(str(direct_dir), max_bytes=150)
+def test_a_later_import_does_not_delete_an_earlier_one(tmp_path, monkeypatch):
+    """The eviction half, driven the way it actually happened: import a
+    book of scans, then import something else. The first import's PDF is
+    the least-recently-used file in the directory, so it was the first to
+    go -- taking the saved project that referenced it with it."""
+    store = _isolated_store(monkeypatch, tmp_path)
 
-    assert not old_file.exists()
-    assert new_file.exists()
+    first = tmp_path / "book"
+    first.mkdir()
+    _make_image(str(first / "a.jpg"), size=(400, 300), dpi=(150, 150))
+    kept = load_image_dir(str(first))[0].ref.path
+    assert os.path.isfile(kept)
+
+    # Distinguishable access times on filesystems with coarse timestamps,
+    # so "least recently used" would have had an unambiguous answer.
+    time.sleep(0.05)
+
+    second = tmp_path / "leaflet"
+    second.mkdir()
+    # Different content, so this genuinely is a second file in the store
+    # rather than the same one found again by its hash.
+    _make_image(str(second / "b.jpg"), size=(320, 240), dpi=(150, 150),
+                color=(255, 0, 0))
+    load_image_dir(str(second))
+
+    assert os.path.isfile(kept), (
+        "importing a second folder deleted the first folder's normalised "
+        "PDF -- which is the only source a project made from those scans has"
+    )
+    assert len(list(store.glob("*.pdf"))) == 2
+
+
+def test_reimporting_the_same_folder_adds_nothing_to_the_store(tmp_path, monkeypatch):
+    """What replaces the 2 GB budget. The store is never pruned, so the
+    repeat that would otherwise pile up -- the same book imported again
+    after a cancelled job, or to start a second project from it -- has to
+    cost nothing. Identical images normalise to identical bytes, and the
+    file is named by its own hash."""
+    store = _isolated_store(monkeypatch, tmp_path)
+
+    source = tmp_path / "scans"
+    source.mkdir()
+    _make_image(str(source / "a.jpg"), size=(400, 300), dpi=(150, 150))
+
+    first = load_image_dir(str(source))[0].ref.path
+    second = load_image_dir(str(source))[0].ref.path
+
+    assert first == second
+    assert len(list(store.glob("*.pdf"))) == 1, (
+        f"re-importing the same folder left {sorted(p.name for p in store.iterdir())}"
+    )
+
+
+def test_a_repeat_import_leaves_the_stored_file_alone(tmp_path, monkeypatch):
+    """Dedupe must not be "overwrite with the same thing". Another project
+    is already referencing that file, and replacing it would put a window
+    -- however short -- where the reference points at nothing."""
+    _isolated_store(monkeypatch, tmp_path)
+
+    source = tmp_path / "scans"
+    source.mkdir()
+    _make_image(str(source / "a.jpg"), size=(400, 300), dpi=(150, 150))
+
+    stored = load_image_dir(str(source))[0].ref.path
+    before = os.stat(stored)
+    time.sleep(0.05)
+
+    load_image_dir(str(source))
+
+    after = os.stat(stored)
+    assert (after.st_ino, after.st_mtime) == (before.st_ino, before.st_mtime)

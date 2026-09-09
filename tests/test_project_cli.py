@@ -262,3 +262,62 @@ def test_importing_a_pdf_does_not_lock_the_file(tmp_path):
 
     source.unlink()  # must not raise PermissionError
     assert not source.exists()
+
+
+# -- a project that survives leaving the directory (B26) -----------------
+
+
+def test_a_project_imposed_with_a_relative_path_opens_from_elsewhere(tmp_path):
+    """``deckle impose ./book.pdf`` recorded ``./book.pdf``.
+
+    A source path is written into the ``.deckle`` and resolved by whoever
+    opens one next, from whatever directory *they* are in -- so a project
+    made with a relative path opened only from the folder it was made in,
+    and failed everywhere else with "a source file is missing" naming a
+    file that had not moved. Typing ``./`` is the normal way to name a file
+    on a command line, so this was the default outcome, not an edge case.
+    """
+    import shutil
+
+    shutil.copy(FIXTURE, tmp_path / "book.pdf")
+
+    made = _cli("impose", "./book.pdf", "-o", "book.deckle", cwd=str(tmp_path))
+    assert made.returncode == 0, made.stderr
+
+    stored = json.loads((tmp_path / "book.deckle").read_text(encoding="utf-8"))
+    assert os.path.isabs(stored["pages"][0]["path"]), (
+        f"the project records {stored['pages'][0]['path']!r}, which only "
+        "means anything from the directory it was made in"
+    )
+
+    # The assertion that matters: read it from somewhere else entirely.
+    opened = _cli("info", str(tmp_path / "book.deckle"), cwd=REPO)
+    assert opened.returncode == 0, opened.stderr
+
+
+def test_a_project_saved_with_a_relative_path_still_opens(tmp_path):
+    """Backward compatibility, stated as a test rather than assumed.
+
+    Nothing rewrites what is already on disk: a ``.deckle`` written before
+    this change keeps its relative path, and keeps working exactly where it
+    worked before -- from the directory it was made in. Rewriting stored
+    paths on load would be ``load_project`` silently editing the document,
+    and rewriting them on save would change a file the user did not ask to
+    change. The next impose or Save writes an absolute path; that is the
+    whole migration.
+    """
+    import shutil
+
+    shutil.copy(FIXTURE, tmp_path / "book.pdf")
+    made = _cli("impose", "./book.pdf", "-o", "book.deckle", cwd=str(tmp_path))
+    assert made.returncode == 0, made.stderr
+
+    # Age the file back into the previous format by hand.
+    legacy = json.loads((tmp_path / "book.deckle").read_text(encoding="utf-8"))
+    for page in legacy["pages"]:
+        if page["path"]:
+            page["path"] = "./" + os.path.basename(page["path"])
+    (tmp_path / "book.deckle").write_text(json.dumps(legacy), encoding="utf-8")
+
+    opened = _cli("info", "book.deckle", cwd=str(tmp_path))
+    assert opened.returncode == 0, opened.stderr

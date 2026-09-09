@@ -50,8 +50,17 @@ class Placement:
 class SourceRef:
     """A reference to a single page within a source file on disk.
 
-    :ivar path: the file the page lives in. Empty for a blank inserted in
-        the arrange view -- see ``deckle.app.state.BLANK_SOURCE_PATH``.
+    :ivar path: the file the page lives in, **absolute** for anything the
+        loader produced. It is written into ``.deckle`` files and resolved
+        by whoever opens one next, from whatever directory they happen to
+        be in, so a relative path is a project that only opens from the
+        folder it was made in. ``deckle.core.loader`` is the one place that
+        absolutises it. Empty for a blank inserted in the arrange view --
+        see ``deckle.app.state.BLANK_SOURCE_PATH`` -- which must stay
+        empty, because ``os.path.abspath("")`` is the current working
+        directory and :func:`is_blank_page` tests for ``""``. Projects
+        saved before this invariant existed may still hold a relative
+        path; they load exactly as they did.
     :ivar page_index: zero-based index within that file. ``-1`` for an
         inserted blank.
     :ivar sha256: the content hash of the whole file at import time. This
