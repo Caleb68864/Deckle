@@ -433,3 +433,86 @@ def test_a_resumed_session_can_still_ask(backend, failing_log):
 
     assert operator.asked, "the resumed session asked"
     assert resumed._state.sheet_cursor == 3
+
+
+# -- from the answer to the paper -----------------------------------------
+#
+# Everything above ends at `sheet_cursor`. The cursor is not the point --
+# paper is. The only way the GUI continues an interrupted run is
+# `PrintDialog._offer_resume`, which asks its own count question and hands
+# it to `resume()`, and `resume()` ASSIGNS the cursor absolutely. So the
+# operator answered "ten came out", and the second asking -- opening on
+# zero, reading nothing the state file already knew -- silently overwrote
+# it and fed the same ten sheets through the machine again.
+
+
+def test_the_counted_answer_reaches_what_the_next_run_submits(backend, failing_log):
+    """The journey B37 was built for, end to end.
+
+    Twenty sheets, chunks of ten. The first chunk prints and then cannot be
+    recorded; the operator says ten came out. What the resumed run submits
+    must start at sheet 10.
+    """
+    from deckle.app.views.print_dialog import suggested_resume_count
+
+    plan = _plan(20)
+    session = PrintSession(plan, backend.profile, backend, printer_name="P",
+                           chunk_size=10, ask_sheets_printed=_answered(10))
+
+    session.start()
+
+    assert session._state.sheet_cursor == 10, "B37's own arithmetic"
+    summary = next(
+        s for s in PrintSession.list_resumable()
+        if s.session_id == session.state["session_id"]
+    )
+
+    resumed = PrintSession.load(plan, backend.profile, backend, summary.session_id)
+    backend.printed.clear()
+    resumed.resume(suggested_resume_count(summary))
+
+    assert 0 not in backend.printed, "sheet 0 went through the machine twice"
+    assert backend.printed[0] == 10
+
+
+def test_the_resume_count_starts_from_what_the_operator_already_said(
+    backend, failing_log
+):
+    """The number the resume prompt opens on is the one already recorded.
+
+    It is a default, not an answer -- the operator is the one looking at
+    the tray and can still correct it. But a field reset to zero, offered
+    to someone who has just counted the tray out loud, is a worse guess
+    than the one Deckle already wrote down.
+    """
+    from deckle.app.views.print_dialog import suggested_resume_count
+
+    session = PrintSession(_plan(20), backend.profile, backend, printer_name="P",
+                           chunk_size=10, ask_sheets_printed=_answered(7))
+
+    session.start()
+    summary = next(
+        s for s in PrintSession.list_resumable()
+        if s.session_id == session.state["session_id"]
+    )
+
+    assert suggested_resume_count(summary) == 7
+
+
+def test_the_resume_prompt_says_what_the_number_it_shows_means(backend, failing_log):
+    """A pre-filled number nobody explains is worse than an empty one: the
+    operator cannot tell whether Deckle is reporting or guessing."""
+    from deckle.app.views.print_dialog import resume_count_prompt
+    from deckle.core.print_session import SessionSummary
+
+    text = resume_count_prompt(
+        SessionSummary(
+            session_id="abc", printer_name="P", started_at=0.0,
+            pass_index=1, sheet_cursor=7, state_path="/tmp/abc.json",
+        )
+    )
+
+    assert "7 sheets" in text
+    assert "pass 2" in text
+    # The same question, in the same words, as the popup that came first.
+    assert "How many sheets came out?" in text

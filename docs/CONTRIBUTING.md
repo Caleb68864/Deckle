@@ -120,6 +120,11 @@ referenced anywhere else in `deckle/core/layout.py`.
 - `deckle/cli/` is the headless entry point (`python -m deckle.cli`);
   `deckle/__main__.py` is the GUI entry point (`python -m deckle`). Both
   sit on top of the same `deckle.core` engine.
+- Install with `python -m pip install -e ".[dev]"`. The `dev` extra is what
+  brings in `pytest` and `hypothesis`; a plain `pip install -e .` installs
+  neither, and `hypothesis` is imported at module level by two test files,
+  so its absence is two collection errors rather than two skips. CI runs
+  the same command (`.github/workflows/test.yml`).
 - Run the full suite with `python -m pytest -q` before opening a PR.
 - `tests/test_integration.py` asserts every module under
   `deckle/app/views/` is imported by `deckle/app/main.py` -- a new view

@@ -97,8 +97,14 @@ goto :done
 :deps
 echo [deckle] installing dependencies...
 "%PY%" -m pip install --upgrade pip
-"%PY%" -m pip install -e .
-"%PY%" -m pip install pytest psutil
+rem .[dev] rather than a hand-written `pip install pytest`: the dev extra is
+rem where the test dependencies are declared, and installing them by name
+rem here made this a second list that had to agree with pyproject.toml. It
+rem did not -- `hypothesis` was missing, so `run.bat test` opened with two
+rem collection errors. psutil stays separate; it is deliberately undeclared
+rem (one test skips without it) and is installed here only as a convenience.
+"%PY%" -m pip install -e .[dev]
+"%PY%" -m pip install psutil
 if errorlevel 1 goto :fail
 goto :done
 

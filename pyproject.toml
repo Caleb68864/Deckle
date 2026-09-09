@@ -1,5 +1,15 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# >=77, not >=68: `license = "MIT"` below is the PEP 639 SPDX expression
+# form, and setuptools only accepts it from 77.0.0. Earlier versions raise
+# `ValueError: invalid pyproject.toml config: 'project.license'` -- verified
+# against 68.2.2 and 76.1.0, which both fail, and 77.0.3, which succeeds and
+# emits the `License-Expression: MIT` the installed metadata carries.
+#
+# pip's build isolation always fetches the newest setuptools, so nothing on
+# the happy path ever exercises this floor. It bites on
+# `--no-build-isolation`, a pinned or offline builder, or a distro
+# setuptools.
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]

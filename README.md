@@ -210,6 +210,17 @@ python -m pip install -e .
 Python 3.11 or newer. On Windows, `run.bat deps` does the same thing and
 prefers a `.venv` if it finds one.
 
+To run the test suite as well, install the `dev` extra instead — it adds
+`pytest` and `hypothesis`, which a plain `pip install -e .` does not:
+
+```
+python -m pip install -e ".[dev]"
+```
+
+Without it, `python -m pytest -q` — the command
+[Project status](#project-status) and `docs/CONTRIBUTING.md` both ask you to
+run — is not installed, and two test modules fail to collect at all.
+
 `run.bat package` builds standalone Windows executables — `deckle.exe` (the
 GUI) and `deckle-cli.exe` (headless, Qt-free) — into `dist\deckle`. They are
 **not code-signed**, so SmartScreen will warn on first run; that is a
@@ -412,7 +423,8 @@ Not released. Expect breaking changes.
 
 The test suite is **1,720 passing, 22 skipped** at `8e2e8d2` — verified by
 running `python -m pytest -q` at the repository root (on Linux, with
-`QT_QPA_PLATFORM=offscreen`). Fourteen of the skips are packaging-audit tests
+`QT_QPA_PLATFORM=offscreen`, after `python -m pip install -e ".[dev]"`; see
+[Installing](#installing)). Fourteen of the skips are packaging-audit tests
 that need a built bundle in `dist/`, four are Windows-only path cases, three
 are the golden-fixture comparison whose 30 MB fixture is not committed, and
 one needs `psutil`. GitHub Actions runs the same command on Linux under

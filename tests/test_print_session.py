@@ -675,6 +675,127 @@ def test_the_version_check_runs_before_the_plan_check():
     assert exc_info.value.reason == "version"
 
 
+# -- the profile the run started under -----------------------------------
+#
+# `plan_hash` answers "is this the same document?" and answers it
+# completely. It cannot answer "is this the same printer behaviour?", and
+# the profile decides two things that put ink on paper: `reverse_stack`
+# picks the back pass's sheet order, `flip_axis` picks whether the back is
+# turned. A resume under a different profile prints backs onto the wrong
+# fronts with the plan hash matching perfectly.
+#
+# It does not take a user changing a setting. `resolve_profile` falls back
+# to the first builtin when a saved profile cannot be read, and the two
+# builtins differ on BOTH axes -- so a deleted, corrupt or disconnected
+# profile file is enough.
+
+
+def test_load_refuses_a_session_whose_printer_profile_has_changed():
+    plan = _make_plan(6)
+    session_id = _started_session_id(plan)
+
+    recalibrated = _profile(output_face="up", reverse_stack=False, flip_axis="short")
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(plan, recalibrated, StubBackend(), session_id)
+
+    error = exc_info.value
+    assert error.reason == "profile"
+    assert error.session_id == session_id
+    # The document is not what changed, and saying so sends the operator
+    # hunting for an edit they never made.
+    assert "layout has changed" not in error.detail
+    assert "calibration" in error.detail
+    assert "start a new print run" in error.detail
+
+
+def test_a_resume_under_a_changed_profile_does_not_reverse_the_back_pass():
+    """The failure the guard exists to stop, driven end to end.
+
+    Six sheets, chunks of three. The fronts print, the first back chunk
+    prints, the second fails. The profile then changes -- `reverse_stack`
+    False->True and `flip_axis` short->long. Without a profile guard the
+    resume submits `[2, 1, 0]` turned a half turn: sheets 2, 1 and 0 get
+    their backs printed a second time, the wrong way up, and sheets 3, 4
+    and 5 never get backs at all.
+    """
+    plan = _make_plan(6)
+    started = _profile(output_face="up", reverse_stack=False, flip_axis="short")
+    backend = StubBackend(fail_on_call_index=3)
+    session = PrintSession(plan, started, backend, printer_name="P", chunk_size=3)
+
+    session.start()
+    while not session.finished and session.last_error is None:
+        session.advance()
+
+    assert session.last_error is not None, "the run was supposed to be interrupted"
+    assert session.state["pass_index"] == 1, "the interruption must land in the backs"
+    session_id = session._state.session_id
+
+    recalibrated = _profile(output_face="down", reverse_stack=True, flip_axis="long")
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(plan, recalibrated, StubBackend(), session_id)
+
+    assert exc_info.value.reason == "profile"
+
+
+def test_the_two_builtin_presets_are_not_interchangeable_on_resume():
+    """The passive trigger: nobody changes anything, a profile file goes
+    missing, and `resolve_profile` hands back the other builtin."""
+    from deckle.core.print_session import _hash_profile
+    from deckle.core.profiles import BUILTIN_PRESETS
+
+    fingerprints = {_hash_profile(p) for p in BUILTIN_PRESETS.values()}
+
+    assert len(fingerprints) == len(BUILTIN_PRESETS)
+
+
+def test_the_profile_fingerprint_ignores_nothing_that_moves_ink():
+    """Both behavioural axes, and the registration correction with them."""
+    from deckle.core.print_session import _hash_profile
+
+    base = _profile()
+
+    assert _hash_profile(base) != _hash_profile(_profile(reverse_stack=False))
+    assert _hash_profile(base) != _hash_profile(_profile(flip_axis="short"))
+    assert _hash_profile(base) != _hash_profile(_profile(back_offset_x_pt=3.0))
+    assert _hash_profile(base) == _hash_profile(_profile())
+
+
+def test_load_resumes_normally_when_the_profile_is_unchanged():
+    """The guard must not break the case it exists to protect."""
+    plan = _make_plan(3)
+    session_id = _started_session_id(plan)
+
+    resumed = PrintSession.load(plan, _profile(), StubBackend(), session_id)
+
+    assert resumed._state.session_id == session_id
+
+
+def test_a_state_file_predating_the_profile_guard_is_a_version_mismatch():
+    """A v3 file has no profile fingerprint at all. That is Deckle
+    changing, not the operator's state file being malformed, so it must be
+    diagnosed as a version mismatch rather than as invalid state."""
+    import json
+
+    from deckle.core.print_session import _state_dir
+
+    plan = _make_plan(2)
+    session_id = _started_session_id(plan)
+    path = _state_dir() / f"{session_id}.json"
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.pop("profile_hash")
+    data["version"] = 3
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(StaleSessionError) as exc_info:
+        PrintSession.load(plan, _profile(), StubBackend(), session_id)
+
+    assert exc_info.value.reason == "version"
+
+
 # -- the side, the turn and the index reach the backend ------------------
 #
 # The session computes all three correctly in `plan_passes` and then dropped

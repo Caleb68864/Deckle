@@ -421,3 +421,84 @@ def test_the_print_path_is_unchanged_when_uncalibrated(tmp_path):
     )
 
     assert plain.rgba == zeroed.rgba
+
+
+# --- the turned back pass, where the two halves have to agree -----------
+#
+# Every test above this line leaves `rotate_backs` False, so none of them
+# ever exercises the one combination that bites: a half turn AND a
+# non-zero correction. That combination is what the first builtin preset
+# -- `generic_face_down_reversed`, the one `resolve_profile` falls back
+# to -- produces on a calibrated printer.
+
+
+def _rasterized(path: str, page_index: int, dpi: int = 72):
+    """Rasterize one page of ``path``, the way the print backend does."""
+    import pypdfium2 as pdfium
+
+    from deckle.core.render import rasterize_page
+
+    pdf = pdfium.PdfDocument(path)
+    try:
+        image = rasterize_page(pdf, page_index, scale=dpi / 72).convert("RGBA")
+        return image.size, image.tobytes()
+    finally:
+        pdf.close()
+
+
+def test_a_turned_back_pass_prints_what_the_exported_pass_prints(tmp_path):
+    """The desktop print path and ``pass_export`` describe the same
+    physical pass of the same paper through the same printer, so they must
+    put the ink in the same place.
+
+    ``export`` negates the correction when it is told the face will be
+    turned. A caller that turns the page itself, afterwards, without
+    telling ``export``, gets the correction applied at twice its size in
+    the wrong direction -- and the file a copy shop is handed disagrees
+    with what Deckle prints itself.
+    """
+    from deckle.app import backend as backend_mod
+
+    plan = _plan(tmp_path)
+    offset = (5.0, -3.0)
+
+    printed = backend_mod._render_sheet_side(
+        plan, 0, "back", 72, True, False, back_offset_pt=offset
+    )
+
+    exported = os.path.join(str(tmp_path), "pass-back.pdf")
+    export_fn(
+        plan, exported, sheets=[0], side="back", rotate_180=True, back_offset_pt=offset
+    )
+    (width, height), rgba = _rasterized(exported, 0)
+
+    assert (printed.width, printed.height) == (width, height)
+    assert printed.rgba == rgba, (
+        "the desktop print path and the exported back pass disagree about "
+        "where the registration correction goes"
+    )
+
+
+def test_a_turned_back_pass_negates_the_correction_on_the_print_path(tmp_path):
+    """Stated without reference to the exporter's own arithmetic: on a
+    turned pass the ink lands where the NEGATED correction puts it.
+
+    Applied unturned it would move the back exactly twice as far wrong as
+    leaving the printer uncalibrated, which is worse than the defect the
+    correction exists to remove.
+    """
+    from deckle.app import backend as backend_mod
+
+    plan = _plan(tmp_path)
+
+    printed = backend_mod._render_sheet_side(
+        plan, 0, "back", 72, True, False, back_offset_pt=(5.0, -3.0)
+    )
+
+    # The same face, shifted by hand by the negation and then turned --
+    # no `rotate_180=` anywhere, so `export` never negates anything.
+    expected = os.path.join(str(tmp_path), "negated.pdf")
+    export_fn(plan, expected, sheets=[0], side="back", back_offset_pt=(-5.0, 3.0))
+    export.rotate_pages_180(expected)
+
+    assert printed.rgba == _rasterized(expected, 0)[1]

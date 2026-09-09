@@ -74,36 +74,88 @@ def panel(qt_app):
     return LayoutPanel(AppState(project))
 
 
-def _value_widget_types():
-    """The Qt classes a user *sets*, as opposed to clicks or reads."""
-    from PySide6.QtWidgets import (
-        QAbstractSpinBox, QCheckBox, QComboBox, QLineEdit, QRadioButton,
-    )
+def _structural_widget_types():
+    """Widget kinds that are layout or output, never a value someone sets.
 
-    return (QAbstractSpinBox, QCheckBox, QComboBox, QLineEdit, QRadioButton)
+    **A denylist, deliberately, and this is the important line in the
+    file.** It used to be an allowlist -- ``(QAbstractSpinBox, QCheckBox,
+    QComboBox, QLineEdit, QRadioButton)`` -- which made the guard blind to
+    every control *kind* nobody had thought of. Demonstrated, not
+    inferred: a ``QSlider``, a ``QPlainTextEdit`` and a ``QListWidget``
+    were added to the Paper tab's form by hand, in exactly the shape the
+    table replaced, and the suite stayed byte-identical at 2217 passed.
+
+    An allowlist fails open. This file exists because a list maintained in
+    more than one place drifts -- B11, B12 and B29 were each that -- so a
+    guard that fails open re-arms the bug it was built to prevent.
+
+    Inverted, an unfamiliar kind is treated as a control and has to be
+    declared, which is a failure somebody reads. The cost is that a new
+    *structural* kind has to be named here; that is a deliberate, visible
+    decision rather than a silent gap.
+    """
+    from PySide6.QtWidgets import QLabel, QPushButton, QTabWidget, QToolButton
+
+    return (QLabel, QPushButton, QToolButton, QTabWidget)
+
+
+def _is_structural(widget) -> bool:
+    from PySide6.QtWidgets import QWidget
+
+    # `type(...) is QWidget`, not `isinstance`: a bare QWidget is a
+    # container, but a QWidget *subclass* is something somebody wrote, and
+    # the safe reading of something somebody wrote is "a control until
+    # declared otherwise".
+    return type(widget) is QWidget or isinstance(widget, _structural_widget_types())
+
+
+def _laid_out_widgets(panel):
+    """Every widget actually placed into one of the panel's layouts.
+
+    Position rather than type. A control somebody added is one they put in
+    a form row; the parts a control builds for itself -- a spin box's line
+    edit, a combo's popup view and its scroll bars -- are children of that
+    control, and are filtered out by :func:`_value_widgets` below.
+    """
+    from PySide6.QtWidgets import QLayout
+
+    layouts = list(panel.widget.findChildren(QLayout))
+    own = panel.widget.layout()
+    if own is not None:
+        layouts.append(own)
+
+    seen: set[int] = set()
+    found = []
+    for layout in layouts:
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            widget = item.widget() if item is not None else None
+            if widget is None or id(widget) in seen:
+                continue
+            seen.add(id(widget))
+            found.append(widget)
+    return found
 
 
 def _value_widgets(panel):
-    """Every control on the panel that holds a value, found by type.
+    """Every control on the panel that holds a value.
 
     Deliberately not a list of names -- a list is the thing this file
-    exists to prevent. Widgets that are *internals* of another control are
-    skipped: a spin box owns a line edit, and a combo owns a view, and
-    neither is a control somebody added.
+    exists to prevent -- and no longer a list of *types* either, for the
+    reason :func:`_structural_widget_types` gives.
     """
-    from PySide6.QtWidgets import QWidget
+    candidates = [w for w in _laid_out_widgets(panel) if not _is_structural(w)]
+    candidate_ids = {id(w) for w in candidates}
 
-    types = _value_widget_types()
     found = []
-    for widget in panel.widget.findChildren(QWidget):
-        if not isinstance(widget, types):
-            continue
+    for widget in candidates:
         parent = widget.parent()
-        while parent is not None and not isinstance(parent, types):
+        while parent is not None:
+            if id(parent) in candidate_ids:
+                break  # an internal part of another control
             parent = parent.parent()
-        if parent is not None:
-            continue  # an internal part of another control
-        found.append(widget)
+        else:
+            found.append(widget)
     return found
 
 
@@ -154,6 +206,30 @@ def test_the_guard_notices_a_control_that_skipped_the_table(panel):
 
     smuggled = QDoubleSpinBox(panel.widget)
     smuggled.setToolTip("a control nobody declared")
+    panel.setup_tabs.widget(0).layout().addRow("Smuggled:", smuggled)
+
+    with pytest.raises(AssertionError, match="not in CONTROLS"):
+        test_every_control_on_the_panel_is_on_the_table(panel)
+
+
+@pytest.mark.parametrize("factory_name", ["QSlider", "QPlainTextEdit", "QListWidget"])
+def test_the_guard_notices_a_control_kind_it_has_never_seen(panel, factory_name):
+    """The teeth that were missing, one kind at a time.
+
+    The previous version of this test smuggled a ``QDoubleSpinBox`` -- a
+    kind that *was* on the old five-class allowlist -- so it passed while
+    proving nothing about anything else. These three are not on it: a
+    ``QAbstractSlider``, a plain-text editor and an item view. All three
+    were added to the Paper tab by hand against the old guard and the
+    suite stayed at 2217 passed, byte-identical to the baseline.
+
+    A guard against a list maintained in two places must not itself be a
+    list maintained in two places.
+    """
+    from PySide6 import QtWidgets
+
+    smuggled = getattr(QtWidgets, factory_name)(panel.widget)
+    smuggled.setToolTip(f"an undeclared {factory_name}")
     panel.setup_tabs.widget(0).layout().addRow("Smuggled:", smuggled)
 
     with pytest.raises(AssertionError, match="not in CONTROLS"):

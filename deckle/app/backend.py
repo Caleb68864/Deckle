@@ -24,11 +24,15 @@ during a long run loses at most one chunk, not the whole pass. A failed
 chunk cancels the remaining chunks of that pass -- submission does not
 continue into a jammed or offline printer.
 
-``rotate_backs`` on a ``PrintPass`` is honored by rotating every back-side
-page 180 degrees with pikepdf's ``page.rotate(180, relative=True)`` (never
-by assigning ``page.Rotate`` directly) before rasterizing it, falling back
-to ``page.flatten_rotation()`` in addition for drivers known to ignore the
-PDF ``/Rotate`` key.
+``rotate_backs`` on a ``PrintPass`` is honored by asking
+``deckle.core.export.export`` for a turned page -- never by turning it
+here afterwards. The turn and the registration correction interact (a
+point reflection negates a translation), and ``export`` is the one place
+that knows about both; a caller that applies the correction through
+``export`` and then turns the page behind its back gets the correction at
+twice its size in the wrong direction. For drivers known to ignore the PDF
+``/Rotate`` key the turn is additionally baked into the page content by
+``page.flatten_rotation()``.
 """
 
 from __future__ import annotations
@@ -141,19 +145,23 @@ def _chunked(items: Sequence[int], size: int) -> list[list[int]]:
     return [list(items[i : i + size]) for i in range(0, len(items), size)]
 
 
-def _apply_rotate_backs(pdf_path: str, ignore_rotate: bool) -> None:
-    """Rotate every page in ``pdf_path`` 180 degrees, in place.
+def _bake_rotation(pdf_path: str) -> None:
+    """Fold each page's ``/Rotate`` into its content stream, in place.
 
-    The half turn a long-edge flip needs. The implementation now lives in
-    :func:`deckle.core.export.rotate_pages_180`, because the CLI needs the
-    same operation for ``--pass back`` and cannot import anything from this
-    module -- ``deckle.app`` is the Qt layer, and the CLI must run on a
-    machine with no display libraries at all.
+    For a driver known to discard ``/Rotate`` (``DRIVERS_IGNORING_ROTATE``).
+    The half turn itself is *not* applied here: it is asked of
+    :func:`deckle.core.export.export`, which is the only code that knows
+    the turn also negates the registration correction. This bakes an
+    already-decided turn into the ink so a driver that ignores the key
+    still prints it.
 
-    ``ignore_rotate`` means the target driver is known to discard
-    ``/Rotate``, so the turn is baked into the content instead.
+    Flattening is lossier than the key, which is why it is not the
+    default; most drivers honour ``/Rotate``.
     """
-    export.rotate_pages_180(pdf_path, flatten=ignore_rotate)
+    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+        for page in pdf.pages:
+            page.flatten_rotation()
+        pdf.save(pdf_path)
 
 
 def _render_sheet_side(
@@ -172,8 +180,9 @@ def _render_sheet_side(
     single-sheet PDF itself so pikepdf can rotate the page before pdfium
     rasterizes it -- ``render_sheet`` has no rotation hook.
     """
+    turn = side == "back" and rotate_backs
     corrected = side == "back" and back_offset_pt != (0.0, 0.0)
-    if not (side == "back" and rotate_backs) and not corrected:
+    if not turn and not corrected:
         # The shared preview cache is keyed on the plan alone, which
         # knows nothing about a printer correction -- so anything
         # carrying one exports for itself rather than risking a
@@ -190,11 +199,22 @@ def _render_sheet_side(
     fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
     os.close(fd)
     try:
+        # `rotate_180` goes in, rather than the page being turned here
+        # afterwards, because the turn and the correction are not
+        # independent: a point reflection maps a translation to its
+        # negation, so `export` negates `back_offset_pt` for a face it
+        # knows will be turned. Turning it behind `export`'s back leaves
+        # the correction un-negated and lands the ink at twice the
+        # measured error, in the wrong direction.
         export.export(
-            plan, tmp_path, sheets=[sheet_index], back_offset_pt=back_offset_pt
+            plan,
+            tmp_path,
+            sheets=[sheet_index],
+            back_offset_pt=back_offset_pt,
+            rotate_180=turn,
         )
-        if side == "back" and rotate_backs:
-            _apply_rotate_backs(tmp_path, ignore_rotate)
+        if turn and ignore_rotate:
+            _bake_rotation(tmp_path)
 
         page_index = 1 if has_front else 0
         # Held across the document's whole life, not just the render.

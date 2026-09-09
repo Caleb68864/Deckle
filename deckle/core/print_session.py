@@ -66,7 +66,14 @@ from deckle.core.profiles import PrinterProfile
 # as the v2 bump, and the same lie avoided: every v2 hash is incomparable with
 # a v3 one, so without this a session interrupted before the upgrade would be
 # refused on resume with "the document changed" when nothing about it had.
-STATE_VERSION = 3
+#
+# 4: the state gained ``profile_hash``. A v3 file does not carry one, so there
+# is no way to tell whether the printer's calibration changed under it, and
+# the resume it would allow is precisely the one this version exists to
+# refuse. Same reasoning as the two bumps above, and the same lie avoided:
+# the version check runs first, so such a file is reported as "a different
+# version of Deckle" rather than as malformed state.
+STATE_VERSION = 4
 
 # Number of sheets submitted per chunk, mirroring SS-08's default.
 DEFAULT_CHUNK_SIZE = 10
@@ -80,13 +87,15 @@ class StaleSessionError(Exception):
     at the printer rather than for a log.
 
     :param session_id: the session that was refused.
-    :param reason: ``"plan"``, ``"version"`` or ``"state"``.
+    :param reason: ``"plan"``, ``"profile"``, ``"version"`` or ``"state"``.
     :param detail: the user-facing explanation.
     :ivar session_id: the session that was refused.
     :ivar reason: ``"plan"`` -- the document's layout changed;
-        ``"version"`` -- the state file came from an incompatible build;
-        or ``"state"`` -- the state file's own numbers cannot drive this
-        plan (see :func:`_check_state`).
+        ``"profile"`` -- the printer's calibration changed, which decides
+        the back pass's sheet order and its half turn (see
+        :func:`_hash_profile`); ``"version"`` -- the state file came from
+        an incompatible build; or ``"state"`` -- the state file's own
+        numbers cannot drive this plan (see :func:`_check_state`).
     :ivar detail: a user-facing explanation ending in what to do next.
     """
 
@@ -130,6 +139,44 @@ def _hash_plan(plan: SheetPlan) -> str:
     :returns: the first 16 hex characters of the plan digest.
     """
     return plan_digest(plan)[:16]
+
+
+def _hash_profile(profile: PrinterProfile) -> str:
+    """The printer fingerprint stored with a session and checked on resume.
+
+    ``plan_hash`` answers "is this the same document?", completely and
+    correctly. It cannot answer "is this the same printer behaviour?", and
+    the profile decides two things that put ink on specific paper:
+    ``reverse_stack`` picks the back pass's sheet order, and ``flip_axis``
+    picks whether every back is turned a half turn. Resuming a back pass
+    under a different profile prints backs onto the wrong fronts, with the
+    plan hash matching perfectly -- the exact failure
+    ``StaleSessionError(reason="plan")`` exists to prevent, arriving by the
+    one door it does not watch.
+
+    It does not take anyone changing a setting. ``resolve_profile`` falls
+    back to the first builtin when a saved profile cannot be read, and the
+    two builtins differ on *both* axes -- so a calibration file that is
+    deleted, corrupted, or sitting on a disconnected drive silently swaps
+    one behaviour for the other.
+
+    The whole frozen dataclass is hashed rather than the two axes alone.
+    Hashing everything costs nothing and does not need revisiting when a
+    third behavioural axis appears; a hand-picked pair would have to be
+    remembered, which is how the pair gets out of date. The cost is a
+    refusal after a change that could not have mattered -- a re-measured
+    ``imageable_area_pt``, say -- and a refusal costs a reprint the
+    operator was about to do anyway, which is the trade the plan guard
+    already makes.
+
+    Truncated to 16 hex characters, for the reasons :func:`_hash_plan`
+    gives.
+
+    :param profile: the printer profile the run is being driven under.
+    :returns: the first 16 hex characters of the profile digest.
+    """
+    payload = json.dumps(asdict(profile), sort_keys=True, default=list)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)
@@ -197,6 +244,7 @@ class _SessionState:
     session_id: str
     printer_name: str
     plan_hash: str
+    profile_hash: str
     started_at: float
     pass_index: int
     sheet_cursor: int
@@ -216,6 +264,7 @@ class _SessionState:
             session_id=data["session_id"],
             printer_name=data["printer_name"],
             plan_hash=data["plan_hash"],
+            profile_hash=data["profile_hash"],
             started_at=data["started_at"],
             pass_index=data["pass_index"],
             sheet_cursor=data["sheet_cursor"],
@@ -376,6 +425,7 @@ class PrintSession:
             session_id=session_id,
             printer_name=printer_name,
             plan_hash=plan_hash,
+            profile_hash=_hash_profile(profile),
             started_at=started_at,
             pass_index=0,
             sheet_cursor=0,
@@ -478,8 +528,9 @@ class PrintSession:
             :meth:`list_resumable`, an explicit load does not skip past
             this -- the user asked for this session by name.
         :raises StaleSessionError: if ``plan`` no longer matches the plan the
-            session was started against, or the state file was written by an
-            incompatible version of Deckle.
+            session was started against, if ``profile`` no longer matches
+            the printer calibration the run started under, or if the state
+            file was written by an incompatible version of Deckle.
 
         The plan check is the whole reason ``plan_hash`` is stored. Resuming
         onto a re-imposed document means printing backs against fronts that
@@ -487,17 +538,29 @@ class PrintSession:
         where the user has already physically reloaded the stack, the first
         sign of trouble is a ruined pile of paper. Refusing costs a reprint
         the user was about to do anyway; continuing can cost the whole book.
+
+        The profile check is here for the same reason and stops the same
+        stack being ruined by the other half of the job's identity. The
+        plan says what to print; the profile says in what order and which
+        way up (see :func:`_hash_profile`). The caller re-reads the profile
+        from disk at resume time, so a calibration run -- or a profile file
+        that simply became unreadable and fell back to a builtin -- changes
+        the answer with nobody touching a setting.
         """
         path = _state_dir() / f"{session_id}.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        _check_state(session_id, data, plan)
-        state = _SessionState.from_json(data)
 
-        if state.version != STATE_VERSION:
+        # Before `_check_state`, which requires every field of the current
+        # `_SessionState` to be present: a file from an older format is
+        # missing fields *because Deckle changed*, and reporting that as
+        # malformed state would send the operator looking at their own
+        # file for a fault that is not there.
+        found_version = data.get("version")
+        if found_version != STATE_VERSION:
             log_event(
                 "session_version_mismatch",
                 session_id=session_id,
-                found=state.version,
+                found=found_version,
                 expected=STATE_VERSION,
             )
             raise StaleSessionError(
@@ -505,10 +568,13 @@ class PrintSession:
                 reason="version",
                 detail=(
                     f"this session was saved by a different version of Deckle "
-                    f"(state format {state.version}, this build expects "
+                    f"(state format {found_version}, this build expects "
                     f"{STATE_VERSION}); start a new print run"
                 ),
             )
+
+        _check_state(session_id, data, plan)
+        state = _SessionState.from_json(data)
 
         current_hash = _hash_plan(plan)
         if current_hash != state.plan_hash:
@@ -525,6 +591,25 @@ class PrintSession:
                     "the document's layout has changed since this print run "
                     "started, so the remaining sheets no longer line up with "
                     "the pages already printed; start a new print run"
+                ),
+            )
+
+        current_profile = _hash_profile(profile)
+        if current_profile != state.profile_hash:
+            log_event(
+                "session_profile_mismatch",
+                session_id=session_id,
+                stored=state.profile_hash,
+                current=current_profile,
+            )
+            raise StaleSessionError(
+                session_id=session_id,
+                reason="profile",
+                detail=(
+                    "this printer's calibration has changed since the print "
+                    "run started, so the remaining sheets would be fed in a "
+                    "different order or turned a different way from the ones "
+                    "already printed; start a new print run"
                 ),
             )
 
