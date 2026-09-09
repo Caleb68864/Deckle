@@ -149,20 +149,55 @@ def test_export_receives_placements_identical_to_imposer_output(tmp_path):
     )
     plan = GutterShiftStrategy().impose(pages, settings)
 
-    # export() must consume plan.sheets' Placements exactly as produced --
-    # dataclass equality against a second, independent impose() call proves
-    # no consumer-side (export-side) adjustment occurred anywhere in between.
-    plan_again = GutterShiftStrategy().impose(pages, settings)
-    for sheet_a, sheet_b in zip(plan.sheets, plan_again.sheets):
-        for side_a, side_b in ((sheet_a.front, sheet_b.front), (sheet_a.back, sheet_b.back)):
-            if side_a is not None:
-                assert [p.placement for p in side_a.pages] == [
-                    p.placement for p in side_b.pages
-                ]
+    # The old version of this compared two `impose()` calls to each other and
+    # then checked the output file existed. That proves `impose` is
+    # deterministic -- a pure function against itself -- and says nothing
+    # about `export`, which cannot mutate a frozen `Placement` in any case.
+    # Stubbing `_place_output_page` to emit no content at all left it green.
+    #
+    # So: hold the plan to being unchanged *by the export*, and hold the
+    # export to actually placing something.
+    before = [
+        [p.placement for p in side.pages]
+        for sheet in plan.sheets
+        for side in (sheet.front, sheet.back)
+        if side is not None
+    ]
 
     out_path = os.path.join(str(tmp_path), "out.pdf")
     export_fn(plan, out_path)
-    assert os.path.exists(out_path)
+
+    after = [
+        [p.placement for p in side.pages]
+        for sheet in plan.sheets
+        for side in (sheet.front, sheet.back)
+        if side is not None
+    ]
+    assert after == before, "export changed the placements it was handed"
+
+    # Every face has to carry a form XObject and a content stream that draws
+    # it. This is the half that was missing: a `_place_output_page` that
+    # emitted nothing produced a valid, empty PDF and a passing test.
+    import pikepdf
+
+    with pikepdf.open(out_path) as pdf:
+        assert len(pdf.pages) == sum(
+            1
+            for sheet in plan.sheets
+            for side in (sheet.front, sheet.back)
+            if side is not None
+        )
+        for index, page in enumerate(pdf.pages):
+            resources = page.get("/Resources", {})
+            xobjects = resources.get("/XObject", {}) if resources else {}
+            assert len(xobjects) >= 1, f"face {index} places no form"
+            # `/Contents` is a stream or an array of them, and the array
+            # form is as valid as the single. Joined rather than coalesced
+            # because coalescing rewrites the page being inspected.
+            contents = page.get("/Contents")
+            parts = contents if isinstance(contents, pikepdf.Array) else [contents]
+            stream = b"".join(part.read_bytes() for part in parts)
+            assert b"Do" in stream, f"face {index} draws nothing"
 
 
 # --- BEHAVIORAL: pure translation for fit already-fits case ---

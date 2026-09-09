@@ -173,7 +173,13 @@ def test_explicit_sheets_routes_through_plan_passes_not_a_reprint_branch():
     assert backend.calls[0][0] == [7, 9]
 
     session.advance()
-    assert backend.calls[1][0] == [9, 7] if profile.reverse_stack else [7, 9]
+    # Parenthesised, because `assert x == a if c else b` is `assert (x == a)
+    # if c else (b)` -- a conditional *expression*. With `reverse_stack`
+    # false the whole assertion became `assert [7, 9]`, a truthy list, and
+    # the back-pass order went unchecked on the branch where a wrong order
+    # is a ruined stack of paper.
+    expected = [9, 7] if profile.reverse_stack else [7, 9]
+    assert backend.calls[1][0] == expected
 
 
 def test_backend_error_leaves_session_resumable_not_discarded():

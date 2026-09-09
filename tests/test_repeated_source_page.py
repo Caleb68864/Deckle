@@ -133,9 +133,23 @@ def test_a_repeated_page_matches_the_same_page_used_once(tmp_path, source):
 
 
 def test_the_source_file_is_left_as_it_was_found(tmp_path, source):
-    """The export opens sources read-only and never saves them, so a
-    mutated CropBox was only ever in memory -- but it outlived the page it
-    was applied for, which is the same bug seen from the other side."""
+    """The source on disk is byte-identical after an export.
+
+    **This does not test the CropBox restore**, and its previous docstring
+    implied it did. The mutation lived on the in-memory ``Page``; this reads
+    the file, and ``export`` opens sources read-only and never saves them, so
+    deleting the ``finally: src_page.cropbox = original_box`` at
+    ``export.py:282`` leaves this green.
+
+    The restore *is* guarded -- by ``test_a_repeated_page_is_cropped_the_same
+    _every_time`` and ``test_the_last_copy_is_not_narrower_than_the_first``
+    above, both of which fail when it is removed. Verified by removing it.
+
+    What this one is for is the weaker, separate promise in its title: an
+    export never writes to its input. Worth stating, because the day someone
+    reaches for an in-place edit to avoid a copy, this is the test that
+    objects.
+    """
     import pikepdf
 
     path = source[0].ref.path
