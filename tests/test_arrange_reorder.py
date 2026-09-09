@@ -520,7 +520,7 @@ def test_rotate_turns_every_selected_page():
     state, view = _view(4)
     _select(view, [0, 2, 3])
 
-    view._on_rotate_clicked()
+    view.rotate_selection()
 
     assert [page.rotate_deg for page in state.project.pages] == [90, 0, 90, 90]
 
@@ -533,7 +533,7 @@ def test_rotate_turns_each_page_from_its_own_angle():
     rotate_many(state, [1], 180)
     _select(view, [0, 1, 2])
 
-    view._on_rotate_clicked()
+    view.rotate_selection()
 
     assert [page.rotate_deg for page in state.project.pages] == [90, 270, 90]
 
@@ -546,7 +546,7 @@ def test_rotating_a_selection_is_one_undo_step():
     _select(view, [0, 1, 2, 3])
     before = len(state._undo_stack)
 
-    view._on_rotate_clicked()
+    view.rotate_selection()
 
     assert len(state._undo_stack) == before + 1
     state.undo()
@@ -557,7 +557,7 @@ def test_skip_marks_the_whole_selection():
     state, view = _view(4)
     _select(view, [1, 2])
 
-    view._on_skip_clicked()
+    view.skip_selection()
 
     assert [page.skipped for page in state.project.pages] == [False, True, True, False]
 
@@ -573,7 +573,7 @@ def test_skip_on_a_mixed_selection_skips_rather_than_inverting_it():
     skip_many(state, [1])
     _select(view, [0, 1, 2])
 
-    view._on_skip_clicked()
+    view.skip_selection()
 
     assert [page.skipped for page in state.project.pages] == [True, True, True, False]
 
@@ -585,7 +585,7 @@ def test_skip_unskips_only_when_everything_selected_is_already_skipped():
     skip_many(state, [0, 1])
     _select(view, [0, 1])
 
-    view._on_skip_clicked()
+    view.skip_selection()
 
     assert [page.skipped for page in state.project.pages] == [False, False, False]
 
@@ -598,11 +598,11 @@ def test_the_selection_survives_the_action_so_it_can_be_repeated():
     state, view = _view(4)
     _select(view, [0, 2])
 
-    view._on_rotate_clicked()
+    view.rotate_selection()
 
     assert view._selected_indices() == [0, 2]
 
-    view._on_rotate_clicked()
+    view.rotate_selection()
 
     assert [page.rotate_deg for page in state.project.pages] == [180, 0, 180, 0]
 
@@ -612,10 +612,10 @@ def test_a_single_page_still_toggles():
     state, view = _view(3)
     _select(view, [1])
 
-    view._on_skip_clicked()
+    view.skip_selection()
     assert state.project.pages[1].skipped is True
 
-    view._on_skip_clicked()
+    view.skip_selection()
     assert state.project.pages[1].skipped is False
 
 
@@ -685,7 +685,7 @@ def test_skip_range_is_one_undo_step():
     sixteen entries in a bounded undo stack."""
     state, view = _view_with(10, ask_skip_range=lambda n: "1-6")
 
-    view._on_skip_range_clicked()
+    view.skip_range_selection()
     state.undo()
 
     assert all(page.skipped is False for page in state.project.pages)
@@ -700,7 +700,7 @@ def test_skip_range_states_rather_than_toggles():
     state, view = _view_with(4, ask_skip_range=lambda n: "1-2")
     skip_many(state, [0])
 
-    view._on_skip_range_clicked()
+    view.skip_range_selection()
 
     assert [p.skipped for p in state.project.pages] == [True, True, False, False]
 
@@ -708,7 +708,7 @@ def test_skip_range_states_rather_than_toggles():
 def test_a_cancelled_skip_range_changes_nothing():
     state, view = _view_with(4, ask_skip_range=lambda n: None)
 
-    view._on_skip_range_clicked()
+    view.skip_range_selection()
 
     assert state.can_undo is False
 
@@ -716,7 +716,7 @@ def test_a_cancelled_skip_range_changes_nothing():
 def test_a_malformed_skip_range_reports_on_the_button():
     state, view = _view_with(4, ask_skip_range=lambda n: "one to six")
 
-    view._on_skip_range_clicked()
+    view.skip_range_selection()
 
     assert state.can_undo is False
     assert "page number" in view.skip_range_button.toolTip()

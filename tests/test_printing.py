@@ -242,3 +242,73 @@ def test_a_profile_saved_under_the_old_scheme_is_still_found(tmp_path, monkeypat
     legacy.write_text(_json.dumps(asdict(_profile())), encoding="utf-8")
 
     assert PrinterProfile.load("Old:Printer") == _profile()
+
+
+# -- one pass, as a file ----------------------------------------------
+#
+# Printing a pass here and exporting it to be printed somewhere else -- a
+# copy shop, a second machine -- are the same physical pass, so they have
+# to come from the same arithmetic. The CLI assembled its own `export`
+# call for `--pass` and the desktop app could not export a pass at all.
+
+
+
+def test_pass_export_carries_the_sheet_order_the_pass_would_feed():
+    from deckle.core.printing import pass_export, plan_passes
+
+    plan = _make_plan(4)
+    profile = _profile(reverse_stack=True, flip_axis="long")
+
+    back = pass_export(plan, profile, "back")
+    expected = next(p for p in plan_passes(plan, profile) if p.side == "back")
+
+    assert back.sheets == expected.sheet_order
+    assert back.sheets == [3, 2, 1, 0]
+
+
+def test_the_half_turn_belongs_to_the_back_pass_only():
+    """`rotate_180` on a front pass would turn every front upside down.
+    The flag is the profile's answer about the *back*, and the front pass
+    must not inherit it."""
+    from deckle.core.printing import pass_export
+
+    plan = _make_plan(2)
+    long_edge = _profile(flip_axis="long")
+
+    assert pass_export(plan, long_edge, "back").rotate_180 is True
+    assert pass_export(plan, long_edge, "front").rotate_180 is False
+
+
+def test_a_short_edge_flip_needs_no_turn_at_all():
+    from deckle.core.printing import pass_export
+
+    plan = _make_plan(2)
+    assert pass_export(plan, _profile(flip_axis="short"), "back").rotate_180 is False
+
+
+def test_the_measured_back_offset_travels_with_the_pass():
+    """The most expensive datum Deckle holds -- printed, measured by hand,
+    reprinted when the numbers were wrong. Dropping it on the way to a
+    file is how a registration correction silently stops applying."""
+    from deckle.core.printing import pass_export
+
+    profile = _profile(back_offset_x_pt=1.5, back_offset_y_pt=-2.0)
+    assert pass_export(_make_plan(2), profile, "back").back_offset_pt == (1.5, -2.0)
+
+
+def test_the_reload_instruction_travels_with_the_file():
+    """Whoever prints the exported pass may never have seen Deckle, and
+    this is the sentence that decides whether the backs land on the right
+    fronts."""
+    from deckle.core.printing import pass_export
+
+    export = pass_export(_make_plan(2), _profile(reverse_stack=True), "back")
+    assert "reverse the printed stack" in export.reload_instruction
+
+
+def test_a_narrowed_selection_narrows_the_pass():
+    """Reprinting one signature is the normal path with a smaller input."""
+    from deckle.core.printing import pass_export
+
+    export = pass_export(_make_plan(6), _profile(reverse_stack=False), "front", [2, 3])
+    assert export.sheets == [2, 3]

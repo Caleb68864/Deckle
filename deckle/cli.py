@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
-import importlib.metadata
 import json
 import os
 import re
@@ -34,6 +33,14 @@ from deckle.core.report import (
     profile_report,
     schedule_report,
 )
+from deckle.core import about
+from deckle.core.export import (
+    RULE_TOO_NARROW_NOTE,
+    export as export_plan,
+    proof_rule_advice,
+)
+from deckle.core.printing import pass_export
+from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import (
@@ -60,25 +67,14 @@ from deckle.core.project_io import (
 
 # A-6: `deckle --version` prints the app version plus the resolved versions
 # of its key third-party dependencies -- the first thing anyone asks for in
-# a bug report. Resolved via importlib.metadata (installed-distribution
-# metadata) rather than importing the packages themselves, so this never
-# imports PySide6 -- and so deckle.cli never has to import deckle.app.
-_VERSIONED_DISTRIBUTIONS = ("pikepdf", "pypdfium2", "img2pdf", "PySide6")
-
-
-def _distribution_version(dist_name: str) -> str:
-    try:
-        return importlib.metadata.version(dist_name)
-    except importlib.metadata.PackageNotFoundError:
-        return "not installed"
-
-
-def _version_string() -> str:
-    parts = [f"deckle {_DECKLE_VERSION}"]
-    parts.extend(
-        f"{dist} {_distribution_version(dist)}" for dist in _VERSIONED_DISTRIBUTIONS
-    )
-    return "\n".join(parts)
+# a bug report. Resolved via installed-distribution metadata rather than by
+# importing the packages themselves, so this never imports PySide6 -- and so
+# deckle.cli never has to import deckle.app.
+#
+# The list and the formatting live in `deckle.core.about`, because the
+# desktop app's About box has to say the same thing: a report built from
+# one has to be comparable with a report built from the other.
+_version_string = about.version_string
 
 LETTER_PT = (612.0, 792.0)
 A4_PT = (595.28, 841.89)
@@ -664,19 +660,6 @@ def _resolve_profile(name: str):
     """
     resolved = _resolve_profile_origin(name)
     return None if resolved is None else resolved[0]
-
-
-def _pass_for(plan, side: str, profile, sheets: list[int] | None):
-    """The :class:`~deckle.core.printing.PrintPass` for one side.
-
-    Everything here comes from ``plan_passes`` -- the sheet order, the
-    half turn, the reload wording. The CLI decides none of it: a second
-    implementation of the ordering table would be free to disagree with
-    the desktop app about the same printer, and the paper would be wrong
-    while both halves looked right.
-    """
-    passes = plan_passes(plan, profile, sheets=sheets)
-    return next(print_pass for print_pass in passes if print_pass.side == side)
 
 
 def _load_source(path: str) -> list[SourcePage]:
@@ -1300,10 +1283,10 @@ def _cmd_export(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        print_pass = _pass_for(plan, args.pass_side, profile, selection)
+        print_pass = pass_export(plan, profile, args.pass_side, selection)
         side = args.pass_side
-        selection = print_pass.sheet_order
-        rotate_180 = print_pass.side == "back" and print_pass.rotate_backs
+        selection = print_pass.sheets
+        rotate_180 = print_pass.rotate_180
 
     if args.back_offset is not None:
         back_offset = args.back_offset
@@ -1424,27 +1407,18 @@ def _report_export_dry_run(args, plan, selection, side, rotate_180,
 
 
 def _report_rule(paper_width_pt: float) -> None:
-    """Say what the printed rule should measure, and what it means if it
-    does not.
+    """Say what the printed rule should measure, and what a short answer
+    means.
 
-    The rule is labelled on the sheet, but the number belongs here too: it
-    is what turns "print this and look at it" into a check with a pass
-    condition, and the person reading this line is the one about to walk to
-    the printer.
+    The wording lives in :func:`deckle.core.export.proof_rule_advice` --
+    the print dialog's proof checkbox says the same thing, and a user who
+    has done the check once should recognise it the next time.
     """
-    length = proof_rule_length_pt(paper_width_pt)
-    if length <= 0:
-        print(
-            "note: this sheet is too narrow for a rule, so none was drawn",
-            file=sys.stderr,
-        )
+    advice = proof_rule_advice(paper_width_pt)
+    if advice == RULE_TOO_NARROW_NOTE:
+        print(f"note: {advice}", file=sys.stderr)
         return
-    inches = int(round(length / 72.0))
-    print(
-        f"measure the printed rule: it should be {inches} in exactly. "
-        "If it is short, the printer scaled the page -- turn off "
-        '"fit to page" and print again.'
-    )
+    print(advice)
 
 
 def _cmd_impose(args: argparse.Namespace) -> int:

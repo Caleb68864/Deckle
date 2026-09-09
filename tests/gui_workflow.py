@@ -74,7 +74,7 @@ def main(source_pdf: str, out_pdf: str) -> int:
     # -- insert a blank through the button the user actually presses ----
     report["preview_sheets_before_edit"] = len(window.preview_view.plan.sheets)
     window.arrange_view._choose_blank_position = lambda choices: 1
-    window.arrange_view._on_insert_blank_clicked()
+    window.arrange_view.insert_blank_at_choice()
 
     report["labels"] = [
         window.arrange_view.list_widget.item(i).text()

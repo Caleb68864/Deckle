@@ -45,3 +45,4 @@ modules sit underneath all of it.
    core.report
    core.session_log
    core.diagnostics
+   core.about

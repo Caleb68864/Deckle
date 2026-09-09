@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from typing import Callable, Sequence
 
-from deckle.core.diagnostics import log_exception
+from deckle.core.diagnostics import log_event, log_exception
+from deckle.core.export import proof_rule_advice
 from deckle.core.models import SheetPlan
 from deckle.core.print_session import PrintSession, SessionSummary, StaleSessionError
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
@@ -54,6 +55,35 @@ def select_preselected_printer(
         else:
             return name
     return printer_names[0] if printer_names else None
+
+
+PROOF_DPI = 300
+"""Rasterization resolution for a proof sheet.
+
+The same default a :class:`~deckle.core.print_session.PrintSession` uses,
+because a proof that is rendered differently from the job proves something
+about a sheet nobody is going to print.
+"""
+
+
+def proof_sheet_index(plan: SheetPlan, sheets: Sequence[int] | None = None) -> int | None:
+    """The sheet to proof: the first one that will actually be printed.
+
+    ``--sheets 0 --rule`` is the CLI's spelling and sheet 0 is almost always
+    the answer, but the dialog can be narrowed to one signature -- and
+    proofing a sheet outside the selection would measure paper the user is
+    not about to run.
+
+    Pure and Qt-free, so the choosing is testable without a display.
+
+    :param plan: the imposed sheets.
+    :param sheets: the narrowed selection, or ``None`` for the whole plan.
+    :returns: the sheet index, or ``None`` when there is nothing to print.
+    """
+    if sheets is not None:
+        selected = list(sheets)
+        return selected[0] if selected else None
+    return plan.sheets[0].index if plan.sheets else None
 
 
 def describe_profile(profile: PrinterProfile) -> str:
@@ -299,6 +329,23 @@ class PrintDialog:
         self.test_first_checkbox = QCheckBox("Test one sheet first", self.widget)
         layout.addWidget(self.test_first_checkbox)
 
+        # The only actual-size check Deckle offers. Sheets print at actual
+        # size (B6) -- an inch of the design is an inch of paper -- but that
+        # is a claim about someone else's printer, and a driver preset
+        # saying "fit to page" falsifies it silently. This prints one sheet
+        # with a ruler across it: measure the rule, and you know.
+        self.proof_checkbox = QCheckBox(
+            "Proof sheet only -- one sheet with a ruler", self.widget
+        )
+        self.proof_checkbox.setToolTip(
+            "Prints ONE sheet with a ruler of known length drawn on it, "
+            "and does not print the job.\n\n"
+            "Measure the rule against a tape. If it is short, the printer "
+            'scaled the page -- turn off "fit to page" and try again. This '
+            "is the same check as the CLI's --sheets 0 --rule."
+        )
+        layout.addWidget(self.proof_checkbox)
+
         # Signature selector: "All" (the default -- prints the whole plan)
         # or one signature by index, so a binder can reprint a single
         # gathering without touching pass/sheet-order arithmetic. That
@@ -433,6 +480,9 @@ class PrintDialog:
         self._remember_profile_choice(printer_name)
         backend = self._backend_cls(profile)
         sheets = self.signature_combo.currentData()
+        if self.proof_checkbox.isChecked():
+            self.print_proof(backend, printer_name, sheets)
+            return
         kwargs = {} if sheets is None else {"sheets": sheets}
         session = self._session_cls(
             self.plan,
@@ -445,6 +495,34 @@ class PrintDialog:
         self._session = session
         session.start()
         self._drive(session)
+
+    def print_proof(self, backend, printer_name: str, sheets=None) -> None:
+        """Print one sheet with a ruler, and say what to measure.
+
+        No :class:`~deckle.core.print_session.PrintSession`: a proof has one
+        face, no reload and no back pass, and leaving a resumable run on
+        disk would mean the next print dialog offering to "finish" it. See
+        :meth:`deckle.app.backend.QtPrintBackend.submit_proof`.
+
+        :param backend: the print backend to submit through.
+        :param printer_name: the target queue.
+        :param sheets: the narrowed sheet selection, or ``None``.
+        :returns: nothing. A failure is reported the same way a stalled run
+            is, through ``show_offline_error``.
+        """
+        sheet_index = proof_sheet_index(self.plan, sheets)
+        if sheet_index is None:
+            self.status_label.setText("Nothing to proof -- this plan has no sheets.")
+            return
+        result = backend.submit_proof(self.plan, sheet_index, printer_name, PROOF_DPI)
+        if result.error is not None:
+            self._show_offline_error(printer_name, result.error)
+            return
+        log_event("proof_requested", printer=printer_name, sheet=sheet_index)
+        self.status_label.setText(
+            f"Proof of sheet {sheet_index} sent -- "
+            f"{proof_rule_advice(self.plan.paper_pt[0])}"
+        )
 
     # -- resume -----------------------------------------------------------
 

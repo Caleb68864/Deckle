@@ -203,20 +203,20 @@ class ImportView:
         layout.addWidget(self.append_checkbox)
         layout.addWidget(self.status_label)
 
-        self.import_pdf_button.clicked.connect(self._pick_pdf)
-        self.import_images_button.clicked.connect(self._pick_images)
+        self.import_pdf_button.clicked.connect(self.pick_pdf)
+        self.import_images_button.clicked.connect(self.pick_images)
 
         self._thread = None
         self._worker: ImportWorker | None = None
         self._QThread = QThread
 
-    def _pick_pdf(self) -> None:
+    def pick_pdf(self) -> None:
         _QCheckBox, QFileDialog, *_ = _qt_widgets()
         path, _filter = QFileDialog.getOpenFileName(self.widget, "Import PDF", "", "PDF files (*.pdf)")
         if path:
             self.import_path(path)
 
-    def _pick_images(self) -> None:
+    def pick_images(self) -> None:
         _QCheckBox, QFileDialog, *_ = _qt_widgets()
         path = QFileDialog.getExistingDirectory(self.widget, "Import Image Directory")
         if path:

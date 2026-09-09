@@ -13,6 +13,7 @@ requires neither PySide6 nor a display server.
    :maxdepth: 1
 
    app.state
+   app.menus
    app.main
    app.backend
    app.printer_capabilities

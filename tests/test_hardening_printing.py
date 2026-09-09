@@ -325,6 +325,9 @@ class _FakeWindow:
         # first built-in preset's 18pt border.
         self.profile = app_main.DEFAULT_PROFILE
         self.profile_loader = _no_saved_profile
+        # The Print menu entry is disabled alongside the Print button, so
+        # the double has to own the map the real window keeps them in.
+        self.menu_actions = {}
         self.layout_panel = _FakeProfileConsumer()
         self.preview_view = _FakeProfileConsumer()
 

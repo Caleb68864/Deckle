@@ -426,6 +426,12 @@ class AppState:
     ) -> None:
         self._project = project
         self.project_path = project_path
+        # What was last written to the user's own file, held by identity.
+        # `Project` is frozen, so undo restores the very object that was
+        # saved -- which means undoing back to the saved state clears the
+        # dirty flag for free, rather than leaving a window titled
+        # "modified" over a document identical to the one on disk.
+        self._saved_project = project
         self._undo_stack: deque[Project] = deque(maxlen=undo_depth)
         self._redo_stack: deque[Project] = deque(maxlen=undo_depth)
         self._autosave_delay_s = autosave_delay_s
@@ -498,6 +504,51 @@ class AppState:
             return
         except OSError as exc:
             log_exception("unsaved_autosave_discard_failed", exc, path=path)
+
+    @property
+    def dirty(self) -> bool:
+        """Whether the project differs from the last explicit save.
+
+        Autosave does not clear this, and must not: an autosave is
+        Deckle's insurance against a crash, written to
+        ``<project>.autosave`` precisely so it never touches the file the
+        user named. Treating it as a save would mean the window stopped
+        saying "unsaved" while the user's own file was still stale, and
+        the close prompt -- the thing standing between a session's work
+        and the bin -- would never appear.
+
+        Held by identity rather than equality: `Project` is frozen, so the
+        object that was saved is the object undo restores, and comparing
+        identities is both cheaper and more honest than comparing two
+        deeply-nested dataclasses field by field.
+
+        :returns: whether there is work the user has not saved.
+        """
+        return self._project is not self._saved_project
+
+    def mark_saved(self) -> None:
+        """Record that the current project is what is now on disk.
+
+        Called after an explicit save -- never after an autosave, for the
+        reason :attr:`dirty` gives.
+
+        :returns: nothing.
+        """
+        with self._lock:
+            self._saved_project = self._project
+
+    def mark_unsaved(self) -> None:
+        """Declare the project different from whatever is on disk.
+
+        For work that exists only in memory the moment it arrives:
+        recovered autosave content is loaded, not saved, and a window that
+        opened it clean would let the user close it again and lose the
+        recovery they had just accepted.
+
+        :returns: nothing.
+        """
+        with self._lock:
+            self._saved_project = None
 
     @property
     def can_undo(self) -> bool:

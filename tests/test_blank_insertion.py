@@ -95,7 +95,7 @@ def test_cancelling_inserts_nothing():
     state = AppState(_project(3))
     view = ArrangeView(state, choose_blank_position=lambda choices: None)
 
-    view._on_insert_blank_clicked()
+    view.insert_blank_at_choice()
 
     assert len(state.project.pages) == 3
 
@@ -111,7 +111,7 @@ def test_choosing_a_position_inserts_there():
         return 2  # between pages 2 and 3
 
     view = ArrangeView(state, choose_blank_position=choose)
-    view._on_insert_blank_clicked()
+    view.insert_blank_at_choice()
 
     assert len(state.project.pages) == 4
     assert is_blank_page(state.project.pages[2])

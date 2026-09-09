@@ -748,10 +748,10 @@ class ArrangeView:
         toolbar.addWidget(self.remove_button)
         outer.addLayout(toolbar)
 
-        self.rotate_button.clicked.connect(self._on_rotate_clicked)
-        self.skip_button.clicked.connect(self._on_skip_clicked)
-        self.skip_range_button.clicked.connect(self._on_skip_range_clicked)
-        self.insert_blank_button.clicked.connect(self._on_insert_blank_clicked)
+        self.rotate_button.clicked.connect(self.rotate_selection)
+        self.skip_button.clicked.connect(self.skip_selection)
+        self.skip_range_button.clicked.connect(self.skip_range_selection)
+        self.insert_blank_button.clicked.connect(self.insert_blank_at_choice)
         self.remove_button.clicked.connect(self.remove_selection)
         self.list_widget.reorder_requested.connect(self.move_pages)
         self.list_widget.setContextMenuPolicy(_qt_custom_context_menu())
@@ -844,7 +844,7 @@ class ArrangeView:
         row = self.list_widget.currentRow()
         return row if row >= 0 else None
 
-    def _on_rotate_clicked(self) -> None:
+    def rotate_selection(self) -> None:
         # The whole selection. The list is `ExtendedSelection` and the
         # context menu already says "Move 12 pages to..." -- but Rotate and
         # Skip both went through `currentRow()`, so selecting twelve pages
@@ -859,7 +859,7 @@ class ArrangeView:
         self._reselect(rows)
         self.pages_changed.emit()
 
-    def _on_skip_clicked(self) -> None:
+    def skip_selection(self) -> None:
         rows = self._selected_indices()
         if not rows:
             return
@@ -884,7 +884,7 @@ class ArrangeView:
         )
         return text if ok else None
 
-    def _on_skip_range_clicked(self) -> None:
+    def skip_range_selection(self) -> None:
         """Mark a stated range skipped, then re-impose.
 
         :returns: nothing. A malformed range is reported on the button's
@@ -1061,13 +1061,13 @@ class ArrangeView:
         if chosen is move_action:
             self._move_selection_via_dialog(rows)
         elif chosen is rotate_action:
-            self._on_rotate_clicked()
+            self.rotate_selection()
         elif chosen is skip_action:
-            self._on_skip_clicked()
+            self.skip_selection()
         elif chosen is skip_range_action:
-            self._on_skip_range_clicked()
+            self.skip_range_selection()
         elif chosen is blank_action:
-            self._on_insert_blank_clicked()
+            self.insert_blank_at_choice()
         elif chosen is remove_action:
             self.remove_selection()
 
@@ -1113,7 +1113,7 @@ class ArrangeView:
             return None
         return next(index for text, index in choices if text == label)
 
-    def _on_insert_blank_clicked(self) -> None:
+    def insert_blank_at_choice(self) -> None:
         """Ask where the blank belongs, then insert it there.
 
         :returns: nothing. Cancelling inserts nothing at all -- an
