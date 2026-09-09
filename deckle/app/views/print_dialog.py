@@ -101,6 +101,60 @@ def unrecorded_sheets_prompt(question: UnrecordedSheets) -> str:
     )
 
 
+def suggested_resume_count(summary: SessionSummary) -> int:
+    """What the resume prompt's count field opens on.
+
+    The number Deckle already recorded for the interrupted pass -- which is
+    where an answer to :func:`unrecorded_sheets_prompt` ends up. That popup
+    asks the operator how many sheets came out and writes the answer to
+    ``sheet_cursor``; the resume prompt is the *same question about the
+    same tray*, asked once more because time and a reload have passed since.
+
+    It used to open on ``0`` and read nothing of the summary it was handed.
+    ``PrintSession.resume`` assigns the cursor absolutely, so ``0`` did not
+    mean "no new information" -- it meant "nothing came out", and it
+    overwrote the count the operator had already given. The chunk they had
+    just finished counting went through the machine a second time.
+
+    A default, not an answer: the operator is the one who can see the tray
+    and can still correct it. But a field reset to zero, offered to someone
+    who has just counted that tray out loud, is a worse starting point than
+    what Deckle wrote down.
+
+    :param summary: the interrupted session, as :meth:`list_resumable`
+        reports it.
+    :returns: the sheet count to pre-fill, per-pass like ``resume()``'s own
+        argument.
+    """
+    return summary.sheet_cursor
+
+
+def resume_count_prompt(summary: SessionSummary) -> str:
+    """What the operator reads when an interrupted job is resumed.
+
+    Says what the pre-filled number is before asking the question, for the
+    same reason :func:`unrecorded_sheets_prompt` puts the situation first:
+    a number appearing in a field with no account of where it came from
+    cannot be told apart from a guess, and the operator cannot know whether
+    to trust it or clear it.
+
+    Pure and Qt-free so the wording is directly testable.
+
+    :param summary: the interrupted session being resumed.
+    :returns: the label text for the count dialog.
+    """
+    n = summary.sheet_cursor
+    sheets = "sheet" if n == 1 else "sheets"
+    return (
+        f"Deckle recorded {n} {sheets} as printed in pass "
+        f"{summary.pass_index + 1} before this run stopped, so the count "
+        "below starts there.\n\n"
+        "Look at the tray. How many sheets came out?\n\n"
+        "Cancel to leave the job as it is: it stays resumable and you will "
+        "be asked again."
+    )
+
+
 PROOF_DPI = 300
 """Rasterization resolution for a proof sheet.
 
@@ -679,14 +733,20 @@ class PrintDialog:
         nothing, resume the lot -- so returning it for a dismissed dialog
         meant Cancel reprinted the entire interrupted pass onto a stack the
         operator had already reloaded.
+
+        The field opens on :func:`suggested_resume_count` and the label
+        explains where that number came from. Opening on zero discarded
+        whatever the operator had already told the "printed, but not
+        recorded" popup, because :meth:`PrintSession.resume` writes the
+        count it is given straight into the cursor.
         """
         from PySide6.QtWidgets import QInputDialog
 
         count, ok = QInputDialog.getInt(
             self.widget,
             "Resume print job",
-            "How many sheets came out?",
-            0,
+            resume_count_prompt(summary),
+            suggested_resume_count(summary),
             0,
         )
         return count if ok else None

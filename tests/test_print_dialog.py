@@ -344,6 +344,62 @@ def test_zero_sheets_is_a_real_answer_and_still_resumes():
     assert dialog._session.resumed_with == 0
 
 
+def test_the_real_resume_dialog_opens_on_the_count_already_recorded(monkeypatch):
+    """The wiring, not just the arithmetic.
+
+    B37 asks how many sheets came out and writes the answer to the state
+    file, where it becomes ``SessionSummary.sheet_cursor``. The resume
+    prompt is handed that summary and used to read none of it -- opening on
+    ``0`` and passing ``0`` to ``resume()``, which assigns the cursor
+    absolutely and threw the answer away. The chunk went through the
+    machine a second time.
+    """
+    from PySide6.QtWidgets import QInputDialog
+
+    seen = {}
+
+    def fake_get_int(parent, title, label, value=0, minimum=0, *args, **kwargs):
+        seen.update(label=label, value=value, minimum=minimum)
+        return value, True
+
+    monkeypatch.setattr(QInputDialog, "getInt", staticmethod(fake_get_int))
+
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=1,
+        sheet_cursor=10,
+        state_path="/tmp/abc123.json",
+    )
+    dialog = _make_dialog()
+
+    assert dialog._default_ask_resume_count(summary) == 10
+    assert seen["value"] == 10, "the field opened on zero again"
+    assert "How many sheets came out?" in seen["label"]
+
+
+def test_cancel_is_still_not_an_answer_even_with_a_pre_filled_count(monkeypatch):
+    """Pre-filling the field must not turn Cancel into "resume from ten"."""
+    from PySide6.QtWidgets import QInputDialog
+
+    monkeypatch.setattr(
+        QInputDialog, "getInt",
+        staticmethod(lambda *args, **kwargs: (10, False)),
+    )
+
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=1,
+        sheet_cursor=10,
+        state_path="/tmp/abc123.json",
+    )
+
+    assert _make_dialog()._default_ask_resume_count(summary) is None
+
+
 # -- printed, but not recorded (B37) ---------------------------------------
 
 
@@ -401,13 +457,25 @@ def test_the_prompt_says_what_cancel_does():
 
 def test_the_prompt_asks_the_same_question_the_resume_prompt_asks():
     """One question about one output tray. Two spellings of it would teach
-    the operator that the two answers mean different things."""
-    import inspect
+    the operator that the two answers mean different things.
 
+    Asserted on the text both prompts actually produce, not on the source
+    of the method that raises one of them -- the wording moved into
+    ``resume_count_prompt`` so it could be tested at all.
+    """
     from deckle.app.views import print_dialog as dialog_mod
+    from deckle.core.print_session import SessionSummary
 
-    resume_source = inspect.getsource(dialog_mod.PrintDialog._default_ask_resume_count)
-    assert "How many sheets came out?" in resume_source
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=0,
+        sheet_cursor=3,
+        state_path="/tmp/abc123.json",
+    )
+
+    assert "How many sheets came out?" in dialog_mod.resume_count_prompt(summary)
     assert "How many sheets came out?" in dialog_mod.unrecorded_sheets_prompt(
         _unrecorded()
     )
