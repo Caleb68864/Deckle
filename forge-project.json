@@ -12,9 +12,10 @@
   ],
   "build_command": null,
   "test_command": "python -m pytest -q",
-  "e2e_command": "python -m deckle dummy -o /tmp/e2e.pdf --pages 8 && python -m deckle impose /tmp/e2e.pdf -o /tmp/e2e-imposed.pdf && python -m deckle info /tmp/e2e-imposed.pdf",
+  "e2e_command": "python -m deckle.cli dummy -o /tmp/e2e-src.pdf --pages 8 && python -m deckle.cli impose /tmp/e2e-src.pdf -o /tmp/e2e.deckle && python -m deckle.cli export /tmp/e2e.deckle -o /tmp/e2e-imposed.pdf && python -m deckle.cli info /tmp/e2e.deckle",
   "notes": [
     "Tests need the project's virtualenv: use .venv/bin/python -m pytest -q, and add -p no:cacheprovider in a sandbox.",
+    "Two entry points: `python -m deckle` starts the GUI and blocks on the Qt event loop; `python -m deckle.cli` (or the `deckle` console script) is the headless one. Anything scripted wants deckle.cli.",
     "There is no build step for the app itself; run.bat package builds a Windows binary via packaging/deckle.spec.",
     "tests/test_preview_paint.py segfaults in Qt teardown AFTER passing. Pre-existing and harmless; do not chase it.",
     "The suite enforces its own rules: test_core_purity (no Qt in deckle.core), test_docs_coverage (every module has a docs/api/*.rst page), test_single_source_decisions."
