@@ -37,10 +37,37 @@ def test_the_version_string_names_deckle_and_its_engines():
 
 def test_the_cli_and_the_about_box_read_the_same_version():
     """Two spellings of a version number is two bug reports that cannot be
-    compared."""
-    from deckle.cli import _version_string
+    compared -- so there is one spelling, and that is what this asserts.
 
-    assert _version_string() == about.version_string()
+    The assertion used to be ``_version_string() == about.version_string()``.
+    ``deckle/cli/options.py`` defines ``_version_string = about.version_string``
+    -- a plain alias, the same function object under two names -- so that
+    line called one function twice and compared its answer with itself. It
+    could not fail, including on the day somebody gave the CLI its own
+    copy of the formatting. Identity is the property that actually holds
+    here, and it is the one that breaks when a second implementation
+    appears.
+    """
+    from deckle.cli import _version_string
+    from deckle.cli import options
+
+    assert _version_string is about.version_string
+    assert options._version_string is about.version_string
+
+
+def test_the_version_flag_prints_what_the_about_box_would_say():
+    """The other half, and a genuinely separate claim: an alias proves the
+    two names agree, not that ``--version`` reaches either of them. The
+    flag's text is baked in at parser-build time, which is a third place
+    the string could have come from."""
+    from deckle.cli import build_parser
+
+    parser = build_parser()
+    version_action = next(
+        action for action in parser._actions if "--version" in action.option_strings
+    )
+
+    assert version_action.version == about.version_string()
 
 
 def test_a_missing_dependency_is_a_fact_not_an_error():

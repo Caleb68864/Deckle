@@ -12,9 +12,11 @@ import inspect
 import os
 
 import pikepdf
+import pytest
 
 from deckle.app.views import layout_panel, preview_view
 from deckle.core import export as export_module
+from deckle.core.render import render_sheet
 from deckle.core.models import (
     LayoutSettings,
     OutputPage,
@@ -206,22 +208,61 @@ def test_preview_view_module_never_uses_a_modal_dialog():
 
 
 def test_gutter_change_recomputes_plan_arithmetically_without_rendering(monkeypatch, tmp_path):
+    """``recompute_plan`` runs on every control change, so it must not draw.
+
+    The watch was on ``preview_view.render_sheet``, and the code under test
+    is ``layout_panel.recompute_plan``. ``layout_panel`` does not import
+    ``preview_view``, does not import ``render_sheet``, and has never
+    mentioned either -- so the patch rebound a name in a module the call
+    never entered, and the assertion held no matter what the imposer did.
+
+    The watch is now on ``export.export``, which is the one door any sheet
+    has to come through to be drawn: ``render_sheet`` exports the sheet to
+    a PDF and rasterizes *that*, and ``export_sheet_cached`` reaches it
+    through the module global patched here. Raising rather than counting,
+    so a call fails inside the code that made it and the traceback names
+    the line.
+    """
     src = _write_source_pdf(tmp_path, n_pages=4)
     pages = [SourcePage(ref=_ref(src, i), rotate_deg=0, skipped=False) for i in range(4)]
     settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left")
     project = Project(pages=pages, layout=settings, printer=None)
 
-    render_calls = []
-    monkeypatch.setattr(
-        preview_view, "render_sheet", lambda *a, **k: render_calls.append(a) or None
-    )
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "recompute_plan reached the render path; it is arithmetic only"
+        )
+
+    monkeypatch.setattr(export_module, "export", refuse)
 
     plan = layout_panel.recompute_plan(replace_gutter(project, 54.0))
 
-    # recompute_plan is arithmetic-only: it must never touch the render path.
-    assert render_calls == []
     assert isinstance(plan, SheetPlan)
     assert len(plan.sheets) == 2
+
+
+def test_the_no_rendering_watch_is_on_a_door_recompute_plan_could_open(monkeypatch, tmp_path):
+    """Proves the guard above can fail, which is the whole reason it moved.
+
+    Rendering a sheet goes through ``export.export`` -- so patching it and
+    then rendering on purpose must blow up. If this stops failing, the
+    watch has drifted off the door again and the test above is decoration.
+    """
+    src = _write_source_pdf(tmp_path, n_pages=4)
+    pages = [SourcePage(ref=_ref(src, i), rotate_deg=0, skipped=False) for i in range(4)]
+    settings = LayoutSettings(paper=LETTER, gutter_pt=36.0, binding_edge="left")
+    plan = layout_panel.recompute_plan(
+        Project(pages=pages, layout=settings, printer=None)
+    )
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the render path was entered")
+
+    monkeypatch.setattr(export_module, "export", refuse)
+    export_module.clear_sheet_cache()
+
+    with pytest.raises(AssertionError, match="the render path was entered"):
+        render_sheet(plan, 0, "front", dpi=36)
 
 
 def replace_gutter(project: Project, gutter_pt: float) -> Project:

@@ -24,6 +24,7 @@ that do not.
 from __future__ import annotations
 
 import os
+import tempfile
 
 import pytest
 
@@ -123,8 +124,8 @@ def test_eviction_never_raises(tmp_path, monkeypatch):
 def test_the_export_cache_directory_is_bounded(tmp_path, monkeypatch):
     """Asserted through ``_cache_dir``, the function every cached export
     calls, rather than by inspecting the module for a budget constant."""
-    monkeypatch.setattr(export_mod.tempfile, "gettempdir", lambda: str(tmp_path))
-    directory = os.path.join(str(tmp_path), export_mod._CACHE_DIR_NAME)
+    directory = os.path.join(str(tmp_path), "cache")
+    monkeypatch.setenv("DECKLE_EXPORT_CACHE_DIR", directory)
     os.makedirs(directory, exist_ok=True)
     _fill(directory, 40, size=1024)
     monkeypatch.setattr(export_mod, "_CACHE_MAX_BYTES", 8 * 1024)
@@ -132,6 +133,58 @@ def test_the_export_cache_directory_is_bounded(tmp_path, monkeypatch):
     export_mod._cache_dir()
 
     assert _total(directory) <= 8 * 1024
+
+
+# -- and it can be pointed somewhere that is not shared -------------------
+
+
+def test_the_export_cache_can_be_pointed_somewhere_else(tmp_path, monkeypatch):
+    """``<temp>/deckle_export_cache`` is shared by every Deckle on the
+    machine, which is right for a cache and wrong for anything that reads
+    the directory back. ``DECKLE_EXPORT_CACHE_DIR`` is the same seam
+    ``DECKLE_SESSION_STATE_DIR`` already provides next door."""
+    elsewhere = os.path.join(str(tmp_path), "somewhere-else")
+    monkeypatch.setenv("DECKLE_EXPORT_CACHE_DIR", elsewhere)
+
+    assert export_mod._cache_dir() == elsewhere
+    assert os.path.isdir(elsewhere), "asking for it creates it"
+
+
+def test_the_override_is_read_every_time_not_cached(tmp_path, monkeypatch):
+    """A value read once at import would be set too late to help anything
+    -- including the suite's own conftest, which runs after the module may
+    already have been imported by an earlier plugin."""
+    first = os.path.join(str(tmp_path), "first")
+    second = os.path.join(str(tmp_path), "second")
+
+    monkeypatch.setenv("DECKLE_EXPORT_CACHE_DIR", first)
+    assert export_mod._cache_dir() == first
+    monkeypatch.setenv("DECKLE_EXPORT_CACHE_DIR", second)
+    assert export_mod._cache_dir() == second
+
+
+def test_the_suite_does_not_share_the_machines_export_cache():
+    """The point of the override, stated as the property the suite needs.
+
+    Two tests in ``tests/test_hardening_limits.py`` diff a listing of this
+    directory. Against the machine's real one they are diffing shared
+    state: residue from an interrupted run on the same machine, and files
+    the 512 MB eviction pass deletes between the two listings. Both fail,
+    and neither failure is about the cleanup path being tested.
+    """
+    shared = os.path.join(tempfile.gettempdir(), export_mod._CACHE_DIR_NAME)
+
+    assert os.path.realpath(export_mod._cache_dir()) != os.path.realpath(shared)
+
+
+def test_without_the_override_it_is_still_the_shared_temp_directory(monkeypatch):
+    """The product default is unchanged: a cache belongs in temp, and a
+    user who never sets the variable gets exactly what they had."""
+    monkeypatch.delenv("DECKLE_EXPORT_CACHE_DIR", raising=False)
+
+    assert export_mod._cache_dir() == os.path.join(
+        tempfile.gettempdir(), export_mod._CACHE_DIR_NAME
+    )
 
 
 def test_the_export_cache_has_a_budget_at_all():
@@ -143,7 +196,7 @@ def test_the_export_cache_has_a_budget_at_all():
 def test_clearing_the_cache_still_removes_its_files(tmp_path, monkeypatch):
     """``clear_sheet_cache`` is now called when a project is replaced, so
     it has to actually reclaim rather than only forget."""
-    monkeypatch.setattr(export_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setenv("DECKLE_EXPORT_CACHE_DIR", os.path.join(str(tmp_path), "cache"))
     export_mod.clear_sheet_cache()
     directory = export_mod._cache_dir()
     made = _fill(directory, 3, prefix="sheet")

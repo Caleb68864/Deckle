@@ -309,6 +309,13 @@ def test_export_sheet_cached_removes_its_temp_file_when_export_fails(
     it. If the export raises, the file never reaches the LRU -- so neither
     eviction nor ``clear_sheet_cache()`` can ever find it, and it survives
     for the life of the machine's temp directory.
+
+    The two listings are a diff of a **shared** directory, which is why
+    ``DECKLE_EXPORT_CACHE_DIR`` exists and why ``tests/conftest.py`` sets
+    it. Against the machine's real temp directory this reads another
+    process's residue, and its own eviction pass can delete a file between
+    the two calls; both fail the test while saying nothing about the
+    cleanup path it is here to check.
     """
     plan = _plan_from_source(tmp_path, 4)
     cache_dir = export._cache_dir()
