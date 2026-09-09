@@ -84,3 +84,74 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q --no-header -p no:cacheprovider
+
+  package-audit:
+    # The other half of the licence defence, and the half that had never run.
+    #
+    # `tests/test_license_audit.py` walks the *declared* dependency closure and
+    # runs on every push here. `tests/test_packaging_audit.py` checks what the
+    # packager actually copied into `dist/`, which is a different question with
+    # a worse history: the first PyInstaller build produced a 1.6 GB bundle
+    # containing torch, paddle, cv2 and pymupdf -- AGPL, in an MIT program --
+    # while every dependency-level audit passed, because none of those was a
+    # Deckle dependency. They were merely present in the developer's
+    # environment, and PyInstaller bundles what it can reach.
+    #
+    # Those 14 tests skip when `dist/` is empty, so they were green and silent
+    # on every run of this workflow. The build that gives them something to
+    # judge is `run.bat package` -- a Windows batch file -- and this workflow
+    # was ubuntu-only, so the artifact gate had never once executed.
+    #
+    # Rather than port the build, run it where it already works. `run.bat
+    # package` creates a clean `.buildenv` holding only Deckle's real
+    # dependencies (rule 1 of that file's docstring: excluding offenders by
+    # name is whack-a-mole against an environment you do not control), builds
+    # through `packaging/deckle.spec`, and then runs the audit against the
+    # result.
+    name: packaged artifact (Windows)
+    runs-on: windows-latest
+    # Not on pull requests: it is a release gate measured in minutes, and the
+    # dependency-level audit -- which now reads PEP 639 `License-Expression`,
+    # having been blind to three of Deckle's own dependencies until
+    # 2026-09-09 -- already runs on every PR.
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          # One version. This job asks what the packager copies, which does
+          # not vary by interpreter the way the suite might.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # `run.bat package` runs the audit with the *outer* interpreter, not
+      # the build environment's, so pytest has to be here rather than in
+      # `.buildenv` -- which stays clean, which is the entire point of it.
+      - name: Install pytest for the audit step
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Builds into a clean .buildenv, then runs tests/test_packaging_audit.py
+      # against dist/deckle. Fails the job on an AGPL hit or an oversized
+      # bundle, which is what it is here to do.
+      - name: Build the bundle and audit it
+        shell: cmd
+        run: run.bat package
+
+      # Kept regardless of outcome: on a failure the listing is the evidence,
+      # and on a pass it is the record of what a green audit was measuring.
+      - name: Keep the bundle listing
+        if: always()
+        shell: bash
+        run: |
+          if [ -d dist/deckle ]; then
+            du -sh dist/deckle
+            find dist/deckle -maxdepth 1 | sort | head -50
+          else
+            echo "no dist/deckle -- the build did not get that far"
+          fi

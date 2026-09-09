@@ -137,6 +137,7 @@ echo     run.bat test [args]      run the test suite
 echo     run.bat deps             install/refresh dependencies
 echo     run.bat doctor           check environment, list printers
 echo     run.bat docs             build the HTML API reference
+echo     run.bat package          build the bundle and audit it
 echo.
 echo   Examples:
 echo     run.bat cli info book.pdf
