@@ -276,20 +276,30 @@ def test_the_print_command_did_not_drag_qt_into_the_cli():
     import-time promise and break the real one, that the CLI runs where
     there is no display at all.
     """
-    cli_path = os.path.join(
+    package_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "deckle", "cli.py",
+        "deckle", "cli",
     )
-    with open(cli_path, encoding="utf-8") as handle:
-        tree = ast.parse(handle.read(), filename=cli_path)
+    # Every module in the package, not one file: ``deckle/cli.py`` became
+    # ``deckle/cli/``, and a check that keeps naming a single path stops
+    # finding anything to read rather than failing on what it finds.
+    paths = sorted(
+        os.path.join(package_dir, name)
+        for name in os.listdir(package_dir)
+        if name.endswith(".py")
+    )
+    assert paths, "no modules found under deckle/cli/"
 
     forbidden = ("deckle.app", "PySide6", "PyQt5", "PyQt6")
     modules = []
-    for node in ast.walk(tree):  # every import, nested ones included
-        if isinstance(node, ast.Import):
-            modules.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.append(node.module)
+    for cli_path in paths:
+        with open(cli_path, encoding="utf-8") as handle:
+            tree = ast.parse(handle.read(), filename=cli_path)
+        for node in ast.walk(tree):  # every import, nested ones included
+            if isinstance(node, ast.Import):
+                modules.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                modules.append(node.module)
 
     assert not [name for name in modules if name.startswith(forbidden)]
 
