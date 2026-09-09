@@ -42,26 +42,50 @@ def test_impose_writes_a_deckle_project(tmp_path):
     assert os.path.exists(out_path)
 
 
+def _cli_package_sources() -> list[str]:
+    """Every ``.py`` file under ``deckle/cli/``.
+
+    The checks below used to name ``deckle/cli.py`` as a single path. That
+    file is now a package, and a path-based check that keeps naming one
+    file goes *vacuous* rather than failing -- so both callers assert the
+    list is non-empty, and both cover every module in the package.
+    """
+    package_dir = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "deckle", "cli"
+    )
+    return sorted(
+        os.path.join(package_dir, name)
+        for name in os.listdir(package_dir)
+        if name.endswith(".py")
+    )
+
+
 def test_cli_imports_only_deckle_core_not_app_or_qt():
-    """Statically verify deckle/cli.py never imports deckle.app or a Qt binding.
+    """Statically verify no file under deckle/cli/ imports deckle.app or Qt.
 
     This is what keeps the CLI runnable in a headless CI container with no
-    display server present.
+    display server present. It walks the package rather than naming one
+    file: ``deckle/cli.py`` became ``deckle/cli/``, and a check that names
+    a single path would have gone quietly vacuous instead of failing.
     """
-    cli_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "deckle", "cli.py")
-    with open(cli_path, "r", encoding="utf-8") as f:
-        tree = ast.parse(f.read(), filename=cli_path)
+    sources = _cli_package_sources()
+    assert sources, "no modules found under deckle/cli/"
 
     forbidden_prefixes = ("deckle.app", "PySide6", "PyQt5", "PyQt6")
-    imported_names = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported_names.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported_names.append(node.module)
+    for path in sources:
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+        imported_names = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported_names.extend(alias.name for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported_names.append(node.module)
 
-    for name in imported_names:
-        assert not name.startswith(forbidden_prefixes), f"forbidden import: {name}"
+        for name in imported_names:
+            assert not name.startswith(forbidden_prefixes), (
+                f"forbidden import in {os.path.basename(path)}: {name}"
+            )
 
 
 def test_version_flag_works_without_a_subcommand(capsys):
@@ -236,15 +260,18 @@ def test_pages_that_keep_nothing_fails_cleanly(tmp_path, capsys, monkeypatch):
     """
     from dataclasses import replace
 
-    import deckle.cli as cli
+    from deckle.cli import commands
 
     source = _dummy(tmp_path, 4)
-    real = cli._load_source
+    real = commands._load_source
 
     def all_skipped(path):
         return [replace(page, skipped=True) for page in real(path)]
 
-    monkeypatch.setattr(cli, "_load_source", all_skipped)
+    # `deckle.cli._load_source` is a re-export -- a different binding --
+    # and patching it would leave `_load_source_or_report` calling the real
+    # loader.
+    monkeypatch.setattr(commands, "_load_source", all_skipped)
     out = tmp_path / "job.deckle"
 
     rc = main(["impose", source, "-o", str(out), "--pages", "1-4"])
@@ -351,11 +378,19 @@ def test_the_cli_ignores_saved_defaults(tmp_path, monkeypatch, capsys):
 
 def test_the_cli_module_never_reaches_for_the_defaults_store():
     """A grep, not a behaviour check: the decision above is easy to undo by
-    accident and hard to notice once undone."""
-    import deckle.cli
+    accident and hard to notice once undone.
 
-    source = open(deckle.cli.__file__, encoding="utf-8").read()
+    Reads every file in the package rather than ``deckle.cli.__file__``,
+    which is now ``deckle/cli/__init__.py`` -- a dozen lines that would
+    pass this grep no matter what ``commands.py`` had started doing.
+    """
+    sources = _cli_package_sources()
+    assert sources, "no modules found under deckle/cli/"
 
-    assert "core.defaults" not in source
-    assert "load_defaults" not in source
-    assert "defaults_path" not in source
+    for path in sources:
+        with open(path, encoding="utf-8") as handle:
+            source = handle.read()
+
+        assert "core.defaults" not in source, path
+        assert "load_defaults" not in source, path
+        assert "defaults_path" not in source, path

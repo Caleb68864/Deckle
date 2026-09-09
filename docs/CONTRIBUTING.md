@@ -17,7 +17,7 @@ fails that test, the fix is to move the Qt-touching code into
 `deckle/app/` (the desktop shell) and have it call into `deckle.core`,
 never the other way around.
 
-Why it matters: `deckle/cli.py` is a real, shipped headless entry point,
+Why it matters: `deckle/cli/` is a real, shipped headless entry point,
 not a test harness, and the golden-fixture regression
 (`tests/test_golden_pinebox.py`) and CI both run it without a display
 server. A Qt import anywhere in `deckle.core` breaks that.
@@ -117,7 +117,7 @@ referenced anywhere else in `deckle/core/layout.py`.
 
 ## Other useful facts
 
-- `deckle/cli.py` is the headless entry point (`python -m deckle.cli`);
+- `deckle/cli/` is the headless entry point (`python -m deckle.cli`);
   `deckle/__main__.py` is the GUI entry point (`python -m deckle`). Both
   sit on top of the same `deckle.core` engine.
 - Run the full suite with `python -m pytest -q` before opening a PR.

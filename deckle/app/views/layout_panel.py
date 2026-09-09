@@ -220,8 +220,8 @@ def set_binding_edge(project: Project, binding_edge: Literal["left", "right"]) -
 
 #: Paper sizes offered in the UI, in points, portrait. Landscape is the
 #: same tuple swapped -- see :func:`set_paper`. These mirror
-#: ``deckle/cli.py``'s ``--paper`` presets so both front ends offer the
-#: same stock.
+#: ``deckle/cli/values.py``'s ``--paper`` presets so both front ends offer
+#: the same stock.
 PAPER_PRESETS: tuple[tuple[str, tuple[float, float]], ...] = (
     ("Letter", (612.0, 792.0)),
     ("A4", (595.28, 841.89)),
