@@ -14,8 +14,9 @@ them: it is described (:mod:`~deckle.core.models`), loaded off disk
 (:mod:`~deckle.core.export`, :mod:`~deckle.core.render`), persisted
 (:mod:`~deckle.core.project_io`), and finally printed
 (:mod:`~deckle.core.printing`, :mod:`~deckle.core.profiles`,
-:mod:`~deckle.core.print_session`). The two log modules sit underneath all
-of it.
+:mod:`~deckle.core.print_session`). :mod:`~deckle.core.report` describes
+any of that as JSON for the CLI's ``--json`` flags, and the two log
+modules sit underneath all of it.
 
 .. toctree::
    :maxdepth: 1
@@ -40,5 +41,6 @@ of it.
    core.profiles
    core.print_session
    core.schedule
+   core.report
    core.session_log
    core.diagnostics

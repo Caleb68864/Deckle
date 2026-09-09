@@ -12,6 +12,7 @@ display server present.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import importlib.metadata
 import json
@@ -24,7 +25,15 @@ from typing import Sequence
 from deckle import __version__ as _DECKLE_VERSION
 from deckle.core.export import export as export_plan, proof_rule_length_pt
 from deckle.core.printing import plan_passes
-from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
+from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile, saved_profiles
+from deckle.core.report import (
+    info_report,
+    print_plan_report,
+    profile_entry,
+    profile_list_report,
+    profile_report,
+    schedule_report,
+)
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
@@ -267,6 +276,36 @@ def _parse_signature_lengths(value: str) -> tuple[int, ...]:
     return lengths
 
 
+def _parse_four_insets(
+    value: str, flag: str, order: str
+) -> tuple[float, float, float, float]:
+    """Four comma-separated lengths, for a flag that takes a set of insets.
+
+    Shared by ``--crop``, ``--crop-even`` and ``--imageable-area``, which
+    ask for the same four numbers in two different orders. The ``flag``
+    and ``order`` are parameters rather than baked in because a message
+    saying "invalid crop" under ``--imageable-area`` sends the reader to
+    the wrong flag, and because the two orders genuinely differ -- a crop
+    is ``left, bottom, right, top`` and a printer's imageable area is
+    stored ``left, top, right, bottom``. Naming one order for both is how
+    a head margin ends up applied to the tail.
+
+    :param value: the raw flag text.
+    :param flag: what to call it in the error, e.g. ``"crop"``.
+    :param order: the four names, in order, for the error.
+    :returns: the four lengths in points.
+    :raises argparse.ArgumentTypeError: not four values, or any of them
+        unparseable.
+    """
+    parts = value.split(",")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            f"invalid {flag} {value!r}: expected four insets -- {order} -- "
+            "e.g. 0.5in,0.25in,0.5in,0.25in"
+        )
+    return tuple(_parse_length_pt(part) for part in parts)
+
+
 def _parse_crop(value: str) -> tuple[float, float, float, float]:
     """A ``--crop`` value as ``(left, bottom, right, top)`` insets in points.
 
@@ -285,13 +324,20 @@ def _parse_crop(value: str) -> tuple[float, float, float, float]:
     :raises argparse.ArgumentTypeError: not four values, or any of them
         unparseable.
     """
-    parts = value.split(",")
-    if len(parts) != 4:
-        raise argparse.ArgumentTypeError(
-            f"invalid crop {value!r}: expected four insets -- left, bottom, "
-            "right, top -- e.g. 0.5in,0.25in,0.5in,0.25in"
-        )
-    return tuple(_parse_length_pt(part) for part in parts)
+    return _parse_four_insets(value, "crop", "left, bottom, right, top")
+
+
+def _parse_imageable_area(value: str) -> tuple[float, float, float, float]:
+    """An ``--imageable-area`` value as ``(left, top, right, bottom)`` margins.
+
+    A different order from ``--crop`` because it is a different quantity:
+    this is the non-printable border the printer imposes, and
+    ``PrinterProfile.imageable_area_pt`` stores it ``left, top, right,
+    bottom`` (see ``deckle.app.views.preview_view.imageable_rect_pt``,
+    which draws it). Re-ordering it here to match ``--crop`` would make
+    this flag disagree with the file it writes.
+    """
+    return _parse_four_insets(value, "imageable-area", "left, top, right, bottom")
 
 
 def _parse_sheet_selection(value: str) -> list[int]:
@@ -429,6 +475,86 @@ def _report_registration(offset_pt: tuple[float, float], source: str) -> None:
     )
 
 
+@contextlib.contextmanager
+def _json_stdout(active: bool):
+    """Keep stdout empty of prose while a ``--json`` command does its work.
+
+    Under ``--json`` the promise is that stdout holds **exactly one JSON
+    document** -- that is the whole difference between output a script can
+    pipe into ``jq`` and output it has to clean up first. But the work a
+    report describes prints as it goes: ``--auto-crop`` reports the insets
+    it measured, ``_resolve_input`` reports the flags a project made
+    irrelevant. Every one of those lines is worth keeping, and none of
+    them belongs in the middle of a JSON object.
+
+    So they are moved rather than suppressed. Redirecting the whole block
+    also means a ``print`` added later cannot silently corrupt the
+    contract -- the alternative, threading a stream through every helper,
+    is a change each of those helpers has to remember to make.
+
+    :param active: whether ``--json`` was given. When ``False`` this does
+        nothing at all, so the human path is untouched.
+    """
+    if not active:
+        yield
+        return
+    with contextlib.redirect_stdout(sys.stderr):
+        yield
+
+
+def _emit_json(document: dict) -> None:
+    """Write one report to stdout, indented, with a trailing newline.
+
+    Indented rather than compact because these are read by people at least
+    as often as by scripts -- ``jq`` does not care either way, and a
+    terminal full of one long line is unreadable.
+    """
+    print(json.dumps(document, indent=2))
+
+
+def _source_kind(path: str) -> str:
+    """What ``source`` is, in the vocabulary the reports use.
+
+    :param path: the path the user named.
+    :returns: ``"project"``, ``"images"`` or ``"pdf"``.
+    """
+    if _is_project_file(path):
+        return "project"
+    return "images" if os.path.isdir(path) else "pdf"
+
+
+def _resolve_profile_origin(name: str):
+    """The profile called ``name``, and whether it was measured or generic.
+
+    :param name: the profile or printer name asked for.
+    :returns: ``(profile, origin)`` where ``origin`` is ``"saved"`` or
+        ``"builtin"``, or ``None`` if nothing matched -- in which case a
+        message naming the alternatives has already been printed.
+
+    The origin is carried because the two are not interchangeable and a
+    caller reporting the profile must be able to say which it got: a saved
+    one was measured against that physical printer, a built-in is a
+    stand-in for a measurement nobody has made yet.
+    """
+    try:
+        return (PrinterProfile.load(name), "saved")
+    except (OSError, ValueError, KeyError, TypeError):
+        # No saved profile, or one that cannot be read. Either way the
+        # built-ins are the next place to look, and a corrupt saved file
+        # should not be more fatal than a missing one.
+        pass
+    preset = BUILTIN_PRESETS.get(name)
+    if preset is not None:
+        return (preset, "builtin")
+    print(
+        f"error: no printer profile {name!r}. Built-in profiles: "
+        f"{', '.join(sorted(BUILTIN_PRESETS))}. Calibrate a printer in the "
+        "desktop app to save one under its own name.",
+        file=sys.stderr,
+    )
+    return None
+
+
 def _resolve_profile(name: str):
     """The printer profile called ``name``: saved first, then built-in.
 
@@ -441,23 +567,8 @@ def _resolve_profile(name: str):
         ``None`` if nothing matched -- in which case a message naming the
         alternatives has already been printed.
     """
-    try:
-        return PrinterProfile.load(name)
-    except (OSError, ValueError, KeyError, TypeError):
-        # No saved profile, or one that cannot be read. Either way the
-        # built-ins are the next place to look, and a corrupt saved file
-        # should not be more fatal than a missing one.
-        pass
-    preset = BUILTIN_PRESETS.get(name)
-    if preset is not None:
-        return preset
-    print(
-        f"error: no printer profile {name!r}. Built-in profiles: "
-        f"{', '.join(sorted(BUILTIN_PRESETS))}. Calibrate a printer in the "
-        "desktop app to save one under its own name.",
-        file=sys.stderr,
-    )
-    return None
+    resolved = _resolve_profile_origin(name)
+    return None if resolved is None else resolved[0]
 
 
 def _pass_for(plan, side: str, profile, sheets: list[int] | None):
@@ -573,6 +684,20 @@ def _load_project_or_report(path: str) -> Project | None:
         return None
 
 
+def _layout_dests() -> set[str]:
+    """The ``dest`` of every flag :func:`_add_layout_args` contributes.
+
+    Derived from the function itself rather than written out, so it cannot
+    drift: a layout flag added there is in this set the moment it exists,
+    and one removed leaves it.
+
+    :returns: the destination names.
+    """
+    probe = argparse.ArgumentParser(add_help=False)
+    _add_layout_args(probe)
+    return {action.dest for action in probe._actions if action.option_strings}
+
+
 def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
     """Which layout options the user actually typed, as flag names.
 
@@ -583,6 +708,16 @@ def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParse
     Used to warn rather than silently ignore. Comparing against defaults is
     approximate -- typing the default value looks like not typing it -- but
     it errs toward silence, which is the right direction for a warning.
+
+    Only genuine layout flags are considered. This used to exclude three
+    ``dest`` names by hand and treat everything else on the subparser as
+    layout, which named the wrong flags: ``--sheets``, ``--pass``,
+    ``--profile``, ``--back-offset``, ``--rule`` and ``--printer`` are not
+    layout and *are* honoured beside a project -- the GUIDE says so in as
+    many words -- yet each was reported as "ignored", which is a message
+    telling the user the opposite of what happened. The list could only
+    grow: every non-layout flag added to any of these commands, including
+    ``--json`` and ``--dry-run``, would have joined it.
     """
     sub = None
     for action in parser._actions:
@@ -591,9 +726,10 @@ def _layout_flags_given(args: argparse.Namespace, parser: argparse.ArgumentParse
             break
     if sub is None:
         return []
+    layout = _layout_dests()
     given = []
     for action in sub._actions:
-        if not action.option_strings or action.dest in ("output", "help", "source"):
+        if not action.option_strings or action.dest not in layout:
             continue
         if getattr(args, action.dest, action.default) != action.default:
             given.append(action.option_strings[0])
@@ -875,38 +1011,50 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_info(args: argparse.Namespace) -> int:
-    resolved = _resolve_input(args)
-    if resolved is None:
-        return 1
-    pages, settings = resolved
+    as_json = getattr(args, "json", False)
+    with _json_stdout(as_json):
+        resolved = _resolve_input(args)
+        if resolved is None:
+            return 1
+        pages, settings = resolved
 
-    if _is_project_file(args.source):
-        print(f"project: {args.source}")
-    print(f"page count: {len(pages)}")
-    sizes = sorted({(p.ref.width_pt, p.ref.height_pt) for p in pages})
-    print("detected page sizes (pt):")
-    for w, h in sizes:
-        print(f"  {w:.2f} x {h:.2f}")
+        if not as_json:
+            if _is_project_file(args.source):
+                print(f"project: {args.source}")
+            print(f"page count: {len(pages)}")
+            sizes = sorted({(p.ref.width_pt, p.ref.height_pt) for p in pages})
+            print("detected page sizes (pt):")
+            for w, h in sizes:
+                print(f"  {w:.2f} x {h:.2f}")
 
-    import_warnings = list(getattr(pages, "warnings", []))
-    plan = _impose_or_report(pages, settings)
-    if plan is None:
-        return 1
+        import_warnings = list(getattr(pages, "warnings", []))
+        plan = _impose_or_report(pages, settings)
+        if plan is None:
+            return 1
 
-    # Signature breakdown -- always printed, even under the MVP
-    # (fold_scheme="none") path, where there are simply zero signatures.
-    blank_total = sum(sig.blank_count for sig in plan.signatures)
-    print(f"signature count: {len(plan.signatures)}")
-    print(f"sheet count: {len(plan.sheets)}")
-    print(f"blank count: {blank_total}")
+        all_warnings = import_warnings + list(plan.warnings)
+        if not as_json:
+            # Signature breakdown -- always printed, even under the MVP
+            # (fold_scheme="none") path, where there are simply zero
+            # signatures.
+            blank_total = sum(sig.blank_count for sig in plan.signatures)
+            print(f"signature count: {len(plan.signatures)}")
+            print(f"sheet count: {len(plan.sheets)}")
+            print(f"blank count: {blank_total}")
 
-    all_warnings = import_warnings + list(plan.warnings)
-    if all_warnings:
-        print("layout warnings:")
-        for w in all_warnings:
-            print(f"  [{w.kind}] sheet {w.sheet_index}: {w.detail}")
-    else:
-        print("layout warnings: none")
+            if all_warnings:
+                print("layout warnings:")
+                for w in all_warnings:
+                    print(f"  [{w.kind}] sheet {w.sheet_index}: {w.detail}")
+            else:
+                print("layout warnings: none")
+
+    if as_json:
+        _emit_json(
+            info_report(
+                args.source, _source_kind(args.source), pages, plan, all_warnings
+            )
+        )
     return 0
 
 
@@ -1018,6 +1166,14 @@ def _cmd_export(args: argparse.Namespace) -> int:
         back_offset = args.back_offset
         offset_source = "--back-offset"
 
+    if getattr(args, "dry_run", False):
+        _report_export_dry_run(
+            args, plan, selection, side, rotate_180, back_offset,
+            offset_source, print_pass,
+        )
+        log_event("export_dry_run", path=args.output, sheets=len(plan.sheets))
+        return 0
+
     try:
         export_plan(
             plan,
@@ -1046,6 +1202,82 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if args.rule:
         _report_rule(plan.paper_pt[0])
     return 0
+
+
+def _format_sheet_list(indices: Sequence[int]) -> str:
+    """Sheet indices as a ``--sheets`` value, with runs collapsed.
+
+    ``[0, 1, 2, 4]`` becomes ``0-2,4`` -- the same notation
+    :func:`_parse_sheet_selection` accepts, so what a dry run prints can be
+    pasted straight back into the real command. Order is preserved and
+    repeats are kept, because both are meaningful to ``--sheets`` and
+    tidying them here would describe a job other than the one planned.
+
+    :param indices: the sheets, in the order they will be written.
+    :returns: the collapsed list, or ``"none"`` when empty.
+    """
+    if not indices:
+        return "none"
+    runs: list[list[int]] = [[indices[0], indices[0]]]
+    for index in indices[1:]:
+        if index == runs[-1][1] + 1:
+            runs[-1][1] = index
+        else:
+            runs.append([index, index])
+    return ",".join(
+        str(start) if start == end else f"{start}-{end}" for start, end in runs
+    )
+
+
+def _report_export_dry_run(args, plan, selection, side, rotate_180,
+                           back_offset, offset_source, print_pass) -> None:
+    """Say exactly what ``export`` would write, having written nothing.
+
+    Everything above this point has already run -- the source was loaded,
+    the settings were imposed, the destination was checked, the sheet
+    selection was validated against the document and the profile was
+    resolved -- so a dry run that reports success is a real statement about
+    a job that would succeed, and one that exits 1 has found a genuine
+    problem before any paper or disk was spent.
+
+    That ordering is the whole feature. Deckle's own argument is that the
+    artefact is physical and paper is expensive; a plan you can read
+    without producing either is the cheapest possible place to notice that
+    ``--sheets 0,2-4`` names a sheet the document does not have, or that
+    the back offset in the profile is not the one you calibrated.
+
+    :param args: the parsed arguments, for the destination and ``--rule``.
+    :param plan: the imposed plan.
+    :param selection: the sheets that would be written, or ``None`` for all.
+    :param side: ``"front"``, ``"back"`` or ``None`` for both faces.
+    :param rotate_180: whether backs would be turned.
+    :param back_offset: the registration correction that would be applied.
+    :param offset_source: where that correction came from.
+    :param print_pass: the planned pass, when ``--pass`` was given.
+    :returns: nothing. Prints to stdout, like the ``wrote ...`` line it
+        stands in for.
+    """
+    indices = [sheet.index for sheet in plan.sheets] if selection is None else selection
+    width, height = plan.paper_pt
+    print(f"dry run: would write {args.output}")
+    print(f"  paper: {width:g} x {height:g}pt")
+    print(
+        f"  sheets: {len(indices)} of {len(plan.sheets)} "
+        f"({_format_sheet_list(indices)})"
+    )
+    if side is None:
+        print("  faces: both sides of every sheet")
+    else:
+        turned = ", each turned 180 degrees" if rotate_180 else ""
+        print(f"  faces: {side}s only (one manual-duplex pass){turned}")
+    if back_offset != (0.0, 0.0):
+        dx, dy = back_offset
+        print(f"  registration: back faces moved {dx:+g}, {dy:+g}pt ({offset_source})")
+    if args.rule:
+        print("  proof rule: drawn on every sheet")
+    if print_pass is not None:
+        print(f"  reload: {print_pass.reload_instruction}")
+    print("nothing was written.")
 
 
 def _report_rule(paper_width_pt: float) -> None:
@@ -1084,6 +1316,31 @@ def _cmd_impose(args: argparse.Namespace) -> int:
     if plan is None:
         return 1
     _emit_warnings(pages, plan)
+
+    if getattr(args, "dry_run", False):
+        width, height = plan.paper_pt
+        skipped = sum(1 for page in pages if page.skipped)
+        print(f"dry run: would write {args.output}")
+        print(
+            f"  pages: {len(pages)}"
+            + (f" ({skipped} skipped)" if skipped else "")
+        )
+        print(f"  paper: {width:g} x {height:g}pt")
+        print(f"  sheets: {len(plan.sheets)}")
+        print(
+            f"  fold scheme: {settings.fold_scheme}"
+            + (
+                f", {settings.sheets_per_signature} sheet(s) per signature"
+                if settings.fold_scheme != "none"
+                else ""
+            )
+        )
+        if args.printer:
+            print(f"  printer recorded: {args.printer}")
+        print("nothing was written.")
+        log_event("impose_dry_run", path=args.output, sheets=len(plan.sheets))
+        return 0
+
     project = Project(pages=list(pages), layout=settings, printer=args.printer)
     try:
         save_project(project, args.output)
@@ -1106,23 +1363,40 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     Goes to stdout by default so it can be piped or redirected; ``-o``
     writes a file. Layout warnings still go to stderr, so a redirected
     schedule stays clean while the warnings remain visible in the terminal.
+
+    ``--json`` swaps the bench sheet for the machine-readable report, in
+    whichever destination was chosen. It applies to ``-o`` too rather than
+    only to stdout: the flag says what the schedule *is*, not where it
+    goes, and a ``--json -o`` that quietly wrote prose would be the worse
+    of the two possible surprises.
     """
-    resolved = _resolve_input(args)
-    if resolved is None:
-        return 1
-    pages, settings = resolved
+    as_json = getattr(args, "json", False)
+    with _json_stdout(as_json):
+        resolved = _resolve_input(args)
+        if resolved is None:
+            return 1
+        pages, settings = resolved
 
-    if args.output is not None and _report_output_problem(args.output, args.source):
-        return 1
+        if args.output is not None and _report_output_problem(
+            args.output, args.source
+        ):
+            return 1
 
-    plan = _impose_or_report(pages, settings)
-    if plan is None:
-        return 1
-    _emit_warnings(pages, plan)
+        plan = _impose_or_report(pages, settings)
+        if plan is None:
+            return 1
+        _emit_warnings(pages, plan)
 
-    text = format_schedule_text(
-        build_schedule(plan, settings), os.path.basename(args.source)
-    )
+        schedule = build_schedule(plan, settings)
+
+    if as_json:
+        document = schedule_report(args.source, schedule)
+        if args.output is None:
+            _emit_json(document)
+            return 0
+        text = json.dumps(document, indent=2) + "\n"
+    else:
+        text = format_schedule_text(schedule, os.path.basename(args.source))
 
     if args.output is None:
         print(text, end="")
@@ -1239,6 +1513,500 @@ def _cmd_dummy(args: argparse.Namespace) -> int:
     return 0
 
 
+def _profile_summary(profile: PrinterProfile) -> str:
+    """A profile's behaviour in one line, in reload vocabulary.
+
+    Named after what the operator does rather than after the field names:
+    ``reverse_stack`` is true or false in the file, but at the printer it
+    is "flip the whole stack over" or "reload it in the same order", and
+    that is the difference that ruins a job.
+    """
+    stack = "stack reversed" if profile.reverse_stack else "stack in order"
+    offset = ""
+    if (profile.back_offset_x_pt, profile.back_offset_y_pt) != (0.0, 0.0):
+        offset = (
+            f", back offset {profile.back_offset_x_pt:+g}, "
+            f"{profile.back_offset_y_pt:+g}pt"
+        )
+    return (
+        f"flip on the {profile.flip_axis} edge, {stack}, outputs "
+        f"{'face down' if profile.output_face == 'down' else 'face up'}{offset}"
+    )
+
+
+def _cmd_profile_list(args: argparse.Namespace) -> int:
+    """List every printer profile this machine can resolve.
+
+    Saved and built-in are listed apart, and labelled, because they are
+    not the same kind of thing. A saved profile came from printing a
+    target and measuring it; a built-in is a generic stand-in for a
+    measurement nobody has made. Presenting them as one list would let
+    someone pick the stand-in believing they had the measurement -- and
+    the difference is not visible until a stack of backs comes out
+    upside down.
+    """
+    saved = saved_profiles()
+    # (name, profile-or-None, path-or-None, error-or-None), saved first.
+    rows: list[tuple[str, PrinterProfile | None, str | None, str | None]] = []
+    for name in sorted(saved):
+        try:
+            rows.append((name, PrinterProfile.load(name), str(saved[name]), None))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            # Listed with its failure rather than skipped. A calibration
+            # that has become unreadable is the single thing about that
+            # printer its owner most needs to be told, and a listing that
+            # silently omitted it would read as "you never calibrated
+            # this" -- sending them to re-measure something they had
+            # already measured.
+            rows.append(
+                (name, None, str(saved[name]), f"{type(exc).__name__}: {exc}")
+            )
+    builtin = [
+        (name, BUILTIN_PRESETS[name], None, None)
+        for name in sorted(BUILTIN_PRESETS)
+        if name not in saved  # a saved profile of the same name shadows it
+    ]
+
+    if getattr(args, "json", False):
+        _emit_json(
+            profile_list_report(
+                [
+                    profile_entry(name, profile, origin, path=path, error=error)
+                    for origin, group in (("saved", rows), ("builtin", builtin))
+                    for name, profile, path, error in group
+                ]
+            )
+        )
+        return 0
+
+    if rows:
+        print("saved profiles -- calibrated on this machine:")
+        for name, profile, path, error in rows:
+            if profile is None:
+                print(f"  {name}: unreadable -- {error}")
+                print(f"    {path}")
+                continue
+            print(f"  {name}: {_profile_summary(profile)}")
+            print(
+                f"    calibrated {profile.calibrated_at or 'date not recorded'}"
+                f" -- {path}"
+            )
+    else:
+        print(
+            "saved profiles: none. Calibrate a printer in the desktop app, or "
+            "start from a built-in with `deckle profile set NAME --from PRESET`."
+        )
+    print("built-in profiles -- generic stand-ins, not measured:")
+    for name, profile, _path, _error in builtin:
+        print(f"  {name}: {_profile_summary(profile)}")
+    return 0
+
+
+def _cmd_profile_show(args: argparse.Namespace) -> int:
+    """Print one profile's stored values in full.
+
+    A corrupt saved file is reported here rather than silently falling
+    through to a built-in of the same name, which is what ``--profile``
+    does on the export path. The two want opposite things: an export
+    should keep working from a generic preset when a calibration cannot
+    be read, while someone who typed ``profile show`` is asking about
+    that file specifically and is owed the reason it did not open.
+    """
+    name = args.name
+    saved = saved_profiles()
+    profile = None
+    origin = "builtin"
+    path = None
+    if name in saved:
+        path = str(saved[name])
+        origin = "saved"
+        try:
+            profile = PrinterProfile.load(name)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(
+                f"error: {name}'s saved calibration cannot be read: {exc}. "
+                f"The file is {path}. Compare it against one Deckle wrote, or "
+                "delete it and calibrate again.",
+                file=sys.stderr,
+            )
+            log_exception("profile_unreadable", exc, name=name)
+            return 1
+    else:
+        profile = BUILTIN_PRESETS.get(name)
+        if profile is None:
+            print(
+                f"error: no printer profile {name!r}. "
+                + (
+                    f"Saved: {', '.join(sorted(saved))}. "
+                    if saved
+                    else "Nothing is saved on this machine. "
+                )
+                + f"Built-in: {', '.join(sorted(BUILTIN_PRESETS))}.",
+                file=sys.stderr,
+            )
+            return 1
+
+    if getattr(args, "json", False):
+        _emit_json(profile_report(name, profile, origin, path=path))
+        return 0
+
+    print(f"name: {name}")
+    print(
+        "origin: "
+        + (
+            f"saved calibration ({path})"
+            if origin == "saved"
+            else "built-in preset -- a generic stand-in, not measured"
+        )
+    )
+    print(f"behaviour: {_profile_summary(profile)}")
+    print(f"flip axis: {profile.flip_axis}")
+    print(f"output face: {profile.output_face}")
+    print(f"feed edge: {profile.feed_edge}")
+    print(f"reverse stack: {'yes' if profile.reverse_stack else 'no'}")
+    left, top, right, bottom = profile.imageable_area_pt
+    print(
+        f"imageable area (margins, pt): left {left:g}, top {top:g}, "
+        f"right {right:g}, bottom {bottom:g}"
+    )
+    print(
+        f"back offset: {profile.back_offset_x_pt:+g}, "
+        f"{profile.back_offset_y_pt:+g}pt -- the correction applied, not the "
+        "error measured. Constant offset only, not skew or scale."
+    )
+    print(f"calibrated at: {profile.calibrated_at or '(never)'}")
+    print(f"calibration version: {profile.calibration_version}")
+    print(f"file format version: {profile.version}")
+    return 0
+
+
+def _profile_changes(args: argparse.Namespace) -> dict:
+    """The fields ``profile set`` was actually asked to change.
+
+    Every flag defaults to ``None`` -- including the boolean, which is why
+    it is a ``BooleanOptionalAction`` rather than a ``store_true``. A
+    ``store_true`` cannot distinguish "set this to false" from "do not
+    touch it", and on a calibration those are very different requests.
+    """
+    changes: dict = {}
+    for flag, field in (
+        ("flip_axis", "flip_axis"),
+        ("output_face", "output_face"),
+        ("feed_edge", "feed_edge"),
+        ("reverse_stack", "reverse_stack"),
+        ("imageable_area", "imageable_area_pt"),
+    ):
+        value = getattr(args, flag, None)
+        if value is not None:
+            changes[field] = value
+    if args.back_offset is not None:
+        changes["back_offset_x_pt"], changes["back_offset_y_pt"] = args.back_offset
+    return changes
+
+
+def _cmd_profile_set(args: argparse.Namespace) -> int:
+    """Create or edit a saved printer profile, never silently.
+
+    A saved profile is the most expensive data Deckle holds -- so says
+    :meth:`PrinterProfile.save`'s own docstring, and it is right: a
+    calibration is not derived from anything. It comes from printing a
+    target, measuring it with a ruler, and reprinting when the numbers
+    were wrong. Nothing else in the program costs paper to reproduce.
+
+    So this command will not overwrite one on its own. Editing an existing
+    profile prints the exact before-and-after of every field that would
+    change and exits 1; ``--force`` is what applies it. That is
+    deliberately a two-step: the diff turns the guard into something
+    useful rather than merely obstructive, and someone who reads it and
+    still wants the change is one flag away, while someone who typed the
+    wrong printer name has been shown their mistake instead of losing an
+    afternoon's measuring to it.
+
+    Creating a profile requires ``--from PRESET`` because a
+    :class:`PrinterProfile` has no partial form: ``flip_axis``,
+    ``output_face``, ``feed_edge`` and ``reverse_stack`` all have to say
+    something, and defaulting them would be Deckle guessing a printer's
+    reload behaviour. That is the same guess ``--pass`` refuses to make
+    without a profile, for the same reason -- getting it wrong prints
+    every back onto the wrong front, and it is not visible until the
+    paper is already used.
+    """
+    name = args.name
+    changes = _profile_changes(args)
+
+    if name in BUILTIN_PRESETS:
+        print(
+            f"error: {name!r} is a built-in profile name, and saving over it "
+            "would hide the built-in everywhere without removing it. Give the "
+            "profile your printer's own name -- that is the name --profile and "
+            f"the desktop app look it up by -- and use --from {name} to start "
+            "from this one.",
+            file=sys.stderr,
+        )
+        return 1
+
+    saved = saved_profiles()
+    if name in saved:
+        path = saved[name]
+        if args.from_preset is not None:
+            print(
+                f"error: {name} already has a saved profile, so --from "
+                f"{args.from_preset} has nothing to say: either it starts from "
+                "the preset and discards the saved values, or it starts from "
+                "the saved profile and is ignored, and there is no sensible "
+                "rule for which. Drop --from to edit what is saved, or delete "
+                f"{path} first to start over.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            current = PrinterProfile.load(name)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(
+                f"error: {name} has a saved profile at {path} that cannot be "
+                f"read ({exc}), so there is nothing to edit and no way to show "
+                "you what would change. Deckle will not overwrite a "
+                "calibration it cannot read -- inspect the file, and delete it "
+                "if it is beyond saving.",
+                file=sys.stderr,
+            )
+            log_exception("profile_unreadable", exc, name=name)
+            return 1
+        if not changes:
+            print(
+                f"error: nothing to change. Give at least one of --flip-axis, "
+                "--output-face, --feed-edge, --reverse-stack/--no-reverse-stack, "
+                "--back-offset or --imageable-area.",
+                file=sys.stderr,
+            )
+            return 1
+        updated = dataclasses.replace(current, **changes)
+        if updated == current:
+            print(f"{name} already has those values; nothing was written.")
+            return 0
+        differences = [
+            (field, getattr(current, field), getattr(updated, field))
+            for field in changes
+            if getattr(current, field) != getattr(updated, field)
+        ]
+        if not args.force:
+            print(
+                f"error: {name} has a saved calibration and these values "
+                "would change:",
+                file=sys.stderr,
+            )
+            for field, was, now in differences:
+                print(f"  {field}: {was} -> {now}", file=sys.stderr)
+            print(
+                f"A calibration is measured by hand, not derived, so Deckle "
+                f"will not overwrite one without being told to. The file is "
+                f"{path} -- copy it if you want the old numbers back -- then "
+                "repeat this command with --force.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            updated.save(name)
+        except OSError as exc:
+            _report_write_failure(str(path), exc)
+            return 1
+        print(f"updated {name} -- overwrote a saved calibration.")
+        for field, was, now in differences:
+            print(f"  {field}: {was} -> {now}")
+        # `calibrated_at` is left exactly as it was, on purpose. It records
+        # when a calibration *run* measured this printer, and typing a
+        # number in is not that run. Clearing it would throw away the date
+        # of a measurement most of which is still standing; setting it to
+        # today would claim a measurement that never happened.
+        log_event("profile_set", name=name, fields=sorted(changes))
+        return 0
+
+    if args.from_preset is None:
+        print(
+            f"error: no saved profile called {name}, so this would create one "
+            "-- and a printer profile has no partial form. Say which behaviour "
+            "to start from with --from: "
+            f"{', '.join(sorted(BUILTIN_PRESETS))}. Deckle will not guess a "
+            "printer's reload behaviour; guessing wrong prints every back onto "
+            "the wrong front.",
+            file=sys.stderr,
+        )
+        return 1
+    base = BUILTIN_PRESETS.get(args.from_preset)
+    if base is None:
+        print(
+            f"error: no built-in profile {args.from_preset!r}. Built-in "
+            f"profiles: {', '.join(sorted(BUILTIN_PRESETS))}.",
+            file=sys.stderr,
+        )
+        return 1
+    created = dataclasses.replace(base, **changes)
+    try:
+        created.save(name)
+    except OSError as exc:
+        print(f"error: cannot save profile {name}: {exc}", file=sys.stderr)
+        log_exception("profile_save_failed", exc, name=name)
+        return 1
+    print(f"wrote profile {name}, from the built-in {args.from_preset}.")
+    print(f"  {_profile_summary(created)}")
+    print(
+        "note: this is a hand-set profile, not a measurement -- its "
+        "calibration date is still empty. --profile now prefers it over the "
+        "built-in of the same behaviour."
+    )
+    log_event("profile_created", name=name, base=args.from_preset)
+    return 0
+
+
+def _pass_output_path(output: str, side: str) -> str:
+    """Where one manual-duplex pass is written, given the base name.
+
+    ``job.pdf`` becomes ``job.front.pdf`` and ``job.back.pdf``. The side
+    goes in the name rather than in a folder or a suffix number because
+    the two files are handled minutes apart by a person standing at a
+    printer, and "which of these is the backs" must be answerable from the
+    filename alone.
+
+    :param output: the base path the user gave.
+    :param side: ``"front"`` or ``"back"``.
+    :returns: the path for that pass.
+    """
+    root, extension = os.path.splitext(output)
+    return f"{root}.{side}{extension or '.pdf'}"
+
+
+def _cmd_print(args: argparse.Namespace) -> int:
+    """Plan a manual-duplex print run, and optionally write its passes.
+
+    **This does not send anything to a printer, and says so.** Submission
+    is the one part of the print path that is not Qt-free: the pass
+    planner (``deckle.core.printing``) and the resumable session
+    (``deckle.core.print_session``) are pure, but ``PrintBackend`` is a
+    ``Protocol`` whose only implementation is ``QtPrintBackend`` in
+    ``deckle.app.backend``. Reaching it from here would make
+    ``deckle.cli`` import ``deckle.app`` -- inverting the dependency the
+    CLI exists to keep, and breaking the promise in this module's own
+    docstring that it runs on a machine with no display libraries at all.
+    See ``docs/decisions.md``.
+
+    What is genuinely headless is everything up to the spooler, and that
+    is what this does: the pass order, the half turn, the reload
+    instruction, and -- with ``-o`` -- one PDF per pass with the profile's
+    registration correction already applied. That is the whole manual
+    duplex workflow in one command, ending at two files to send to the
+    printer instead of two invocations of ``export --pass``.
+
+    Every number comes from ``plan_passes``, never from a second ordering
+    table here: one free to disagree with the desktop app about the same
+    printer would make the paper wrong while both halves looked right.
+    """
+    as_json = getattr(args, "json", False)
+    with _json_stdout(as_json):
+        resolved_profile = _resolve_profile_origin(args.profile)
+        if resolved_profile is None:
+            return 1
+        profile, origin = resolved_profile
+
+        resolved = _resolve_input(args)
+        if resolved is None:
+            return 1
+        pages, settings = resolved
+
+        plan = _impose_or_report(pages, settings)
+        if plan is None:
+            return 1
+        _emit_warnings(pages, plan)
+
+        selection = args.sheets
+        if selection is not None and _report_missing_sheets(
+            plan, selection, len(plan.sheets)
+        ):
+            return 1
+
+        passes = plan_passes(plan, profile, sheets=selection)
+        back_offset = (profile.back_offset_x_pt, profile.back_offset_y_pt)
+        outputs: list[str | None] = [None] * len(passes)
+
+        if args.output is not None:
+            planned = [
+                _pass_output_path(args.output, print_pass.side)
+                for print_pass in passes
+            ]
+            # Both destinations are checked before either is written. A
+            # run that produces the fronts and then fails on the backs
+            # leaves the operator holding half a job with no way to tell
+            # from the directory which half.
+            for path in planned:
+                if _report_output_problem(path, args.source):
+                    return 1
+            for print_pass, path in zip(passes, planned):
+                try:
+                    export_plan(
+                        plan,
+                        path,
+                        sheets=print_pass.sheet_order,
+                        side=print_pass.side,
+                        rotate_180=(
+                            print_pass.side == "back" and print_pass.rotate_backs
+                        ),
+                        back_offset_pt=back_offset,
+                    )
+                except OSError as exc:
+                    _report_write_failure(path, exc)
+                    return 1
+                except ValueError as exc:
+                    print(f"error: cannot write {path}: {exc}", file=sys.stderr)
+                    log_exception("export_failed", exc, path=path)
+                    return 1
+                outputs[print_pass.index] = path
+
+        if not as_json:
+            width, height = plan.paper_pt
+            print(
+                f"printer profile: {args.profile} "
+                + (
+                    "(saved calibration)"
+                    if origin == "saved"
+                    else "(built-in preset -- generic, not measured)"
+                )
+            )
+            print(f"paper: {width:g} x {height:g}pt, {len(plan.sheets)} sheet(s)")
+            if back_offset != (0.0, 0.0):
+                _report_registration(back_offset, f"profile {args.profile!r}")
+            for print_pass in passes:
+                turned = (
+                    ", each turned 180 degrees"
+                    if print_pass.side == "back" and print_pass.rotate_backs
+                    else ""
+                )
+                print()
+                print(
+                    f"pass {print_pass.index + 1} of {len(passes)} -- "
+                    f"{print_pass.side}s, {len(print_pass.sheet_order)} sheet(s) "
+                    f"in order {_format_sheet_list(print_pass.sheet_order)}{turned}"
+                )
+                print(f"  {print_pass.reload_instruction}")
+                if outputs[print_pass.index] is not None:
+                    print(f"  wrote {outputs[print_pass.index]}")
+            print()
+            print(
+                "Deckle sent nothing to a printer: submission needs the Qt "
+                "backend, which lives in the desktop app, and this CLI is the "
+                "half that runs without a display. Send each pass above to "
+                "your printer in order, doing what its reload line says in "
+                "between."
+            )
+
+    if as_json:
+        _emit_json(
+            print_plan_report(
+                args.source, plan, settings, passes, args.profile, profile,
+                origin, outputs=outputs,
+            )
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The full argument parser for ``deckle``.
 
@@ -1264,6 +2032,10 @@ def build_parser() -> argparse.ArgumentParser:
     impose_parser.add_argument("source", help="a PDF file or a directory of images")
     impose_parser.add_argument("-o", "--output", required=True, help="path to write the .deckle project")
     impose_parser.add_argument("--printer", default=None, help="printer name to record in the project")
+    impose_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="say what would be written and write nothing",
+    )
     _add_layout_args(impose_parser)
     impose_parser.set_defaults(func=_cmd_impose, _command="impose")
 
@@ -1322,11 +2094,27 @@ def build_parser() -> argparse.ArgumentParser:
             + ", ".join(sorted(BUILTIN_PRESETS))
         ),
     )
+    export_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "say what would be written -- destination, paper, sheets, faces "
+            "and registration -- and write nothing. The checks all still run, "
+            "so a plan that would fail fails here, before any paper"
+        ),
+    )
     _add_layout_args(export_parser)
     export_parser.set_defaults(func=_cmd_export, _command="export")
 
     info_parser = subparsers.add_parser("info", help="print page count, sizes, and layout warnings")
     info_parser.add_argument("source", help="a PDF file or a directory of images")
+    info_parser.add_argument(
+        "--json", action="store_true",
+        help=(
+            "print one JSON document instead of prose, with stable key names "
+            "a script can rely on. Everything else moves to stderr"
+        ),
+    )
     _add_layout_args(info_parser)
     info_parser.set_defaults(func=_cmd_info, _command="info")
 
@@ -1340,6 +2128,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=None,
         help="write the schedule to a file instead of stdout",
+    )
+    schedule_parser.add_argument(
+        "--json", action="store_true",
+        help=(
+            "emit the schedule as one JSON document with stable key names, "
+            "instead of the bench sheet. Applies to -o as well as to stdout"
+        ),
     )
     _add_layout_args(schedule_parser)
     schedule_parser.set_defaults(func=_cmd_schedule, _command="schedule")
@@ -1396,6 +2191,135 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dummy_parser.set_defaults(func=_cmd_dummy, _command="dummy")
+
+    print_parser = subparsers.add_parser(
+        "print",
+        help=(
+            "plan a manual-duplex run: pass order, reload instructions, and "
+            "optionally one PDF per pass. Submits nothing"
+        ),
+    )
+    print_parser.add_argument("source", help="a PDF file or a directory of images")
+    print_parser.add_argument(
+        "--profile",
+        required=True,
+        metavar="NAME",
+        help=(
+            "the printer profile describing your reload behaviour. Required, "
+            "because neither the sheet order nor the half turn has a safe "
+            "default: a calibrated one saved under the printer's name, or a "
+            "built-in -- " + ", ".join(sorted(BUILTIN_PRESETS))
+        ),
+    )
+    print_parser.add_argument(
+        "-o", "--output", default=None,
+        help=(
+            "write one PDF per pass, named from this path -- job.pdf becomes "
+            "job.front.pdf and job.back.pdf. Without it nothing is written "
+            "and only the plan is printed"
+        ),
+    )
+    print_parser.add_argument(
+        "--sheets", type=_parse_sheet_selection, default=None, metavar="SPEC",
+        help="plan only these sheets, counting from 0 -- e.g. 0, 2,0 or 0,2-4",
+    )
+    print_parser.add_argument(
+        "--json", action="store_true",
+        help="emit the pass plan as one JSON document with stable key names",
+    )
+    _add_layout_args(print_parser)
+    print_parser.set_defaults(func=_cmd_print, _command="print")
+
+    profile_parser = subparsers.add_parser(
+        "profile",
+        help="list, show and set the calibrated printer profiles on this machine",
+    )
+    profile_subparsers = profile_parser.add_subparsers(
+        dest="profile_command", required=True
+    )
+
+    profile_list_parser = profile_subparsers.add_parser(
+        "list", help="list every profile, saved and built-in"
+    )
+    profile_list_parser.add_argument(
+        "--json", action="store_true",
+        help="emit the listing as one JSON document with stable key names",
+    )
+    profile_list_parser.set_defaults(func=_cmd_profile_list, _command="profile")
+
+    profile_show_parser = profile_subparsers.add_parser(
+        "show", help="print one profile's stored values in full"
+    )
+    profile_show_parser.add_argument("name", help="the profile or printer name")
+    profile_show_parser.add_argument(
+        "--json", action="store_true",
+        help="emit the profile as one JSON document with stable key names",
+    )
+    profile_show_parser.set_defaults(func=_cmd_profile_show, _command="profile")
+
+    profile_set_parser = profile_subparsers.add_parser(
+        "set",
+        help=(
+            "create a profile from a built-in, or edit a saved one. Will not "
+            "overwrite a calibration without --force"
+        ),
+    )
+    profile_set_parser.add_argument("name", help="the printer name to save under")
+    profile_set_parser.add_argument(
+        "--from",
+        dest="from_preset",
+        default=None,
+        metavar="PRESET",
+        help=(
+            "the built-in to start from when creating a profile -- "
+            + ", ".join(sorted(BUILTIN_PRESETS))
+            + ". Required to create one, and refused when editing a saved one"
+        ),
+    )
+    profile_set_parser.add_argument(
+        "--flip-axis", choices=("long", "short"), default=None,
+        help="which edge the operator turns each sheet on between passes",
+    )
+    profile_set_parser.add_argument(
+        "--output-face", choices=("up", "down"), default=None,
+        help="which way up sheets land in the output tray",
+    )
+    profile_set_parser.add_argument(
+        "--feed-edge", choices=("top", "bottom"), default=None,
+        help="which edge of the sheet feeds first",
+    )
+    profile_set_parser.add_argument(
+        "--reverse-stack", action=argparse.BooleanOptionalAction, default=None,
+        help=(
+            "whether the printed stack must be turned over before the back "
+            "pass. Use --no-reverse-stack for a printer that reloads in order"
+        ),
+    )
+    profile_set_parser.add_argument(
+        "--back-offset", type=_parse_offset_pair, default=None, metavar="X,Y",
+        help=(
+            "the registration correction: how far back-side content moves so "
+            "it lands behind its front, e.g. 3,-2 or 0.5mm,-1mm. This is the "
+            "correction applied, not the error measured"
+        ),
+    )
+    profile_set_parser.add_argument(
+        "--imageable-area", type=_parse_imageable_area, default=None,
+        metavar="L,T,R,B",
+        help=(
+            "the printer's non-printable border as four margins -- left, top, "
+            "right, bottom. Note the order differs from --crop's, matching how "
+            "the profile stores it"
+        ),
+    )
+    profile_set_parser.add_argument(
+        "--force", action="store_true",
+        help=(
+            "apply a change to a saved calibration. Without it the change is "
+            "shown field by field and refused"
+        ),
+    )
+    profile_set_parser.set_defaults(func=_cmd_profile_set, _command="profile")
 
     return parser
 
