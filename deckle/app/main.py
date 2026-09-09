@@ -15,6 +15,10 @@ import os
 import warnings
 
 from deckle.app.state import AppState, autosave_path_for
+from deckle.app.printer_capabilities import (
+    profile_with_driver_margins,
+    query_imageable_area_pt,
+)
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
@@ -144,13 +148,19 @@ class _PrinterQueryWorker:
 
     :ivar names: the enumerated printer names, or an empty list if
         enumeration failed. Read only after the thread finishes.
+    :ivar imageable_areas: what each driver said its non-printable border
+        is, keyed by printer name. A printer that declined to answer is
+        absent rather than present with a zero -- see
+        :mod:`deckle.app.printer_capabilities`. Read only after the thread
+        finishes.
     """
 
     def __init__(self) -> None:
         self.names: list[str] = []
+        self.imageable_areas: dict[str, tuple[float, float, float, float]] = {}
 
     def run(self) -> None:
-        """Enumerate printers into :attr:`names`.
+        """Enumerate printers into :attr:`names`, then ask each its border.
 
         :returns: nothing, and never raises. A spooler failure degrades to
             an empty list -- the app is fully usable for Save PDF with no
@@ -166,6 +176,20 @@ class _PrinterQueryWorker:
             # report with nothing behind it.
             log_exception("printer_enumeration_failed", exc)
             self.names = []
+            return
+
+        # On this thread and inside the same deadline, because it is
+        # another call into the same spooler. A `try` per printer rather
+        # than one around the loop, so a single unreachable network queue
+        # does not cost the margins of every other printer.
+        for name in self.names:
+            try:
+                area = query_imageable_area_pt(name)
+            except Exception as exc:  # noqa: BLE001 -- degraded, not fatal
+                log_exception("printer_imageable_query_failed", exc, printer=name)
+                continue
+            if area is not None:
+                self.imageable_areas[name] = area
 
 
 class _PrinterQuery:
@@ -225,7 +249,7 @@ class _PrinterQuery:
             log_event("printer_enumeration_empty", reason="spooler returned no printers")
         else:
             log_event("printer_enumeration_completed", count=len(names))
-        self._apply(names)
+        self._apply(names, None, dict(self._worker.imageable_areas))
 
     def time_out(self) -> None:
         """Settle as "no printers found". Ignored if already settled.
@@ -245,7 +269,10 @@ class _PrinterQuery:
             timeout_ms=self.timeout_ms,
             reason="spooler did not answer before the deadline",
         )
-        self._apply([], PRINTER_TIMEOUT_MESSAGE)
+        # An empty dict, never a half-filled one: the worker is still
+        # running and may be mid-loop, and margins for some printers and
+        # not others is a state nothing downstream is written to expect.
+        self._apply([], PRINTER_TIMEOUT_MESSAGE, {})
 
 
 def _single_shot(interval_ms: int, callback) -> None:
@@ -623,6 +650,10 @@ class MainWindow:
         # Known-empty until the background query returns, so nothing reads
         # an undefined attribute if the user clicks Print immediately.
         self._printers: list[str] = []
+        #: What each driver said its non-printable border is, once
+        #: enumeration has answered. Empty until then, and empty for every
+        #: printer that declined -- see `deckle.app.printer_capabilities`.
+        self._imageable_areas: dict[str, tuple[float, float, float, float]] = {}
         self._printer_thread = None
         # Injected so the recovery prompt can be driven headlessly, the
         # way `print_dialog` injects `_confirm_resume`.
@@ -781,14 +812,28 @@ class MainWindow:
         thread.start()
         _single_shot(timeout_ms, query.time_out)
 
-    def _apply_printers(self, printers: list[str], no_printers_message: str | None = None) -> None:
+    def _apply_printers(
+        self,
+        printers: list[str],
+        no_printers_message: str | None = None,
+        imageable_areas: dict[str, tuple[float, float, float, float]] | None = None,
+    ) -> None:
         """Enable or disable **only** the Print action.
 
         Save PDF is deliberately never touched here: zero printers, a dead
         spooler and an enumeration timeout all leave Deckle fully usable as
         an imposition tool that writes a file.
+
+        :param printers: the enumerated printer names.
+        :param no_printers_message: why there are none, when something
+            went wrong rather than none being installed.
+        :param imageable_areas: what each driver said its non-printable
+            border is. Defaulted, because four tests call this unbound
+            with two positional arguments and none of them are about
+            margins.
         """
         self._printers = list(printers)
+        self._imageable_areas = dict(imageable_areas or {})
         has_printers = bool(printers)
         self.print_button.setEnabled(has_printers)
         if has_printers:
@@ -811,8 +856,35 @@ class MainWindow:
         # Enumeration is the first moment the window knows which printer
         # it is drawing for. Until this call existed, it never found out.
         self.set_printer_profile(
-            profile_for_printers(self._printers, self.profile_loader)
+            self._profile_with_driver_answer(
+                profile_for_printers(self._printers, self.profile_loader)
+            )
         )
+
+    def _profile_with_driver_answer(self, profile: PrinterProfile) -> PrinterProfile:
+        """``profile``, with the driver's border in place of the preset's.
+
+        **A saved calibration is never overwritten.** It exists because
+        somebody printed a target and measured it with a ruler; the
+        driver's number has been checked against nothing. Where the two
+        disagree the ruler is right, so the substitution happens only when
+        the profile is the generic preset standing in for a calibration
+        nobody has done -- which is exactly the case the red guide was
+        lying about.
+
+        :param profile: the resolved profile.
+        :returns: it, or a copy carrying the driver's border.
+        """
+        name = select_preselected_printer(self._printers, self.profile_loader)
+        if name is None:
+            return profile
+        try:
+            self.profile_loader(name)
+        except (FileNotFoundError, OSError, ValueError):
+            pass  # uncalibrated: the preset is a stand-in, so fill it in
+        else:
+            return profile
+        return profile_with_driver_margins(profile, self._imageable_areas.get(name))
 
     def set_printer_profile(self, profile: PrinterProfile) -> None:
         """Draw the preview and the margins against ``profile``.
@@ -1281,6 +1353,11 @@ class MainWindow:
         Both workers already support cancellation; they simply were never
         asked, and nobody waited.
 
+        ``layout_panel`` joined the list when the Crop & trim tab started
+        compositing the document off-thread (N11). A third render source
+        that is not on this list is the exact shutdown crash
+        :func:`_live_threads` was written for.
+
         :param timeout_ms: how long to wait per thread. A render that
             ignores cancellation must not hang the quit -- a stuck thread
             is a worse outcome than an abandoned one, and the wait is
@@ -1289,7 +1366,7 @@ class MainWindow:
             closing, and an exception here would replace a clean exit with
             the crash it exists to prevent.
         """
-        for view in (self.preview_view, self.arrange_view):
+        for view in (self.preview_view, self.arrange_view, self.layout_panel):
             try:
                 worker = getattr(view, "_worker", None)
                 if worker is not None:
@@ -1297,7 +1374,7 @@ class MainWindow:
             except Exception as exc:  # pragma: no cover - defensive
                 log_exception("shutdown_cancel_failed", exc)
 
-        for view in (self.preview_view, self.arrange_view):
+        for view in (self.preview_view, self.arrange_view, self.layout_panel):
             try:
                 # Every live thread, not just `view._thread` -- see
                 # `_live_threads`. Waiting only for the current one left

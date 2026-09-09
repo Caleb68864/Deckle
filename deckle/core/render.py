@@ -499,6 +499,7 @@ def composite_pages(
     dpi: int = 72,
     parity: str | None = None,
     crop_pt: Insets | None = None,
+    cancel: threading.Event | None = None,
 ) -> RenderedPage:
     """Every page's ink in one picture, with the proposed crop drawn on it.
 
@@ -524,12 +525,23 @@ def composite_pages(
         compositing them together would answer neither.
     :param crop_pt: insets to draw as a rectangle, or ``None`` to draw
         none.
+    :param cancel: optional event. Checked before each page is rasterised,
+        and a set event returns a degenerate ``0x0`` page immediately --
+        the same contract :func:`render_sheet` gives, and for the same
+        reason: this rasterises EVERY unskipped page, so a 300-page
+        document superseded by the next spinbox nudge would otherwise
+        finish work nobody will look at. A cancelled composite returns
+        rather than raising, so the caller's "is this still current" guard
+        is the only thing that has to know.
     :returns: the composite as a :class:`RenderedPage`.
     :raises ValueError: no page was left to composite -- an empty picture
         would look like a document with no content, which is a different
         and much more alarming answer than "you filtered everything out".
     """
     from PIL import Image, ImageChops, ImageDraw
+
+    if cancel is not None and cancel.is_set():
+        return _empty_rendered_page()
 
     selected = []
     for page in pages:
@@ -552,6 +564,8 @@ def composite_pages(
 
     canvas = Image.new("L", (width, height), 255)
     for page in selected:
+        if cancel is not None and cancel.is_set():
+            return _empty_rendered_page()
         rendered = _rasterize_for_bbox(page.ref, dpi).convert("L")
         if rendered.size != (width, height):
             # Pages of differing sizes are aligned at the top-left, which
@@ -562,6 +576,9 @@ def composite_pages(
             sized.paste(rendered, (0, 0))
             rendered = sized
         canvas = ImageChops.darker(canvas, rendered)
+
+    if cancel is not None and cancel.is_set():
+        return _empty_rendered_page()
 
     picture = canvas.convert("RGB")
     if crop_pt is not None:

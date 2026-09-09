@@ -332,9 +332,11 @@ Organised the way the work happens.
   spread rendered in a single pass so a stale front can never appear beside a
   fresh back
 - **Two guides, drawn distinctly.** Solid red is the *imageable area* of the
-  printer Deckle would print to — its calibration if you have one, otherwise
-  a generic 0.25in preset standing in for one, and the preview says which by
-  following the printer selected in the Print dialog. Dashed blue is your
+  printer Deckle would print to — its calibration if you have one, else what
+  the driver reports if it reports anything, else a generic 0.25in preset
+  standing in for one; the GUIDE says which of the three you are looking at,
+  and the preview follows the printer selected in the Print dialog. Only the
+  first has been checked against paper. Dashed blue is your
   *content box* — your margins. They coincide only by coincidence, and
   showing one while the user is asking about the other is how a preview lies.
 - Warnings that distinguish *why* content is clipped: off the page entirely,

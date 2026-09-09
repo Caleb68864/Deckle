@@ -22,6 +22,7 @@ seams for exactly this reason.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import ast
@@ -164,9 +165,12 @@ class _Applied:
 
     def __init__(self):
         self.calls = []
+        self.imageable_areas = None
 
-    def __call__(self, printers, message=None):
+    def __call__(self, printers, message=None, imageable_areas=None):
         self.calls.append((list(printers), message))
+        # N2: a timed-out query must apply {}, not a half-filled dict.
+        self.imageable_areas = imageable_areas
 
 
 def test_query_settles_as_no_printers_when_the_deadline_passes(tmp_path):
@@ -327,6 +331,7 @@ class _FakeWindow:
     _apply_printers = app_main.MainWindow._apply_printers
     _refresh_status_message = app_main.MainWindow._refresh_status_message
     set_printer_profile = app_main.MainWindow.set_printer_profile
+    _profile_with_driver_answer = app_main.MainWindow._profile_with_driver_answer
 
 
 def test_zero_printers_disables_print_but_leaves_save_pdf_alone():
@@ -711,3 +716,143 @@ def test_the_timeout_record_is_a_warning(tmp_path, monkeypatch):
 
     assert "printer_enumeration_timeout" in _events(tmp_path)
     assert logging.WARNING == 30
+
+
+# -- the driver's imageable area (N2) ------------------------------------
+#
+# The preview's red guide is documented as the printer's hardware limit.
+# It was a flat 0.25in from the first built-in preset, drawn identically
+# on every machine. B15 made it follow the *selected* profile; this is the
+# other half -- asking the driver what the border actually is.
+#
+# Sheets print at actual size (B6), so content inside that border is lost
+# rather than shrunk to fit. A wrong number here is a ruined stack of
+# paper, which is why every path below falls back to the preset rather
+# than guessing.
+
+
+def test_the_worker_collects_an_imageable_area_per_printer(monkeypatch):
+    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["A", "B"])
+    monkeypatch.setattr(
+        app_main, "query_imageable_area_pt", {"A": (1.0, 1.0, 1.0, 1.0)}.get
+    )
+    worker = app_main._PrinterQueryWorker()
+
+    worker.run()
+
+    assert worker.names == ["A", "B"]
+    # B declined, so B is absent -- not present with a fabricated zero.
+    assert worker.imageable_areas == {"A": (1.0, 1.0, 1.0, 1.0)}
+
+
+def test_one_unreachable_printer_does_not_cost_the_others(monkeypatch):
+    """A `try` per printer, not one around the loop."""
+    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["A", "B"])
+
+    def query(name):
+        if name == "A":
+            raise OSError("network queue is not answering")
+        return (2.0, 2.0, 2.0, 2.0)
+
+    monkeypatch.setattr(app_main, "query_imageable_area_pt", query)
+    worker = app_main._PrinterQueryWorker()
+
+    worker.run()
+
+    assert worker.names == ["A", "B"]
+    assert worker.imageable_areas == {"B": (2.0, 2.0, 2.0, 2.0)}
+
+
+def test_a_failed_enumeration_asks_no_driver_anything(monkeypatch):
+    def explode():
+        raise OSError("spooler is down")
+
+    monkeypatch.setattr(app_main, "available_printer_names", explode)
+    asked = []
+    monkeypatch.setattr(
+        app_main, "query_imageable_area_pt", lambda name: asked.append(name)
+    )
+    worker = app_main._PrinterQueryWorker()
+
+    worker.run()
+
+    assert worker.names == [] and worker.imageable_areas == {}
+    assert asked == []
+
+
+def test_applying_printers_pushes_the_driver_border_to_the_views():
+    window = _FakeWindow(pages=["one page"])
+
+    app_main.MainWindow._apply_printers(
+        window, ["A"], None, {"A": (1.0, 2.0, 3.0, 4.0)}
+    )
+
+    assert window.preview_view.profile.imageable_area_pt == (1.0, 2.0, 3.0, 4.0)
+    assert window.layout_panel.profile.imageable_area_pt == (1.0, 2.0, 3.0, 4.0)
+
+
+def test_a_printer_with_no_driver_answer_keeps_the_preset():
+    """`set_printer_profile` is a no-op when nothing changed, so the views
+    are deliberately left untouched here -- the window's own profile is
+    what says which border is in force."""
+    window = _FakeWindow(pages=["one page"])
+
+    app_main.MainWindow._apply_printers(window, ["A"], None, {})
+
+    assert window.profile.imageable_area_pt == (18.0, 18.0, 18.0, 18.0)
+    assert window.preview_view.profile is None, "a needless re-render"
+
+
+def test_the_driver_never_overrules_a_measured_calibration():
+    """A calibration was printed and measured with a ruler. The driver's
+    number has been checked against nothing. Where they disagree the ruler
+    wins, or a calibration pass was wasted."""
+    calibrated = replace(
+        app_main.DEFAULT_PROFILE, imageable_area_pt=(30.0, 30.0, 30.0, 30.0)
+    )
+    window = _FakeWindow(pages=["one page"])
+    window.profile_loader = lambda name: calibrated
+
+    app_main.MainWindow._apply_printers(
+        window, ["A"], None, {"A": (1.0, 2.0, 3.0, 4.0)}
+    )
+
+    assert window.preview_view.profile.imageable_area_pt == (30.0, 30.0, 30.0, 30.0)
+
+
+def test_applying_printers_still_takes_two_positional_arguments():
+    """Four existing tests call this unbound with two arguments and none of
+    them are about margins."""
+    window = _FakeWindow(pages=["one page"])
+
+    app_main.MainWindow._apply_printers(window, ["A"])
+
+    assert window.profile.imageable_area_pt == (18.0, 18.0, 18.0, 18.0)
+
+
+def test_a_timed_out_query_applies_no_margins_at_all():
+    """Not a half-filled dict: the worker may be mid-loop, and margins for
+    some printers and not others is a state nothing downstream expects."""
+    applied = _Applied()
+    worker = app_main._PrinterQueryWorker()
+    worker.names = ["A"]
+    worker.imageable_areas = {"A": (1.0, 2.0, 3.0, 4.0)}
+    query = app_main._PrinterQuery(worker, applied, timeout_ms=1)
+
+    query.time_out()
+
+    assert applied.calls == [([], app_main.PRINTER_TIMEOUT_MESSAGE)]
+    assert applied.imageable_areas == {}
+
+
+def test_a_settled_query_hands_on_what_the_worker_collected():
+    applied = _Applied()
+    worker = app_main._PrinterQueryWorker()
+    worker.names = ["A"]
+    worker.imageable_areas = {"A": (1.0, 2.0, 3.0, 4.0)}
+    query = app_main._PrinterQuery(worker, applied, timeout_ms=1)
+
+    query.complete()
+
+    assert applied.calls == [(["A"], None)]
+    assert applied.imageable_areas == {"A": (1.0, 2.0, 3.0, 4.0)}

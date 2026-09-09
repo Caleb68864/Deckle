@@ -15,6 +15,7 @@ the content box, which fills the page height whenever geometry allows.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import replace
 from typing import Literal
 
@@ -622,6 +623,190 @@ def apply_layout_change(state: AppState, mutator) -> SheetPlan:
     return recompute_plan(state.project)
 
 
+# -- the ink composite ---------------------------------------------------
+
+COMPOSITE_PREVIEW_DPI = 36
+"""Resolution for the in-panel ink composite.
+
+Half ``composite_pages``'s own default. That default is 72 because
+``crop-preview`` writes a PNG someone opens and zooms; this one is shown in
+a settings column a few hundred pixels wide, where 72 dpi doubles the
+rasterisation cost of every page in the document for detail the column
+cannot display.
+"""
+
+COMPOSITE_DEBOUNCE_MS = 300
+"""How long to wait after the last crop edit before redrawing.
+
+Long enough that holding a spinbox's arrow key does not queue a
+whole-document rasterisation per step, short enough that it still feels
+like a response to what you typed. The same cancel-and-reschedule shape
+``AppState`` uses for autosave, for the same reason.
+"""
+
+COMPOSITE_RECTANGLE_SENTENCE = (
+    "Anything outside the red rectangle is what the crop would remove."
+)
+"""What the red rectangle means, in the CLI's own words.
+
+Lifted verbatim from ``deckle.cli._cmd_crop_preview`` so both front ends
+say the same thing about the same picture; ``tests/test_output_command_parity``
+fails if they drift apart.
+"""
+
+COMPOSITE_MIXED_MESSAGE = (
+    "Odd and even pages are cropped differently, so no single rectangle "
+    "describes this picture. Pick a parity above."
+)
+"""Why "All pages" sometimes draws no rectangle.
+
+Saying nothing would read as "this crop removes nothing", which is the
+one answer that is certainly wrong when two different crops are set.
+"""
+
+COMPOSITE_PARITIES: tuple[tuple[str, str], ...] = (
+    ("all", "All pages"),
+    ("odd", "Odd pages"),
+    ("even", "Even pages"),
+)
+"""The composite's parity choices, as ``(key, label)``."""
+
+
+def composite_crop_for(layout, parity: str):
+    """The rectangle to draw over a composite of ``parity``, or ``None``.
+
+    Drawing the odd crop over a picture of every page is a confidently
+    wrong answer: it shows the even pages' ink beside a rectangle never
+    measured against it, so a crop that clips them looks safe. The CLI
+    records the same reasoning at ``deckle.cli._cmd_crop_preview``.
+
+    So: odd shows ``crop_odd_pt``; even shows ``crop_even_pt``, falling
+    back to ``crop_odd_pt`` because that is what the imposer applies when
+    only one is set; and "all pages" shows a rectangle only when there IS
+    one rectangle -- when ``crop_even_pt`` is unset and ``crop_odd_pt``
+    therefore applies to the whole document.
+
+    :param layout: the current ``LayoutSettings``.
+    :param parity: ``"all"``, ``"odd"`` or ``"even"``.
+    :returns: the insets, or ``None`` to draw nothing.
+    """
+    if parity == "odd":
+        return layout.crop_odd_pt
+    if parity == "even":
+        return layout.crop_even_pt or layout.crop_odd_pt
+    return None if layout.crop_even_pt else layout.crop_odd_pt
+
+
+def composite_caption(worker, no_rectangle_reason: str = "") -> str:
+    """What to say under the picture, given a finished worker.
+
+    Pure, and separate from the widget, because the precedence is a
+    judgement rather than a layout detail: a message about *why there is no
+    picture* outranks anything said about a picture that is not there.
+
+    :param worker: a finished :class:`CompositeWorker`.
+    :param no_rectangle_reason: why no rectangle was drawn, or ``""``.
+    :returns: the caption text.
+    """
+    if worker.message:
+        return worker.message
+    if worker.failed:
+        return "Could not draw the composite."
+    if no_rectangle_reason:
+        return no_rectangle_reason
+    return f"{worker.page_count} page(s) superimposed. {COMPOSITE_RECTANGLE_SENTENCE}"
+
+
+class CompositeWorker:
+    """Runs ``composite_pages`` on a background ``QThread``.
+
+    Plain class, not a ``QObject`` -- the same shape as ``ThumbnailWorker``
+    in ``arrange_view.py`` and ``PreviewWorker`` in ``preview_view.py``,
+    with the Qt wiring left to the panel.
+
+    :param pages: the document's pages.
+    :param parity: ``"odd"``, ``"even"`` or ``None`` for all.
+    :param crop_pt: the rectangle to draw, or ``None`` for none.
+    :param dpi: rasterisation resolution.
+    :ivar rendered: the composite, or ``None``.
+    :ivar failed: set when the composite raised. Distinct from a ``None``
+        :attr:`rendered`, which is also what a cancelled run leaves.
+    :ivar message: why there is no picture, or ``""``. The documented
+        "you filtered everything out" case is a state a user can reach
+        with Skip, not a fault, so it is reported rather than logged.
+    :ivar page_count: how many pages went into the picture.
+    :ivar cancel: set when a newer edit supersedes this run.
+    """
+
+    def __init__(self, pages, *, parity=None, crop_pt=None, dpi=COMPOSITE_PREVIEW_DPI):
+        self.pages = list(pages)
+        self.parity = parity
+        self.crop_pt = crop_pt
+        self.dpi = dpi
+        self.rendered = None
+        self.failed = False
+        self.message = ""
+        self.page_count = 0
+        self.cancel = threading.Event()
+
+    def run(self) -> None:
+        """Composite the pages, unless already superseded.
+
+        :returns: nothing -- the result lands on :attr:`rendered`. A
+            cancelled run leaves it ``None``, so a superseded picture never
+            reaches the label.
+        """
+        if self.cancel.is_set():
+            return
+        from deckle.core.render import composite_pages
+
+        try:
+            rendered = composite_pages(
+                self.pages,
+                dpi=self.dpi,
+                parity=self.parity,
+                crop_pt=self.crop_pt,
+                cancel=self.cancel,
+            )
+        except ValueError as exc:
+            # Documented and reachable: every page skipped, blank, or
+            # filtered out by parity. A sentence, not a logged fault.
+            self.message = str(exc)
+            return
+        except Exception as exc:  # noqa: BLE001 -- a thread, not the UI
+            # A QThread has nowhere to deliver an exception: Qt prints a
+            # traceback the user cannot act on and the panel silently
+            # stays blank, which looks identical to a slow render.
+            log_exception("crop_composite_failed", exc)
+            self.failed = True
+            return
+        if self.cancel.is_set():
+            return
+        self.rendered = rendered
+        self.page_count = _composited_page_count(self.pages, self.parity)
+
+
+def _composited_page_count(pages, parity) -> int:
+    """How many pages :func:`composite_pages` would include.
+
+    The same filter, stated once more here rather than returned from the
+    renderer, so the caption can name a number without ``composite_pages``
+    growing a second return value for one caller's benefit.
+    """
+    from deckle.core.models import is_blank_page
+
+    count = 0
+    for page in pages:
+        if page.skipped or is_blank_page(page):
+            continue
+        if parity is not None:
+            is_odd = (page.ref.page_index + 1) % 2 == 1
+            if (parity == "odd") != is_odd:
+                continue
+        count += 1
+    return count
+
+
 # -- Qt wiring -----------------------------------------------------------
 # Imported lazily so this module -- and every pure function above -- stays
 # importable without PySide6/a display, matching arrange_view.py/import_view.py.
@@ -638,9 +823,43 @@ def _qt_fields_at_size_hint():
 
 
 def _qt_core():
-    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtCore import QObject, QThread, Signal
 
-    return QObject, Signal
+    return QObject, QThread, Signal
+
+
+def _qt_align_center():
+    """``Qt.AlignmentFlag.AlignCenter``, imported lazily like the rest."""
+    from PySide6.QtCore import Qt
+
+    return Qt.AlignmentFlag.AlignCenter
+
+
+def _qt_scaled_pixmap(rendered, width: int):
+    """A ``QPixmap`` of ``rendered``, scaled to ``width``.
+
+    The ``.copy()`` is not optional. ``QImage`` does not copy the buffer it
+    is handed, and ``rendered.rgba`` is bytes owned by a worker thread's
+    result -- painting from it after the worker is collected shows as
+    intermittent garbage rather than a clean crash. ``arrange_view``'s
+    ``_icon_from_rendered`` records the same thing.
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QImage, QPixmap
+
+    image = QImage(
+        rendered.rgba,
+        rendered.width,
+        rendered.height,
+        rendered.width * 4,
+        QImage.Format.Format_RGBA8888,
+    ).copy()
+    pixmap = QPixmap.fromImage(image)
+    if width > 0 and pixmap.width() > width:
+        pixmap = pixmap.scaledToWidth(
+            width, Qt.TransformationMode.SmoothTransformation
+        )
+    return pixmap
 
 
 def _qt_widgets():
@@ -650,6 +869,7 @@ def _qt_widgets():
         QComboBox,
         QDoubleSpinBox,
         QFormLayout,
+        QHBoxLayout,
         QLabel,
         QLineEdit,
         QPushButton,
@@ -662,7 +882,7 @@ def _qt_widgets():
 
     return (
         QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-        QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
+        QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
         QTabWidget, QVBoxLayout, QWidget,
     )
 
@@ -689,10 +909,10 @@ class LayoutPanel:
         # "Use printer margins" button. Optional so the panel stays
         # constructible without a printer.
         self.profile = profile
-        QObject, Signal = _qt_core()
+        QObject, QThread, Signal = _qt_core()
         (
             QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-            QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
+            QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
             QTabWidget, QVBoxLayout, QWidget,
         ) = _qt_widgets()
 
@@ -931,6 +1151,61 @@ class LayoutPanel:
         )
         self.auto_crop_button.clicked.connect(self._on_auto_crop)
         crop_form.addRow("", self.auto_crop_button)
+
+        # Eight numbers and no picture was the whole of the complaint. The
+        # question a cropper has is not "what does page 1 look like" but
+        # "does this rectangle clip anything, on ANY page" -- which is the
+        # question a composite of every page's ink answers and a number
+        # cannot.
+        self.composite_check = QCheckBox("Show the ink composite", self.widget)
+        self.composite_check.setChecked(True)
+        self.composite_check.setToolTip(
+            "Superimpose every page's ink in one picture and draw the crop "
+            "on it. " + COMPOSITE_RECTANGLE_SENTENCE + "\n\n"
+            "This is the question a number cannot answer: not \"what does "
+            "page 1 look like\" but \"does this rectangle clip anything, on "
+            "any page\". A marginal note on one page in two hundred is "
+            "exactly what it catches.\n\n"
+            "Untick it on a very large scan -- it rasterises every page."
+        )
+        self.composite_check.toggled.connect(self._on_composite_toggled)
+
+        self.composite_parity_combo = QComboBox(self.widget)
+        for _key, _label in COMPOSITE_PARITIES:
+            self.composite_parity_combo.addItem(_label)
+        self._composite_parity_keys = [key for key, _ in COMPOSITE_PARITIES]
+        self.composite_parity_combo.setToolTip(
+            "A scan's margins alternate leaf by leaf, so odd and even pages "
+            "are different pictures and one rectangle rarely fits both. "
+            "Composite them separately to see it."
+        )
+        self.composite_parity_combo.currentIndexChanged.connect(
+            lambda _index: self._schedule_composite()
+        )
+
+        self.composite_label = QLabel("", self.widget)
+        self.composite_label.setAlignment(_qt_align_center())
+        self.composite_label.setMinimumHeight(160)
+
+        self.composite_caption = QLabel("", self.widget)
+        self.composite_caption.setWordWrap(True)
+
+        # One spanning row, not four labelled ones. The tab is already at
+        # the dozen-row ceiling `test_no_settings_tab_is_taller_than_a_dozen_rows`
+        # enforces, and a picture wants the full width anyway rather than
+        # the narrow field column a QFormLayout row would give it.
+        composite_box = QWidget(self.widget)
+        composite_layout = QVBoxLayout(composite_box)
+        composite_layout.setContentsMargins(0, 0, 0, 0)
+        composite_layout.addWidget(self.composite_check)
+        parity_row = QHBoxLayout()
+        parity_row.addWidget(QLabel("Composite:", composite_box))
+        parity_row.addWidget(self.composite_parity_combo)
+        parity_row.addStretch(1)
+        composite_layout.addLayout(parity_row)
+        composite_layout.addWidget(self.composite_label)
+        composite_layout.addWidget(self.composite_caption)
+        crop_form.addRow(composite_box)
         self.unit_combo.setToolTip(
             "The unit every length on this tab is typed in. Values are "
             "stored in points regardless, so switching units re-displays "
@@ -1204,6 +1479,127 @@ class LayoutPanel:
         self.sewing_stations_spinbox.valueChanged.connect(self._on_sewing_stations_changed)
         self.paper_thickness_spinbox.valueChanged.connect(self._on_paper_thickness_changed)
 
+        # Cancel-and-reschedule, so holding a spinbox's arrow key produces
+        # one rasterisation of the document rather than one per step.
+        from PySide6.QtCore import QTimer
+
+        self._QThread = QThread
+        self._composite_timer = QTimer(self.widget)
+        self._composite_timer.setSingleShot(True)
+        self._composite_timer.setInterval(COMPOSITE_DEBOUNCE_MS)
+        # Late-bound on purpose: connecting the bound method would freeze
+        # today's implementation into the signal, which is exactly what a
+        # test that replaces `_start_composite` needs not to happen.
+        self._composite_timer.timeout.connect(lambda: self._start_composite())
+        self._composite_thread = None
+        self._composite_worker: CompositeWorker | None = None
+        self._composite_reason = ""
+        self._schedule_composite()
+
+    # -- the ink composite ----------------------------------------------
+
+    @property
+    def _thread(self):
+        """The current composite thread, for ``main._live_threads``.
+
+        Named to match ``ArrangeView``/``PreviewView`` so shutdown can treat
+        all three the same. A render still inside pdfium when the
+        interpreter finalises takes the process down with it, which is what
+        ``stop_background_work`` exists to prevent -- and this panel now
+        starts renders too.
+        """
+        return self._composite_thread
+
+    @property
+    def _worker(self):
+        """The current composite worker, for ``stop_background_work``."""
+        return self._composite_worker
+
+    def _schedule_composite(self) -> None:
+        """Redraw the composite shortly, cancelling any pending redraw.
+
+        :returns: nothing. The redraw happens :data:`COMPOSITE_DEBOUNCE_MS`
+            after the last edit, on a background thread.
+        """
+        if not self.composite_check.isChecked():
+            self._clear_composite()
+            return
+        self._composite_timer.start()
+
+    def _on_composite_toggled(self, checked: bool) -> None:
+        if not checked and self._composite_worker is not None:
+            # Untick means "stop rasterising", not "stop when you finish".
+            self._composite_worker.cancel.set()
+        self._schedule_composite()
+
+    def _start_composite(self) -> None:
+        """Kick off a background composite of the current crop.
+
+        Supersedes any run still in flight, exactly as
+        ``ArrangeView.request_visible_thumbnails`` does: without it, nudging
+        a spinbox eight times queues eight whole-document rasterisations,
+        each parented to the widget and so never freed, with the slowest
+        painting last.
+
+        :returns: nothing. The picture arrives via
+            :meth:`_on_composite_ready`.
+        """
+        if self._composite_worker is not None:
+            self._composite_worker.cancel.set()
+            self._composite_worker = None
+        pages = list(self.state.project.pages)
+        if not pages:
+            self._clear_composite()
+            return
+        parity = self._composite_parity_keys[
+            self.composite_parity_combo.currentIndex()
+        ]
+        layout = self.state.project.layout
+        self._composite_reason = (
+            COMPOSITE_MIXED_MESSAGE
+            if parity == "all" and layout.crop_even_pt
+            else ""
+        )
+        worker = CompositeWorker(
+            pages,
+            parity=None if parity == "all" else parity,
+            crop_pt=composite_crop_for(layout, parity),
+            dpi=COMPOSITE_PREVIEW_DPI,
+        )
+        thread = self._QThread(self.widget)
+        thread.run = worker.run
+        thread.finished.connect(lambda: self._on_composite_ready(worker))
+        # Parented to the widget, so without this every superseded run
+        # leaks a thread for the life of the window.
+        thread.finished.connect(thread.deleteLater)
+        self._composite_thread = thread
+        self._composite_worker = worker
+        self.composite_caption.setText("Compositing...")
+        thread.start()
+
+    def _on_composite_ready(self, worker) -> None:
+        """Paint a finished composite, unless it has been superseded.
+
+        :param worker: the worker whose thread just finished.
+        :returns: nothing.
+        """
+        if worker is not self._composite_worker or worker.cancel.is_set():
+            return
+        if worker.rendered is None or not worker.rendered.rgba:
+            self.composite_label.clear()
+        else:
+            self.composite_label.setPixmap(
+                _qt_scaled_pixmap(worker.rendered, self.composite_label.width())
+            )
+        self.composite_caption.setText(
+            composite_caption(worker, self._composite_reason)
+        )
+
+    def _clear_composite(self) -> None:
+        """Take the picture down and say nothing."""
+        self.composite_label.clear()
+        self.composite_caption.setText("")
+
     def refresh_from_project(self) -> None:
         """Re-read every control from the current project.
 
@@ -1289,6 +1685,9 @@ class LayoutPanel:
         self._sync_signature_tab()
         self._refresh_suggestion()
         self._refresh_binding_readout(recompute_plan(self.state.project))
+        # The document underneath is a different book, so the picture of
+        # the old one is as stale as the numbers were.
+        self._schedule_composite()
 
     def set_document_loaded(self, loaded: bool) -> None:
         """Enable the document-dependent actions on this panel.
@@ -1301,6 +1700,7 @@ class LayoutPanel:
         """
         self._document_loaded = loaded
         self._sync_signature_tab()
+        self._schedule_composite()
 
     def _on_save_schedule_clicked(self) -> None:
         """Write the binding schedule beside wherever the source came from.
@@ -1646,6 +2046,7 @@ class LayoutPanel:
             # already looking at.
             self.schedule_saved.emit(f"Crop: {exc}")
             return
+        self._schedule_composite()
         self.layout_changed.emit(plan)
 
     def _on_auto_crop(self) -> None:
@@ -1667,6 +2068,7 @@ class LayoutPanel:
                 box.setValue(from_points(value, self._unit))
                 box.blockSignals(False)
             self._on_crop_changed(parity)
+        self._schedule_composite()
         self.schedule_saved.emit(
             "Crop measured from the ink -- check it before printing."
         )
