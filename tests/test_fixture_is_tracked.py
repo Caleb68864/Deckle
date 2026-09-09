@@ -28,8 +28,16 @@ def _requires_git_checkout() -> None:
 
     A CI image without ``git`` is a CI bug worth seeing as an error rather
     than hiding as a skip.
+
+    ``exists``, not ``isdir``: in a **git worktree** ``.git`` is a *file*
+    holding a ``gitdir:`` pointer, not a directory. The directory test read
+    that as "not a git checkout" and skipped all three of these tests --
+    silently, and in exactly the setup used to develop features in parallel,
+    which is when a fixture is most likely to go missing. A test that cannot
+    fail is worse than no test, and this one guards the file ~100 other tests
+    depend on (R0.1).
     """
-    if not os.path.isdir(os.path.join(REPO_ROOT, ".git")):
+    if not os.path.exists(os.path.join(REPO_ROOT, ".git")):
         pytest.skip("not a git checkout")
 
 
