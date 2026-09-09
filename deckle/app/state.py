@@ -88,6 +88,54 @@ def autosave_path_for(project_path: str | None) -> str | None:
     return f"{project_path}.autosave"
 
 
+def autosave_recovery_offer(project_path: str | None) -> str | None:
+    """The autosave worth offering back, or ``None`` to stay silent.
+
+    Lives here rather than beside the prompt that shows it because the
+    answer is ``autosave_path_for``'s plus two ``mtime`` reads: putting it
+    anywhere else would be a second module that knows how
+    ``<project>.autosave`` is spelled. Pure, and Qt-free like the rest of
+    this module, so the decision is testable without a display.
+
+    Autosave has been written on every edit and flushed on close since the
+    beginning, and nothing ever offered it back -- the file was a corpse.
+    This is the decision that changes that, kept pure and out of the
+    dialog so it can be tested without a display.
+
+    **Detection cannot be "does the file exist".** ``_on_close_event``
+    flushes the autosave, so it exists after every clean quit. It is
+    *mtime*: offer when the autosave is newer than the project.
+
+    That rule is chosen for the crash case and gets close-without-saving
+    right as a consequence -- those edits are real, the user declined to
+    save them, and offering them back is correct rather than a false
+    positive. Saving makes the project newer, which is what stops the
+    prompt appearing on every open.
+
+    Ties go to silence. A spurious prompt teaches someone to dismiss
+    prompts, which costs more than the rare recovery it would offer.
+
+    :param project_path: where the project lives, or ``None`` for one
+        that has never been saved and so has no autosave.
+    :returns: the autosave path, or ``None``.
+    """
+    autosave_path = autosave_path_for(project_path)
+    if autosave_path is None or not os.path.isfile(autosave_path):
+        return None
+    try:
+        autosave_time = os.path.getmtime(autosave_path)
+    except OSError:
+        return None
+    try:
+        project_time = os.path.getmtime(project_path)
+    except OSError:
+        # The project is gone and the autosave is not. That is the case
+        # where recovery matters most, not a reason to discard the only
+        # remaining copy of the work.
+        return autosave_path
+    return autosave_path if autosave_time > project_time else None
+
+
 def unsaved_autosave_key(pages: Sequence[SourcePage]) -> str | None:
     """A stable identity for a never-saved project, from its sources.
 

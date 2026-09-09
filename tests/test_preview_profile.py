@@ -202,7 +202,8 @@ MEASURED = PrinterProfile(
 
 # No real spooler is touched: enumeration is answered by this stub, and no
 # profile is read from or written to the user's real config directory.
-am.available_printer_names = lambda: ["Measured"]
+import deckle.app.printer_query as pq
+pq.available_printer_names = lambda: ["Measured"]
 
 # Built with no printers so construction does not start a background query
 # with no event loop to settle it; the real `refresh_printers` is then

@@ -187,8 +187,9 @@ def test_cancelled_worker_leaves_previous_results_untouched(monkeypatch):
 
 def test_printer_query_worker_collects_names(monkeypatch):
     from deckle.app import main as app_main
+    from deckle.app import printer_query
 
-    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["A", "B"])
+    monkeypatch.setattr(printer_query, "available_printer_names", lambda: ["A", "B"])
     worker = app_main._PrinterQueryWorker()
     worker.run()
     assert worker.names == ["A", "B"]
@@ -202,11 +203,12 @@ def test_printer_query_worker_survives_a_spooler_failure(monkeypatch):
     background thread.
     """
     from deckle.app import main as app_main
+    from deckle.app import printer_query
 
     def boom():
         raise OSError("spooler unavailable")
 
-    monkeypatch.setattr(app_main, "available_printer_names", boom)
+    monkeypatch.setattr(printer_query, "available_printer_names", boom)
     worker = app_main._PrinterQueryWorker()
     worker.run()
     assert worker.names == []
@@ -218,14 +220,18 @@ def test_printer_enumeration_is_not_called_during_import(monkeypatch):
     printers, and the Windows spooler blocks per printer until it times out
     when one is unreachable -- so Deckle hung on launch whenever a networked
     printer was offline. Importing the module must not query anything.
+
+    Reloads ``printer_query`` rather than ``main``: the enumeration seam
+    lives there now, so that is the module body a top-level call would be
+    hiding in.
     """
     calls = []
-    from deckle.app import main as app_main
+    from deckle.app import printer_query
 
     monkeypatch.setattr(
-        app_main, "available_printer_names", lambda: (calls.append(1), [])[1]
+        printer_query, "available_printer_names", lambda: (calls.append(1), [])[1]
     )
     import importlib
 
-    importlib.reload(app_main)
+    importlib.reload(printer_query)
     assert calls == []

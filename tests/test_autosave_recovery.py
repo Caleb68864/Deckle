@@ -19,7 +19,7 @@ import os
 
 import pytest
 
-from deckle.app.main import autosave_recovery_offer
+from deckle.app.state import autosave_recovery_offer
 
 
 def _pair(tmp_path, project_age: float, autosave_age: float):

@@ -15,11 +15,8 @@ from __future__ import annotations
 
 import os
 
-from deckle.app.main import (
-    DROP_REJECTED_MESSAGE,
-    classify_drop,
-    suggested_pass_export_name,
-)
+from deckle.app.exporting import suggested_pass_export_name
+from deckle.app.main import DROP_REJECTED_MESSAGE, classify_drop
 
 
 def _never_a_directory(_path: str) -> bool:

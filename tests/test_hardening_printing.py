@@ -34,6 +34,7 @@ import pytest
 
 from deckle.app import backend as backend_mod
 from deckle.app import main as app_main
+from deckle.app import printer_query
 from deckle.core import diagnostics
 from deckle.core.printing import PrintPass
 from deckle.core.profiles import PrinterProfile
@@ -406,13 +407,13 @@ def test_a_spooler_failure_is_logged_and_degrades_to_no_printers(tmp_path):
     def boom():
         raise OSError("RPC server is unavailable")
 
-    original = app_main.available_printer_names
-    app_main.available_printer_names = boom
+    original = printer_query.available_printer_names
+    printer_query.available_printer_names = boom
     try:
         worker = app_main._PrinterQueryWorker()
         worker.run()
     finally:
-        app_main.available_printer_names = original
+        printer_query.available_printer_names = original
 
     assert worker.names == []
     record = _record(tmp_path, "printer_enumeration_failed")
@@ -427,7 +428,7 @@ def test_blocking_refresh_degrades_instead_of_raising(monkeypatch):
     def boom():
         raise OSError("spooler unavailable")
 
-    monkeypatch.setattr(app_main, "available_printer_names", boom)
+    monkeypatch.setattr(printer_query, "available_printer_names", boom)
 
     window = _FakeWindow()
     app_main.MainWindow.refresh_printers(window, blocking=True)
@@ -453,7 +454,7 @@ def test_enumeration_hands_the_preview_the_printers_own_border(monkeypatch):
         reverse_stack=True, imageable_area_pt=(36.0, 12.0, 36.0, 12.0),
         calibrated_at="2026-01-01T00:00:00", calibration_version=1,
     )
-    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["Measured"])
+    monkeypatch.setattr(printer_query, "available_printer_names", lambda: ["Measured"])
 
     window = _FakeWindow(pages=["one page"])
     window.profile_loader = lambda name: measured
@@ -470,7 +471,7 @@ def test_enumeration_hands_the_preview_the_printers_own_border(monkeypatch):
 def test_an_uncalibrated_printer_leaves_the_preview_alone(monkeypatch):
     """The no-op half. This runs on every printer refresh, and a redraw
     costs a rasterisation of the visible sheet."""
-    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["Plain"])
+    monkeypatch.setattr(printer_query, "available_printer_names", lambda: ["Plain"])
 
     window = _FakeWindow(pages=["one page"])
     app_main.MainWindow.refresh_printers(window, blocking=True)
@@ -735,9 +736,9 @@ def test_the_timeout_record_is_a_warning(tmp_path, monkeypatch):
 
 
 def test_the_worker_collects_an_imageable_area_per_printer(monkeypatch):
-    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["A", "B"])
+    monkeypatch.setattr(printer_query, "available_printer_names", lambda: ["A", "B"])
     monkeypatch.setattr(
-        app_main, "query_imageable_area_pt", {"A": (1.0, 1.0, 1.0, 1.0)}.get
+        printer_query, "query_imageable_area_pt", {"A": (1.0, 1.0, 1.0, 1.0)}.get
     )
     worker = app_main._PrinterQueryWorker()
 
@@ -750,14 +751,14 @@ def test_the_worker_collects_an_imageable_area_per_printer(monkeypatch):
 
 def test_one_unreachable_printer_does_not_cost_the_others(monkeypatch):
     """A `try` per printer, not one around the loop."""
-    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["A", "B"])
+    monkeypatch.setattr(printer_query, "available_printer_names", lambda: ["A", "B"])
 
     def query(name):
         if name == "A":
             raise OSError("network queue is not answering")
         return (2.0, 2.0, 2.0, 2.0)
 
-    monkeypatch.setattr(app_main, "query_imageable_area_pt", query)
+    monkeypatch.setattr(printer_query, "query_imageable_area_pt", query)
     worker = app_main._PrinterQueryWorker()
 
     worker.run()
@@ -770,10 +771,10 @@ def test_a_failed_enumeration_asks_no_driver_anything(monkeypatch):
     def explode():
         raise OSError("spooler is down")
 
-    monkeypatch.setattr(app_main, "available_printer_names", explode)
+    monkeypatch.setattr(printer_query, "available_printer_names", explode)
     asked = []
     monkeypatch.setattr(
-        app_main, "query_imageable_area_pt", lambda name: asked.append(name)
+        printer_query, "query_imageable_area_pt", lambda name: asked.append(name)
     )
     worker = app_main._PrinterQueryWorker()
 

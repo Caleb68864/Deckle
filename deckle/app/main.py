@@ -6,30 +6,52 @@ window construction; when it comes back empty the print action is disabled
 with an explanatory status message instead of opening an empty/broken print
 dialog or raising. There is no printer menu and no re-query -- a printer
 plugged in after launch is not seen until Deckle restarts (B30).
+
+What this module is, and is not (M3). It is the window: splitters,
+buttons, tooltips, the status bar, the menu bar's target methods, the
+drop handlers, the modal prompts, and the enable/disable rules that keep
+a greyed button and a live menu item from disagreeing. What each command
+*does* lives next door -- :mod:`deckle.app.printer_query` for
+enumeration under a deadline, :mod:`deckle.app.project_actions` for the
+``.deckle`` file and its recovery, :mod:`deckle.app.exporting` for the
+PDF, :mod:`deckle.app.shutdown` for the cancel-and-wait on the way out --
+and the window keeps a thin method for each, because that is the name a
+menu entry, a ``clicked`` signal or a test reaches for.
 """
 
 from __future__ import annotations
 
-import logging
 import os
-import warnings
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
-from deckle.app.state import (
-    AppState,
-    autosave_path_for,
-    unsaved_autosave_label,
-    unsaved_autosave_offers,
-)
-from deckle.app.printer_capabilities import (
-    profile_with_driver_margins,
-    query_imageable_area_pt,
+from deckle.app.state import AppState, unsaved_autosave_label
+from deckle.app.printer_capabilities import profile_with_driver_margins
+
+# Re-exported, and the ``noqa`` is load-bearing. ``MainWindow.refresh_printers``
+# stays in this module and resolves ``_PrinterQueryWorker``, ``_new_thread``
+# and ``_single_shot`` in *these* globals, which is what makes
+# ``monkeypatch.setattr(app_main, "_single_shot", ...)`` work in
+# ``tests/test_hardening_printing.py``. Note the asymmetry: a re-export makes
+# a name readable, not assignable -- ``available_printer_names`` is called
+# inside ``printer_query``'s own globals, so it must be patched there.
+from deckle.app.printer_query import (  # noqa: F401
+    PRINTER_QUERY_TIMEOUT_MS,
+    PRINTER_TIMEOUT_MESSAGE,
+    _new_thread,
+    _PrinterQuery,
+    _PrinterQueryWorker,
+    _single_shot,
+    available_printer_names,
 )
 from deckle.core.defaults import load_defaults
-from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.menus import MENUS, build_menu_bar
-from deckle.app.state import AppState, autosave_path_for
+from deckle.app import exporting, project_actions, shutdown
+
+#: Re-exported for the two button tooltips ``_sync_document_actions`` sets;
+#: the functions that say them live in the modules that own the action.
+from deckle.app.exporting import NOTHING_TO_EXPORT_MESSAGE  # noqa: F401
+from deckle.app.project_actions import NOTHING_TO_SAVE_MESSAGE  # noqa: F401
 from deckle.core import about
 from deckle.core.diagnostics import (
     diagnostics_log_path,
@@ -46,20 +68,9 @@ from deckle.app.views.print_dialog import (
     resolve_profile,
     select_preselected_printer,
 )
-from deckle.core.export import clear_sheet_cache, export
 from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
-from deckle.core.outputs import describe_write_failure, output_path_problem
-from deckle.core.project_io import (
-    PathOutsideRootsAdvisory,
-    SourceChangedWarning,
-    SourceMissingError,
-    load_project,
-    save_project,
-)
-from deckle.core.printing import pass_export
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
-from deckle.core import recent
 
 LETTER_PT = (612.0, 792.0)
 
@@ -92,8 +103,6 @@ UNTITLED_PROJECT_NAME = "This document"
 """What the prompts call a project that has never been saved."""
 
 
-NOTHING_TO_SAVE_MESSAGE = "Nothing to save yet -- import a PDF or images first."
-
 SAVE_PROJECT_TOOLTIP = (
     "Save this job as a .deckle project so you can come back to it.\n\n"
     "Saves straight back to the project's own file; a job that has never "
@@ -101,24 +110,6 @@ SAVE_PROJECT_TOOLTIP = (
     "Saves the page order, rotations, skips, blanks and every layout "
     "setting -- not the PDF. Use Save PDF for the imposed document."
 )
-
-NOTHING_TO_EXPORT_MESSAGE = "Nothing to export yet -- import a PDF or images first."
-"""Why Save PDF is unavailable. Shown as the button's tooltip.
-
-Save PDF used to stay enabled with no document and scold the user *after*
-they clicked it, while Print in the identical situation was disabled with an
-explanation. Same class of problem deserves the same affordance.
-"""
-
-PRINTER_TIMEOUT_MESSAGE = (
-    "Could not reach the print spooler -- printing is unavailable. "
-    "Saving a PDF still works."
-)
-"""Shown instead of :data:`NO_PRINTERS_MESSAGE` when enumeration timed out.
-
-The UI *state* is identical (Print disabled, Save PDF untouched), but the
-cause is not, and "no printers installed" is actively misleading to someone
-who is looking straight at their printer."""
 
 # Used to seed PreviewView before any printer/profile has been chosen -- the
 # same fallback resolve_profile() reaches for when a printer has no saved
@@ -167,239 +158,6 @@ def profile_for_printers(
         return fallback
     return resolve_profile(chosen, profile_loader)
 
-PRINTER_QUERY_TIMEOUT_MS = 5000
-"""How long to wait for printer enumeration before giving up on it.
-
-Enumeration measures ~21ms with the network up. Five seconds is two orders
-of magnitude of headroom for a slow-but-working spooler, and still short
-enough that a user staring at "Checking for printers..." does not conclude
-the app has hung -- which, for 81 minutes on this machine during a network
-outage, it had.
-"""
-
-
-class _PrinterQueryWorker:
-    """Enumerates printers on a background thread.
-
-    Plain class, not a ``QObject`` -- same shape as ``ThumbnailWorker`` and
-    ``PreviewWorker``. Exists because printer enumeration can block for the
-    OS spooler's timeout when a network printer is unreachable.
-
-    :ivar names: the enumerated printer names, or an empty list if
-        enumeration failed. Read only after the thread finishes.
-    :ivar imageable_areas: what each driver said its non-printable border
-        is, keyed by printer name. A printer that declined to answer is
-        absent rather than present with a zero -- see
-        :mod:`deckle.app.printer_capabilities`. Read only after the thread
-        finishes.
-    """
-
-    def __init__(self) -> None:
-        self.names: list[str] = []
-        self.imageable_areas: dict[str, tuple[float, float, float, float]] = {}
-
-    def run(self) -> None:
-        """Enumerate printers into :attr:`names`, then ask each its border.
-
-        :returns: nothing, and never raises. A spooler failure degrades to
-            an empty list -- the app is fully usable for Save PDF with no
-            printers at all -- and is recorded, because "the printer list
-            was empty" is otherwise a support report with nothing behind it.
-        """
-        try:
-            self.names = available_printer_names()
-        except Exception as exc:  # noqa: BLE001 -- degraded, not fatal
-            # A spooler failure must not take the window down; the app is
-            # fully usable for Save PDF with no printers at all. Record why,
-            # though: "the printer list was empty" is otherwise a support
-            # report with nothing behind it.
-            log_exception("printer_enumeration_failed", exc)
-            self.names = []
-            return
-
-        # On this thread and inside the same deadline, because it is
-        # another call into the same spooler. A `try` per printer rather
-        # than one around the loop, so a single unreachable network queue
-        # does not cost the margins of every other printer.
-        for name in self.names:
-            try:
-                area = query_imageable_area_pt(name)
-            except Exception as exc:  # noqa: BLE001 -- degraded, not fatal
-                log_exception("printer_imageable_query_failed", exc, printer=name)
-                continue
-            if area is not None:
-                self.imageable_areas[name] = area
-
-
-class _PrinterQuery:
-    """Arbitrates one enumeration between its worker and a deadline.
-
-    Moving enumeration onto a background thread stopped it freezing the UI,
-    but it did not bound it: ``QPrinterInfo.availablePrinters()`` blocks
-    inside the OS spooler and there is no way to interrupt it. A worker
-    thread that never returns is still a hang -- it has only moved where.
-    So the query is settled by whichever comes first, the worker's answer
-    or the deadline, and only once.
-
-    On timeout the app proceeds exactly as it does with no printers
-    installed: Print disabled, Save PDF untouched, and a log line saying
-    which way it went. A late answer from a thread that eventually
-    unblocks is discarded rather than re-enabling Print underneath a user
-    who has since moved on -- and the abandoned thread is left to finish
-    on its own, because killing a thread parked in a driver call is worse
-    than leaking one.
-
-    :param worker: the enumeration worker to read an answer from.
-    :param apply_result: called with ``(names)`` or
-        ``(names, message)`` once the query settles, on the UI thread.
-    :param timeout_ms: the deadline.
-    :ivar settled: whether either outcome has already been applied.
-    :ivar timed_out: whether the deadline, rather than the worker, settled
-        it.
-    """
-
-    def __init__(self, worker: _PrinterQueryWorker, apply_result, timeout_ms: int) -> None:
-        self._worker = worker
-        self._apply = apply_result
-        self.timeout_ms = timeout_ms
-        self.settled = False
-        self.timed_out = False
-
-    def complete(self) -> None:
-        """Settle with the worker's names. Ignored if already settled.
-
-        :returns: nothing. A late answer from a thread that eventually
-            unblocks is logged and discarded rather than re-enabling Print
-            underneath a user who has since moved on.
-        """
-        if self.settled:
-            log_event(
-                "printer_enumeration_late_result",
-                count=len(self._worker.names),
-                timeout_ms=self.timeout_ms,
-            )
-            return
-        self.settled = True
-        names = list(self._worker.names)
-        if not names:
-            # Zero printers is a legitimate, fully supported state -- but it
-            # is indistinguishable at the UI from a spooler that failed, so
-            # say which happened.
-            log_event("printer_enumeration_empty", reason="spooler returned no printers")
-        else:
-            log_event("printer_enumeration_completed", count=len(names))
-        self._apply(names, None, dict(self._worker.imageable_areas))
-
-    def time_out(self) -> None:
-        """Settle as "no printers found". Ignored if already settled.
-
-        :returns: nothing. The app then behaves exactly as it does with no
-            printers installed, but says :data:`PRINTER_TIMEOUT_MESSAGE`
-            instead -- "no printers installed" is actively misleading to
-            someone looking straight at their printer.
-        """
-        if self.settled:
-            return
-        self.settled = True
-        self.timed_out = True
-        log_event(
-            "printer_enumeration_timeout",
-            level=logging.WARNING,
-            timeout_ms=self.timeout_ms,
-            reason="spooler did not answer before the deadline",
-        )
-        # An empty dict, never a half-filled one: the worker is still
-        # running and may be mid-loop, and margins for some printers and
-        # not others is a state nothing downstream is written to expect.
-        self._apply([], PRINTER_TIMEOUT_MESSAGE, {})
-
-
-def _single_shot(interval_ms: int, callback) -> None:
-    """Fire ``callback`` on the UI thread after ``interval_ms``.
-
-    A thin, patchable seam over ``QTimer`` for the same reason
-    :func:`available_printer_names` is one: the timeout logic has to be
-    testable without an event loop.
-    """
-    from PySide6.QtCore import QTimer
-
-    QTimer.singleShot(interval_ms, callback)
-
-
-def _new_thread(parent):
-    """A ``QThread`` parented to ``parent``. Patchable seam, as above."""
-    from PySide6.QtCore import QThread
-
-    return QThread(parent)
-
-
-def _live_threads(view) -> list:
-    """Every render thread ``view`` still has alive, current or superseded.
-
-    ``view._thread`` is only the LATEST one. Both views replace it every
-    time a render is superseded -- scrubbing sheets, churning the arrange
-    grid -- so reading that attribute alone reports one thread while
-    several are running.
-
-    That was the whole of the shutdown flakiness. Quitting mid-render
-    crashed about one run in four with ``0xC0000409`` and no Python
-    traceback, and every crashing run was measured to have threads still
-    running after ``close()`` returned, while every clean run had none.
-    A superseded worker is cancelled the moment it is replaced, so
-    cancellation was never the gap; nobody waited for it to notice, and a
-    render still inside pdfium when the interpreter finalises takes the
-    process down with it.
-
-    Threads are parented to the view's widget precisely so they cannot
-    leak, which makes the widget's own child list the authoritative
-    register -- no second bookkeeping to drift out of sync with it.
-    ``_thread`` is still consulted first: tests inject a fake thread that
-    is not a real ``QObject`` and so is not a child of anything.
-
-    :param view: a view exposing ``_thread`` and/or a ``widget``.
-    :returns: the threads, current first, each appearing once. Includes
-        threads that have already finished -- waiting on one of those
-        returns immediately, and filtering them here would race with them
-        finishing between the check and the wait.
-    """
-    from PySide6.QtCore import QThread
-
-    threads: list = []
-    seen: set[int] = set()
-
-    current = getattr(view, "_thread", None)
-    if current is not None:
-        threads.append(current)
-        seen.add(id(current))
-
-    widget = getattr(view, "widget", None)
-    finder = getattr(widget, "findChildren", None)
-    if finder is not None:
-        for child in finder(QThread):
-            if id(child) not in seen:
-                threads.append(child)
-                seen.add(id(child))
-    return threads
-
-
-def available_printer_names() -> list[str]:
-    """The names of printers Qt currently knows about.
-
-    A thin, patchable seam over ``QPrinterInfo`` so callers (and tests)
-    don't need a real printer attached -- an empty list is a normal,
-    expected result, not an error.
-
-    :returns: the printer names Qt reports.
-    :raises Exception: whatever the Qt/spooler call raises. Callers wrap
-        this in :class:`_PrinterQueryWorker`, which is where the
-        degrade-to-empty decision lives -- it is deliberately not made
-        here, so a caller that wants the real failure can have it.
-    """
-    from PySide6.QtPrintSupport import QPrinterInfo
-
-    return [info.printerName() for info in QPrinterInfo.availablePrinters()]
-
-
 def default_project() -> Project:
     """An empty project for a freshly launched window.
 
@@ -424,58 +182,6 @@ def _qt_vertical():
     from PySide6.QtCore import Qt
 
     return Qt.Orientation.Vertical
-
-
-def autosave_recovery_offer(project_path: str | None) -> str | None:
-    """The autosave worth offering back, or ``None`` to stay silent.
-
-    Autosave has been written on every edit and flushed on close since the
-    beginning, and nothing ever offered it back -- the file was a corpse.
-    This is the decision that changes that, kept pure and out of the
-    dialog so it can be tested without a display.
-
-    **Detection cannot be "does the file exist".** ``_on_close_event``
-    flushes the autosave, so it exists after every clean quit. It is
-    *mtime*: offer when the autosave is newer than the project.
-
-    That rule is chosen for the crash case and gets close-without-saving
-    right as a consequence -- those edits are real, the user declined to
-    save them, and offering them back is correct rather than a false
-    positive. Saving makes the project newer, which is what stops the
-    prompt appearing on every open.
-
-    Ties go to silence. A spurious prompt teaches someone to dismiss
-    prompts, which costs more than the rare recovery it would offer.
-
-    :param project_path: where the project lives, or ``None`` for one
-        that has never been saved and so has no autosave.
-    :returns: the autosave path, or ``None``.
-    """
-    autosave_path = autosave_path_for(project_path)
-    if autosave_path is None or not os.path.isfile(autosave_path):
-        return None
-    try:
-        autosave_time = os.path.getmtime(autosave_path)
-    except OSError:
-        return None
-    try:
-        project_time = os.path.getmtime(project_path)
-    except OSError:
-        # The project is gone and the autosave is not. That is the case
-        # where recovery matters most, not a reason to discard the only
-        # remaining copy of the work.
-        return autosave_path
-    return autosave_path if autosave_time > project_time else None
-
-
-def _recent_label(path: str) -> str:
-    """A menu label for a recent project: its name, then its folder.
-
-    Two projects called ``book.deckle`` in different folders are a normal
-    thing to have, and a list showing the same word twice would be worse
-    than no list.
-    """
-    return f"{os.path.basename(path)}  --  {os.path.dirname(path)}"
 
 
 PROJECT_SUFFIX = ".deckle"
@@ -533,22 +239,6 @@ def classify_drop(paths: Sequence[str], is_dir=os.path.isdir) -> Drop | None:
     if path.lower().endswith(DROPPABLE_SOURCE_SUFFIXES):
         return Drop(kind="source", path=path)
     return None
-
-
-def suggested_pass_export_name(source_name: str, side: str) -> str:
-    """The filename for a one-pass export of ``source_name``.
-
-    ``book-deckle.pdf`` becomes ``book-deckle-front.pdf``. The side is in
-    the name because the two files are indistinguishable once they leave
-    this machine -- the whole point of the feature is handing them to a
-    copy shop -- and printing the back pass first ruins the stack.
-
-    :param source_name: the name a whole-document export would get.
-    :param side: ``"front"`` or ``"back"``.
-    :returns: the suggested filename.
-    """
-    stem, ext = os.path.splitext(source_name)
-    return f"{stem}-{side}{ext or '.pdf'}"
 
 
 def _open_folder(path: str) -> bool:
@@ -1296,23 +986,11 @@ class MainWindow:
         """Ask about unsaved work, and act on the answer.
 
         :param action: what is about to happen, as a phrase that completes
-            "Save them before ...?" -- ``"closing"``, ``"opening another
-            project"``.
-        :returns: whether to go ahead. ``False`` means the user cancelled,
-            or asked to save and the save did not happen -- a failed save
-            must not be followed by the discard it was meant to prevent.
+            "Save them before ...?".
+        :returns: whether to go ahead. See
+            :func:`deckle.app.project_actions.confirm_discard`.
         """
-        if not self.has_unsaved_changes():
-            return True
-        path = self.state.project_path
-        name = os.path.basename(path) if path else UNTITLED_PROJECT_NAME
-        answer = self.confirm_discard_changes(name, action)
-        if answer == "cancel":
-            return False
-        if answer == "discard":
-            log_event("unsaved_changes_discarded", pages=len(self.state.project.pages))
-            return True
-        return self.save_project()
+        return project_actions.confirm_discard(self, action)
 
     def _default_confirm_discard_changes(self, name: str, action: str) -> str:
         """Ask whether to save, discard or stay. Replaceable for tests.
@@ -1438,17 +1116,10 @@ class MainWindow:
     def suggested_export_name(self) -> str:
         """A default filename derived from the first imported source.
 
-        ``book.pdf`` imposed becomes ``book-deckle.pdf`` -- never the source
-        name itself, so a careless Save can't overwrite the input.
-
-        :returns: the suggested filename, or ``"deckle-output.pdf"`` when
-            nothing has been imported yet.
+        :returns: the suggested filename. See
+            :func:`deckle.app.exporting.suggested_export_name`.
         """
-        pages = self.state.project.pages
-        if not pages:
-            return "deckle-output.pdf"
-        stem = os.path.splitext(os.path.basename(pages[0].ref.path))[0]
-        return f"{stem}-deckle.pdf"
+        return exporting.suggested_export_name(self.state.project.pages)
 
     def _install_shortcuts(self) -> None:
         """Bind Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z) to the history.
@@ -1514,108 +1185,20 @@ class MainWindow:
     def _recover_autosave_if_offered(self, path: str, project: Project) -> Project:
         """Offer a newer autosave in place of the project just loaded.
 
-        Autosave was written on every edit and flushed on close and never
-        offered back. This is where it stops being a corpse.
-
-        Declining **deletes** the autosave. Leaving it would bring the
-        prompt back on every subsequent open, which trains someone to
-        dismiss it -- and the one that matters is the one they then
-        dismiss without reading.
-
-        A failure to load the autosave leaves the project as it was: the
-        recovery file is the damaged one by definition here, so falling
-        back to the saved project is the safe direction.
-
         :param path: the project file just opened.
         :param project: what was loaded from it.
-        :returns: the recovered project, or ``project`` unchanged.
+        :returns: the recovered project, or ``project`` unchanged. See
+            :func:`deckle.app.project_actions.recover_autosave_if_offered`.
         """
-        autosave_path = autosave_recovery_offer(path)
-        if autosave_path is None:
-            return project
-        if not self.confirm_recovery(os.path.basename(path)):
-            try:
-                os.remove(autosave_path)
-            except OSError as exc:  # noqa: BLE001 -- declined, never fatal
-                log_exception("autosave_discard_failed", exc, path=autosave_path)
-            return project
-        try:
-            recovered = load_project(
-                autosave_path, allowed_roots=(os.path.dirname(path),)
-            )
-        except Exception as exc:  # noqa: BLE001 -- reported, never a crash
-            self.status_bar.showMessage(
-                f"Could not read the recovered changes for "
-                f"{os.path.basename(path)}: {exc}"
-            )
-            log_exception("autosave_recovery_failed", exc, path=autosave_path)
-            return project
-        log_event("autosave_recovered", path=path, pages=len(recovered.pages))
-        return recovered
+        return project_actions.recover_autosave_if_offered(self, path, project)
 
     def _offer_unsaved_recovery(self) -> None:
         """Offer back work from a session that never got as far as Save.
 
-        :returns: nothing, and never raises. A recovery store that cannot
-            be read must not be what stops a window opening.
-
-        **Declining deletes nothing.** ``_recover_autosave_if_offered``
-        deletes on decline because the work also exists in the user's own
-        ``.deckle``; here it does not -- this file is the only copy -- so a
-        mis-click must not be destructive. ``UNSAVED_AUTOSAVE_MAX_AGE_S``
-        and ``UNSAVED_AUTOSAVE_KEEP`` are what stop the list growing
-        instead.
+        :returns: nothing, and never raises. See
+            :func:`deckle.app.project_actions.offer_unsaved_recovery`.
         """
-        offers = unsaved_autosave_offers()
-        if not offers:
-            return
-        chosen = self.confirm_unsaved_recovery(offers)
-        if chosen is None:
-            return
-        try:
-            # `check_sources=False` for the same reason
-            # `unsaved_autosave_offers` reads the JSON directly: a source
-            # that has moved raises `SourceMissingError`, and a moved
-            # source is exactly when this recovery matters most. There is
-            # no other copy of the arrangement to fall back on, so
-            # refusing to load it would be refusing the whole feature at
-            # the moment it is needed. Thumbnails degrade to placeholders
-            # and the import view can point at the file again.
-            #
-            # `on_outside_roots` returns True rather than passing
-            # `allowed_roots`: the sources of an unsaved project are
-            # wherever the user imported from, and there is no project
-            # directory to reason from.
-            project = load_project(
-                chosen.path,
-                check_sources=False,
-                on_outside_roots=lambda _path, _roots: True,
-            )
-        except Exception as exc:  # noqa: BLE001 -- a window is opening
-            self.status_bar.showMessage(f"Could not read the recovered work: {exc}")
-            log_exception(
-                "unsaved_autosave_recovery_failed", exc, path=chosen.path
-            )
-            return
-        clear_sheet_cache()
-        # `project_path=None` deliberately: the work is still unsaved, and
-        # the new `AppState` re-derives the same key from the same sources,
-        # so continuing to edit keeps writing to the same file.
-        self.state = AppState(project, project_path=None)
-        self.import_view.state = self.state
-        self.arrange_view.state = self.state
-        self.layout_panel.state = self.state
-        self.arrange_view.refresh()
-        self.layout_panel.refresh_from_project()
-        self._on_pages_changed()
-        self.status_bar.showMessage(
-            f"Recovered {len(project.pages)} unsaved page(s)."
-        )
-        log_event(
-            "unsaved_autosave_recovered",
-            path=chosen.path,
-            pages=len(project.pages),
-        )
+        project_actions.offer_unsaved_recovery(self)
 
     def _default_confirm_unsaved_recovery(self, offers):
         """Ask which unsaved session to pick up, if any.
@@ -1656,52 +1239,18 @@ class MainWindow:
     def _refresh_recent_menu(self) -> None:
         """Rebuild the Recent projects menu from the store.
 
-        Rebuilt rather than appended to, so an entry cannot appear twice
-        after a project is reopened and so a file that has since gone
-        drops out without any bookkeeping to keep in step.
-
-        :returns: nothing, and never raises. A convenience menu that
-            could not be built must not be what stops the window opening.
+        :returns: nothing, and never raises. See
+            :func:`deckle.app.project_actions.refresh_recent_menu`.
         """
-        menu = getattr(self, "_recent_menu", None)
-        if menu is None:
-            return
-        try:
-            menu.clear()
-            paths = recent.existing()
-            for path in paths:
-                action = menu.addAction(_recent_label(path))
-                action.setToolTip(path)
-                action.triggered.connect(
-                    lambda _checked=False, target=path: self.open_project_with_prompt(
-                        target
-                    )
-                )
-            menu.setEnabled(bool(paths))
-        except Exception as exc:  # noqa: BLE001 -- convenience, never fatal
-            log_exception("recent_menu_refresh_failed", exc)
+        project_actions.refresh_recent_menu(self)
 
     def open_project_dialog(self) -> None:
         """Open a saved project, replacing whatever is loaded.
 
-        :returns: nothing. Every failure is reported in the status bar; a
-            project that cannot be opened leaves the current one alone
-            rather than half-replacing it.
+        :returns: nothing. See
+            :func:`deckle.app.project_actions.choose_and_open_project`.
         """
-        from PySide6.QtWidgets import QFileDialog
-
-        # Start where the last project came from. An empty string here
-        # meant every open began wherever the OS thought best, which is
-        # rarely the folder holding the job you are working on.
-        path, _ = QFileDialog.getOpenFileName(
-            self.window,
-            "Open project",
-            recent.last_directory(),
-            "Deckle projects (*.deckle)",
-        )
-        if not path:
-            return
-        self.open_project_with_prompt(path)
+        project_actions.choose_and_open_project(self)
 
     def open_project_with_prompt(self, path: str) -> bool:
         """Open ``path``, offering to save the document it replaces.
@@ -1709,145 +1258,32 @@ class MainWindow:
         :param path: the ``.deckle`` to open.
         :returns: whether it opened.
         """
-        if not self._confirm_discard("opening another project"):
-            return False
-        return self.open_project(path)
+        return project_actions.open_project_with_prompt(self, path)
 
     def open_project(self, path: str) -> bool:
         """Load ``path`` into the window.
 
         :param path: the ``.deckle`` to open.
-        :returns: whether it opened.
-
-        Separated from the dialog so the whole flow is drivable without a
-        modal -- the same seam ``PrintDialog`` uses.
-
-        The two ways a project outlives its sources are reported
-        differently on purpose. A missing file is obvious once named. A
-        source that still exists but has CHANGED is the dangerous one:
-        nothing looks wrong, and imposing it would use content the user has
-        never reviewed.
+        :returns: whether it opened. See
+            :func:`deckle.app.project_actions.open_project`.
         """
-        try:
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                # Sources normally live somewhere other than the project --
-                # Downloads, a scanner folder. Without swallowing the
-                # advisory, Python prints a bare warning naming a line
-                # inside Deckle, which tells the user nothing they can act
-                # on. The containment check still runs; only its rendering
-                # changes.
-                project = load_project(path, allowed_roots=(os.path.dirname(path),))
-            for warning in caught:
-                if issubclass(warning.category, PathOutsideRootsAdvisory):
-                    log_event("project_source_outside_roots", path=path,
-                              detail=str(warning.message))
-        except SourceMissingError as exc:
-            self.status_bar.showMessage(
-                f"Cannot open {os.path.basename(path)}: a source file is "
-                f"missing -- {exc.expected_path}."
-            )
-            log_exception("project_source_missing", exc, path=path)
-            return False
-        except SourceChangedWarning as exc:
-            self.status_bar.showMessage(
-                f"Cannot open {os.path.basename(path)}: {os.path.basename(exc.path)} "
-                "has changed since the project was saved. Re-import it to "
-                "accept the new version."
-            )
-            log_exception("project_source_changed", exc, path=path)
-            return False
-        except Exception as exc:  # noqa: BLE001 -- reported, never a crash
-            self.status_bar.showMessage(f"Cannot open {os.path.basename(path)}: {exc}")
-            log_exception("project_open_failed", exc, path=path)
-            return False
-
-        loaded = project
-        project = self._recover_autosave_if_offered(path, project)
-        recovered = project is not loaded
-
-        recent.record(path)
-        self._refresh_recent_menu()
-        # The outgoing project's cached sheet renders are unreachable the
-        # moment the plan changes -- their key is the plan hash -- so they
-        # are dead weight in temp until something removes them. Removed
-        # here rather than only at exit, because scrubbing one long
-        # document and then opening another is an ordinary session.
-        clear_sheet_cache()
-        # The outgoing AppState is about to become unreachable while it is
-        # still holding up to `autosave_delay_s` of edits behind a debounce
-        # timer, and dropping the reference does not cancel that timer.
-        # Both halves of that are bugs. The user loses the last half-second
-        # of work on the project they are leaving -- the interval autosave
-        # exists to protect -- and the orphaned daemon timer then fires
-        # against the *old* project and writes it to the old project's
-        # autosave, minutes after the user moved on, so the next open of
-        # that project offers back a file whose mtime says "you crashed".
-        #
-        # Flushing does both jobs at once: it cancels the timer and writes
-        # what the timer was holding. Same call `close()` makes, for the
-        # same reason -- swapping the project out is a close as far as the
-        # outgoing state is concerned.
-        #
-        # After `_recover_autosave_if_offered`, not before: the offer is
-        # decided on the autosave's mtime, and flushing first would make
-        # reopening the currently-loaded project always look like a crash.
-        self._flush_outgoing_state()
-        self.state = AppState(project, project_path=path)
-        self.import_view.state = self.state
-        self.arrange_view.state = self.state
-        self.layout_panel.state = self.state
-        self.arrange_view.refresh()
-        self.layout_panel.refresh_from_project()
-        self._on_pages_changed()
-        # A project just read off disk is not modified. A recovered
-        # autosave is: that work exists nowhere but in memory until the
-        # user saves it, which is exactly what the marker is for -- and
-        # without this, accepting a recovery and closing the window would
-        # throw it away a second time.
-        if recovered:
-            self.state.mark_unsaved()
-        self._sync_title()
-        self.status_bar.showMessage(
-            f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s)."
-        )
-        log_event("project_opened", path=path, pages=len(project.pages))
-        return True
+        return project_actions.open_project(self, path)
 
     def _flush_outgoing_state(self) -> None:
         """Write and disarm the ``AppState`` that is about to be replaced.
 
-        :returns: nothing, and never raises. An autosave that cannot be
-            written must not be what stops the user opening another
-            project -- they asked for the new project, and refusing it
-            would lose the new work as well as the old.
+        :returns: nothing, and never raises. See
+            :func:`deckle.app.project_actions.flush_outgoing_state`.
         """
-        try:
-            self.state.flush_autosave()
-        except OSError as exc:
-            log_exception(
-                "autosave_flush_failed", exc, path=self.state.autosave_path
-            )
+        project_actions.flush_outgoing_state(self)
 
     def save_project(self) -> bool:
         """Save the job back to the file it came from.
 
-        The Ctrl+S a person's hands already know: a project that has a
-        file writes to it without a dialog. One that has never been saved
-        has nowhere to go, so it falls through to
-        :meth:`save_project_as`.
-
-        :returns: whether the project was written. ``False`` covers a
-            cancelled dialog and a destination that could not be written,
-            because both leave the work unsaved -- and this answer is what
-            the close prompt uses to decide whether it may proceed.
+        :returns: whether the project was written. See
+            :func:`deckle.app.project_actions.save_project`.
         """
-        if not self.state.project.pages:
-            self.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
-            return False
-        if self.state.project_path is None:
-            return self.save_project_as()
-        return self._write_project(self.state.project_path)
+        return project_actions.save_project(self)
 
     def save_project_as(self) -> bool:
         """Ask where to save the job, and save it there.
@@ -1855,206 +1291,22 @@ class MainWindow:
         :returns: whether the project was written; ``False`` for a
             cancelled dialog.
         """
-        from PySide6.QtWidgets import QFileDialog
-
-        if not self.state.project.pages:
-            self.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
-            return False
-
-        source = self.state.project.pages[0].ref.path
-        suggested = self.state.project_path or os.path.join(
-            os.path.dirname(source) or os.getcwd(),
-            os.path.splitext(os.path.basename(source))[0] + ".deckle",
-        )
-        path, _ = QFileDialog.getSaveFileName(
-            self.window, "Save project", suggested, "Deckle projects (*.deckle)"
-        )
-        if not path:
-            return False
-        if not path.lower().endswith(".deckle"):
-            path += ".deckle"
-        return self._write_project(path)
-
-    def _write_project(self, path: str) -> bool:
-        """Write the project to ``path`` and record that it is saved.
-
-        :param path: where to write.
-        :returns: whether it was written. Uses the same wording as the CLI
-            for a destination it cannot write -- see
-            :mod:`deckle.core.outputs`.
-        """
-        problem = output_path_problem(path)
-        if problem is not None:
-            self.status_bar.showMessage(problem)
-            log_event("project_path_rejected", path=path, detail=problem)
-            return False
-
-        try:
-            save_project(self.state.project, path)
-        except OSError as exc:
-            self.status_bar.showMessage(describe_write_failure(path, exc))
-            log_exception("project_write_failed", exc, path=path)
-            return False
-        self.state.project_path = path
-        # The work now exists in a file the user named, so the never-saved
-        # copy under `data_dir("autosave")` would only be an offer to
-        # recover something they already have. Re-derives the key from the
-        # current pages, which the save did not change.
-        self.state.discard_unsaved_autosave()
-        # This, and only this, is what clears the modified marker. An
-        # autosave does not: it writes `<project>.autosave` precisely so it
-        # never touches the file the user named, and treating it as a save
-        # would stop the window saying "unsaved" while the user's own file
-        # was still stale.
-        self.state.mark_saved()
-        # Saving is how a project first comes into existence, so it
-        # belongs in the list as much as opening one does.
-        recent.record(path)
-        self._refresh_recent_menu()
-        self._sync_title()
-        self.status_bar.showMessage(f"Saved project to {path}")
-        log_event("project_saved", path=path, pages=len(self.state.project.pages))
-        return True
+        return project_actions.save_project_as(self)
 
     def save_pdf(self) -> None:
-        from PySide6.QtWidgets import QFileDialog
+        """Write the imposed document the preview is showing.
 
-        if not self.state.project.pages:
-            # Defensive: the button is disabled in this state. Never open a
-            # save dialog for a document that does not exist.
-            self.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
-            return
-
-        start_dir = os.path.dirname(self.state.project.pages[0].ref.path) or os.getcwd()
-        path, _ = QFileDialog.getSaveFileName(
-            self.window,
-            "Save imposed PDF",
-            os.path.join(start_dir, self.suggested_export_name()),
-            "PDF files (*.pdf)",
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".pdf"):
-            path += ".pdf"
-
-        # Check the destination before doing any work, and say the same
-        # thing the CLI says -- one document, two front ends, one
-        # explanation. `deckle.core.outputs` owns the wording.
-        source = self.state.project.pages[0].ref.path
-        problem = output_path_problem(path, source)
-        if problem is not None:
-            self.status_bar.showMessage(problem)
-            log_event("output_path_rejected", path=path, detail=problem)
-            return
-
-        plan = self.preview_view.plan
-        sheets = len(plan.sheets)
-        self.status_bar.showMessage(f"Exporting {sheets} sheet(s) to {os.path.basename(path)}...")
-        try:
-            export(plan, path)
-        except OSError as exc:
-            # The common failures are all OSError and all explainable: the
-            # file is open in a viewer, the drive went away, the disk is
-            # full. Anything else is a bug and should still surface as one.
-            message = describe_write_failure(path, exc)
-            self.status_bar.showMessage(message)
-            log_exception("output_write_failed", exc, path=path)
-            return
-        except Exception as exc:  # noqa: BLE001 -- surfaced, never swallowed
-            self.status_bar.showMessage(f"Export failed: {exc}")
-            log_exception("export_failed", exc, path=path)
-            return
-        self.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
+        :returns: nothing. See :func:`deckle.app.exporting.save_pdf_as`.
+        """
+        exporting.save_pdf_as(self)
 
     def export_single_pass(self) -> None:
         """Write one pass -- fronts or backs -- as its own PDF.
 
-        For printing somewhere that is not this machine: a copy shop, a
-        second computer, a friend's laser. Deckle's manual duplex is two
-        passes through a printer with a reload in between, and the CLI has
-        been able to write one of them (``--pass front``) since the
-        beginning while the app could only ever write the whole document.
-        Someone taking a job out of the house had no way to produce the two
-        files they needed.
-
-        The pass comes from :func:`deckle.core.printing.pass_export`, which
-        is the same function the CLI calls -- the sheet order and the half
-        turn are the profile's answer, not this method's, and a second
-        implementation of them would be free to disagree with the first
-        while both looked right.
-
-        The reload instruction goes in the status bar and is worth reading:
-        the file is going to be printed by someone who has never seen
-        Deckle, and it is the sentence that decides whether the backs land
-        on the right fronts.
-
-        :returns: nothing. Every failure is reported in the status bar.
+        :returns: nothing. See
+            :func:`deckle.app.exporting.export_single_pass`.
         """
-        from PySide6.QtWidgets import QFileDialog
-
-        if not self.state.project.pages:
-            self.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
-            return
-
-        side = self.choose_export_pass()
-        if side is None:
-            return
-
-        plan = self.preview_view.plan
-        # The profile the window is already drawing against -- the selected
-        # printer's calibration when it has one. Exporting a pass against a
-        # different profile from the one on screen would be the same lie
-        # B16 was about.
-        export_pass = pass_export(plan, self.profile, side)
-
-        start_dir = os.path.dirname(self.state.project.pages[0].ref.path) or os.getcwd()
-        suggested = suggested_pass_export_name(self.suggested_export_name(), side)
-        path, _ = QFileDialog.getSaveFileName(
-            self.window,
-            f"Save {side} pass",
-            os.path.join(start_dir, suggested),
-            "PDF files (*.pdf)",
-        )
-        if not path:
-            return
-        if not path.lower().endswith(".pdf"):
-            path += ".pdf"
-
-        source = self.state.project.pages[0].ref.path
-        problem = output_path_problem(path, source)
-        if problem is not None:
-            self.status_bar.showMessage(problem)
-            log_event("output_path_rejected", path=path, detail=problem)
-            return
-
-        try:
-            export(
-                plan,
-                path,
-                sheets=export_pass.sheets,
-                side=export_pass.side,
-                rotate_180=export_pass.rotate_180,
-                back_offset_pt=export_pass.back_offset_pt,
-            )
-        except OSError as exc:
-            message = describe_write_failure(path, exc)
-            self.status_bar.showMessage(message)
-            log_exception("pass_write_failed", exc, path=path, side=side)
-            return
-        except Exception as exc:  # noqa: BLE001 -- surfaced, never swallowed
-            self.status_bar.showMessage(f"Export failed: {exc}")
-            log_exception("pass_export_failed", exc, path=path, side=side)
-            return
-        self.status_bar.showMessage(
-            f"Saved the {side} pass ({len(export_pass.sheets)} sheet(s)) to "
-            f"{path} -- {export_pass.reload_instruction}"
-        )
-        log_event(
-            "pass_exported",
-            path=path,
-            side=side,
-            sheets=len(export_pass.sheets),
-        )
+        exporting.export_single_pass(self)
 
     def _default_choose_export_pass(self) -> str | None:
         """Ask which pass to write. Replaceable for tests.
@@ -2116,51 +1368,20 @@ class MainWindow:
     def stop_background_work(self, timeout_ms: int = 5000) -> None:
         """Cancel in-flight renders and wait for their threads to finish.
 
-        Nothing did this, so quitting mid-render left preview and thumbnail
-        threads running into interpreter teardown -- where they called
-        pdfium after it had been finalised and took the process down with
-        an access violation. The user sees a crash on exit, on the one
-        action that is supposed to be safe.
-
-        Both workers already support cancellation; they simply were never
-        asked, and nobody waited.
-
+        The three views that rasterise off-thread, named here rather than
+        inside :func:`deckle.app.shutdown.stop_background_work`, because
+        which views a window has is the window's own business.
         ``layout_panel`` joined the list when the Crop & trim tab started
-        compositing the document off-thread (N11). A third render source
-        that is not on this list is the exact shutdown crash
-        :func:`_live_threads` was written for.
+        compositing the document off-thread (N11).
 
-        :param timeout_ms: how long to wait per thread. A render that
-            ignores cancellation must not hang the quit -- a stuck thread
-            is a worse outcome than an abandoned one, and the wait is
-            bounded for that reason.
-        :returns: nothing. Never raises: this runs while the app is
-            closing, and an exception here would replace a clean exit with
-            the crash it exists to prevent.
+        :param timeout_ms: how long to wait per thread.
+        :returns: nothing. Never raises -- see
+            :func:`deckle.app.shutdown.stop_background_work`.
         """
-        for view in (self.preview_view, self.arrange_view, self.layout_panel):
-            try:
-                worker = getattr(view, "_worker", None)
-                if worker is not None:
-                    worker.cancel.set()
-            except Exception as exc:  # pragma: no cover - defensive
-                log_exception("shutdown_cancel_failed", exc)
-
-        for view in (self.preview_view, self.arrange_view, self.layout_panel):
-            try:
-                # Every live thread, not just `view._thread` -- see
-                # `_live_threads`. Waiting only for the current one left
-                # superseded renders running into interpreter teardown,
-                # which is the crash this method exists to prevent.
-                for thread in _live_threads(view):
-                    if thread.isRunning():
-                        if not thread.wait(timeout_ms):
-                            log_event(
-                                "shutdown_thread_timeout",
-                                view=type(view).__name__,
-                            )
-            except Exception as exc:  # pragma: no cover - defensive
-                log_exception("shutdown_wait_failed", exc)
+        shutdown.stop_background_work(
+            (self.preview_view, self.arrange_view, self.layout_panel),
+            timeout_ms,
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

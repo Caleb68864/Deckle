@@ -35,7 +35,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 app = QApplication([])
 import deckle.app.main as am
-am.available_printer_names = lambda: []
+import deckle.app.shutdown as sd
+import deckle.app.printer_query as pq
+pq.available_printer_names = lambda: []
 am.MainWindow.refresh_printers = (
     lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
 )
@@ -70,7 +72,7 @@ elif how == "stop_only":
         name
         for name, view in (("preview", window.preview_view),
                            ("thumbnails", window.arrange_view))
-        for t in am._live_threads(view)
+        for t in sd.live_threads(view)
         if t.isRunning()
     ]
     print("still running:", running)
@@ -207,14 +209,14 @@ class _FakeView:
 
 
 def test_live_threads_includes_superseded_ones_not_just_the_current():
-    from deckle.app.main import _live_threads
+    from deckle.app.shutdown import live_threads
 
     current = _FakeThread()
     superseded_a = _FakeThread()
     superseded_b = _FakeThread()
     view = _FakeView(current, [superseded_a, current, superseded_b])
 
-    found = _live_threads(view)
+    found = live_threads(view)
 
     assert current in found
     assert superseded_a in found
@@ -225,28 +227,28 @@ def test_live_threads_reports_each_thread_once():
     """The current thread is also a child of the widget, so a naive union
     would wait on it twice -- harmless, but it would make the count a lie
     for anything that reads it."""
-    from deckle.app.main import _live_threads
+    from deckle.app.shutdown import live_threads
 
     current = _FakeThread()
     view = _FakeView(current, [current])
 
-    assert len(_live_threads(view)) == 1
+    assert len(live_threads(view)) == 1
 
 
 def test_live_threads_survives_a_view_with_no_widget():
-    from deckle.app.main import _live_threads
+    from deckle.app.shutdown import live_threads
 
     class _Bare:
         _thread = None
 
-    assert _live_threads(_Bare()) == []
+    assert live_threads(_Bare()) == []
 
 
 # -- the composite thread joins the list ---------------------------------
 #
 # `stop_background_work` iterates a hard-coded set of views. The Crop &
 # trim tab started rendering off-thread (N11), and a third render source
-# that is not on that list is the exact shutdown crash `_live_threads`
+# that is not on that list is the exact shutdown crash `live_threads`
 # exists to prevent.
 
 
