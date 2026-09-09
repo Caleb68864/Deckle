@@ -77,10 +77,46 @@ def test_the_about_box_promises_nothing_that_touches_the_network():
     assert "never contacts the network" in text.lower()
 
 
-def test_asking_deckle_its_version_pulls_in_nothing_that_can_reach_out():
-    """The same shape as ``tests/test_core_purity.py``'s Qt check, for the
-    module the About box and ``--version`` are both built on: importing it
-    must not load a network stack."""
+def test_asking_deckle_its_version_never_dials_out(monkeypatch):
+    """The module promises it never reaches the network. Take the network
+    away and see whether it notices.
+
+    This replaced a census of ``sys.modules`` after importing the module.
+    The census was a proxy, and a leaky one: ``importlib.metadata`` reads
+    distribution metadata through ``email``, which pulls in ``urllib.parse``
+    and ``socket`` on Python 3.11 and 3.12 and not on 3.14 -- so it passed
+    on the interpreter it was written against and failed on both the others
+    the CI matrix pins. An imported module is not a request, and the
+    difference is the whole point: what is promised is that nothing here
+    *calls out*, not that a stdlib parser was never transitively loaded.
+
+    Sabotaging the socket is version-independent, and it fails for the right
+    reason -- an update check added to this module would trip it whatever it
+    was written with.
+    """
+    import socket
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("deckle.core.about tried to open a socket")
+
+    monkeypatch.setattr(socket, "socket", refuse)
+    monkeypatch.setattr(socket, "create_connection", refuse)
+    monkeypatch.setattr(socket, "getaddrinfo", refuse)
+
+    lines = about.version_lines()
+    text = about.about_text("/somewhere/diagnostics.jsonl")
+
+    assert lines, "the version report came back empty"
+    assert about.platform_line() in text
+
+
+def test_the_version_path_imports_no_network_client():
+    """The half of the old census that was worth keeping.
+
+    A stdlib parser arriving transitively is noise; ``requests`` arriving is
+    somebody having added a call. These names are third-party, so their
+    absence does not shift between interpreters the way ``urllib`` does.
+    """
     import subprocess
     import sys
 
@@ -90,7 +126,7 @@ def test_asking_deckle_its_version_pulls_in_nothing_that_can_reach_out():
             "-c",
             "import sys; import deckle.core.about; "
             "print([m for m in sys.modules if m.split('.')[0] in "
-            "{'urllib', 'http', 'socket', 'ssl', 'requests', 'httpx'}])",
+            "{'requests', 'httpx', 'aiohttp', 'urllib3'}])",
         ],
         capture_output=True,
         text=True,
