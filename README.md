@@ -254,6 +254,12 @@ On Windows, `.\run.bat` launches it. From a terminal the `.\` matters: cmd
 does not search the current directory. Double-clicking from Explorer works
 as-is.
 
+Drop a PDF on the window to start. `Ctrl+O`, `Ctrl+S` and `Ctrl+P` do what
+they do everywhere else; the rest of the menu bar is in the
+[GUIDE](docs/GUIDE.md). **Help → About Deckle** and **Help → Open diagnostics
+folder** are what a bug report is built from, and neither touches the network
+— Deckle has no update check.
+
 <!--
   SCREENSHOTS WANTED. None exist yet; no image is linked here on purpose,
   because a broken image on the front page is worse than none.
@@ -306,6 +312,9 @@ Organised the way the work happens.
   a typeset title page make one job. Natural filename ordering, EXIF
   orientation honoured, DPI inferred, images embedded losslessly via `img2pdf`.
   (One source per command on the CLI; assembling from several is the app's.)
+- Drag a PDF, an image folder or a `.deckle` project onto the window. A drop
+  onto a document that already has pages asks whether to add or replace,
+  rather than picking one for you
 - Metadata-only import, so a 300-page PDF opens without rasterising anything
 - Reorder, rotate, skip, and insert blanks anywhere, with undo bounded to 50
   steps and debounced autosave
@@ -344,9 +353,15 @@ Organised the way the work happens.
 
 - Save the imposed PDF, with a default filename of `<source>-deckle.pdf` so a
   careless save can never overwrite the input
+- Or save **one pass** — fronts or backs — as its own PDF, for printing at a
+  copy shop or on a second machine, with the reload instruction reported
+  alongside it
 - Or print it: manual-duplex pass splitting, per-printer profiles, a derived
   reload instruction, test-one-sheet before committing the run, chunked
   submission, and sheet-granular resume backed by a session log
+- **Proof sheet with a ruler** from the print dialog: one sheet, one measured
+  line, and no job. It is how you confirm on your own printer that an inch of
+  the design really is an inch of paper
 
 ### 6 · Take the schedule to the bench
 
@@ -415,7 +430,7 @@ app layer stays replaceable.
 deckle/core/    models, loader, layout, export, render, printing, profiles,
                 marks, schedule, signatures, print_session, plan_digest,
                 project_io, outputs, session_log, diagnostics,
-                paper, paths, locate, schema, recent, dummy
+                paper, paths, locate, schema, recent, dummy, about
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli.py   headless entry point, imports only deckle.core
 ```

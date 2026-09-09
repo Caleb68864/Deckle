@@ -570,10 +570,16 @@ draws that border in solid red, and a `clipped_by_imageable_area` warning
 names it specifically. If you see it, move your margins out; do not expect the
 printer to shrink the book for you.
 
-> Check it once, on your own printer: print a proof sheet with `--rule`, put a
-> ruler on it, and confirm the inch is an inch. If it is not, your *printer
-> driver* is scaling — look for "fit to page" or "shrink oversized pages" in
-> its dialog and turn it off.
+> Check it once, on your own printer. In the app, tick **Proof sheet only —
+> one sheet with a ruler** in the Print dialog and press Print: one sheet
+> comes out with a ruler of known length across it, and nothing else is
+> printed. At the shell it is `export --sheets 0 --rule`. Either way, put a
+> tape on the printed rule and confirm the inch is an inch. If it is short,
+> your *printer driver* is scaling — look for "fit to page" or "shrink
+> oversized pages" in its dialog and turn it off.
+>
+> The proof leaves no half-finished print run behind: it is one face, with no
+> reload and nothing to resume.
 
 ### The printer profile
 
@@ -680,11 +686,21 @@ currently iterative:
 > scale error. If the two rules are not parallel, or differ in length, that is
 > a different problem and this will not fix it.
 
-### Manual duplex from the CLI
+### Printing a pass somewhere else
 
-The desktop app drives the printer directly. The CLI writes each pass as its
-own PDF, for printing from a viewer, a print server, or a machine with no
-display at all:
+The desktop app drives the printer directly, and it can also write one pass as
+its own PDF for printing at a copy shop or on a second machine: **File → Save
+one pass as PDF…**, then pick fronts or backs. Deckle suggests
+`book-deckle-front.pdf` / `-back.pdf`, because the two files are
+indistinguishable once they leave your machine and printing the back pass
+first ruins the stack. The reload instruction for the pass you saved appears
+in the status bar — that is the sentence whoever prints it needs.
+
+The pass uses the profile the window is already drawing against, which is the
+selected printer's calibration when it has one.
+
+The CLI writes the same files, for a print server or a machine with no display
+at all:
 
 ```bash
 python -m deckle.cli export book.pdf -o fronts.pdf --gutter 0.75in \
@@ -1074,6 +1090,41 @@ on a real printer.
 </details>
 
 <details>
+<summary><b>Getting around the app: keys, drops and saving</b></summary>
+
+**Drag a PDF, a folder of images, or a `.deckle` project onto the window.** A
+drop onto an empty Deckle just imports. A drop onto a document that already
+has pages asks whether to **add** the pages or **replace** the document —
+the same choice the import bar's "Add to the current document" checkbox
+offers, because both answers are normal for a book made of several sources.
+One item at a time.
+
+**The menu bar** carries everything the buttons do, with keys:
+
+| | |
+|---|---|
+| `Ctrl+O` / `Ctrl+S` / `Ctrl+P` | Open project, save project, print |
+| `Ctrl+Shift+S` | Save project as… |
+| `Ctrl+E` | Save PDF… |
+| `Ctrl+I` | Import PDF… |
+| `Ctrl+Z` / `Ctrl+Y` | Undo, redo (`Ctrl+Shift+Z` also redoes) |
+| `Ctrl++` / `Ctrl+-` / `Ctrl+0` / `Ctrl+1` | Zoom in, out, fit, actual size |
+| `Ctrl+PgUp` / `Ctrl+PgDn` / `Ctrl+Home` / `Ctrl+End` | Move through the sheets |
+| `R` / `S` / `Del` | With the page grid focused: rotate 90°, skip / unskip |
+
+`Del` is spelled as skip on purpose. Deckle never removes a page: a skipped
+page keeps its slot in the document, which is what lets it come back.
+
+**`Ctrl+S` saves in place** once a project has a file, and asks where to put
+it the first time. The title bar shows the project's name with a modified
+marker while there is work you have not saved, and closing or opening another
+project stops to ask about it. Autosave is still running underneath all of
+this, but an autosave is not a save — it writes `<project>.autosave` so it can
+never overwrite the file you named, and it comes back only as crash recovery.
+
+</details>
+
+<details>
 <summary><b>The Signatures settings do nothing</b></summary>
 
 You are on the **Flat sheets** tab. In the desktop app the tabs *are* the
@@ -1158,6 +1209,12 @@ directory. Every path that degrades instead of failing records the reason
 there — an empty printer list, a session file that could not be read, a
 warning that was emitted. Start there before filing an issue, and attach
 `deckle --version`.
+
+In the app, **Help → Open diagnostics folder** shows you the directory (it is
+created if nothing has been logged yet), and **Help → About Deckle** carries
+the same version lines `deckle --version` prints, plus the log's full path.
+Neither touches the network: Deckle has no update check and never reports
+anything about your documents.
 
 </details>
 
