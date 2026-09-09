@@ -328,11 +328,12 @@ Organised the way the work happens.
 - Fit-to-window, zoom by button or `Ctrl`+wheel, and a side-by-side front/back
   spread rendered in a single pass so a stale front can never appear beside a
   fresh back
-- **Two guides, drawn distinctly.** Solid red is the printer's *imageable
-  area* — a hardware limit, the border your printer physically cannot mark.
-  Dashed blue is your *content box* — your margins. They coincide only by
-  coincidence, and showing one while the user is asking about the other is how
-  a preview lies.
+- **Two guides, drawn distinctly.** Solid red is the *imageable area* of the
+  printer Deckle would print to — its calibration if you have one, otherwise
+  a generic 0.25in preset standing in for one, and the preview says which by
+  following the printer selected in the Print dialog. Dashed blue is your
+  *content box* — your margins. They coincide only by coincidence, and
+  showing one while the user is asking about the other is how a preview lies.
 - Warnings that distinguish *why* content is clipped: off the page entirely,
   versus inside the printer's dead border
 

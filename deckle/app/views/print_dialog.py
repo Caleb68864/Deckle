@@ -366,6 +366,20 @@ class PrintDialog:
         profile, _is_saved = data
         return profile
 
+    def selected_profile(self) -> PrinterProfile:
+        """The profile the dialog is currently set to print with.
+
+        Public because the *window* needs it too: the preview's red
+        imageable-area guide, its clipping warnings and "Use printer
+        margins" are all this same profile, and the dialog is where a user
+        picks one (B16). Reading it back is how that choice reaches the
+        rest of the app instead of ending when the dialog closes.
+
+        :returns: the profile, never raising -- an unreadable calibration
+            degrades to a preset, as everywhere else.
+        """
+        return self._selected_profile(self.printer_combo.currentText())
+
     def _remember_profile_choice(self, printer_name: str) -> None:
         """Persist a picked preset so the choice sticks for this printer.
 

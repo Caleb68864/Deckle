@@ -268,6 +268,28 @@ class _FakeStatusBar:
         self.message = None
 
 
+def _no_saved_profile(name):
+    """A printer nobody has calibrated -- the ordinary case."""
+    raise FileNotFoundError(name)
+
+
+class _FakeProfileConsumer:
+    """A stand-in for the preview or the layout panel.
+
+    Both hold a ``PrinterProfile`` and nothing else about them matters to
+    ``_apply_printers``; the preview additionally has to be told to draw
+    again, because the red guide is painted from the profile and the
+    clipping warnings are computed from it in the render worker.
+    """
+
+    def __init__(self):
+        self.profile = None
+        self.refreshed = 0
+
+    def refresh(self):
+        self.refreshed += 1
+
+
 class _FakeWindow:
     """Enough of MainWindow to drive refresh_printers/_apply_printers.
 
@@ -292,9 +314,19 @@ class _FakeWindow:
         #: status bar has one writer so that a later import cannot leave a
         #: stale "import something" instruction on screen.
         self._printer_message = ""
+        # Enumeration is also the moment the window learns which printer
+        # it is drawing for (B15): `_apply_printers` resolves a profile
+        # and pushes it into the preview and the layout panel, which for
+        # the whole life of the window before that were pinned to the
+        # first built-in preset's 18pt border.
+        self.profile = app_main.DEFAULT_PROFILE
+        self.profile_loader = _no_saved_profile
+        self.layout_panel = _FakeProfileConsumer()
+        self.preview_view = _FakeProfileConsumer()
 
     _apply_printers = app_main.MainWindow._apply_printers
     _refresh_status_message = app_main.MainWindow._refresh_status_message
+    set_printer_profile = app_main.MainWindow.set_printer_profile
 
 
 def test_zero_printers_disables_print_but_leaves_save_pdf_alone():
@@ -394,6 +426,49 @@ def test_blocking_refresh_degrades_instead_of_raising(monkeypatch):
 
     assert window._printers == []
     assert window.print_button.enabled is False
+
+
+# ----------------------------------- the preview draws the printer's border
+
+
+def test_enumeration_hands_the_preview_the_printers_own_border(monkeypatch):
+    """B15. The red "printer imageable area" guide, the
+    ``clipped_by_imageable_area`` warnings beside it and "Use printer
+    margins" all read one profile, and it was the first built-in preset
+    for the life of the window -- so a calibrated printer's measured
+    border was read from disk by the print dialog and ignored by every
+    part of the app the user looks at first."""
+    from deckle.core.profiles import PrinterProfile
+
+    measured = PrinterProfile(
+        version=1, flip_axis="long", output_face="down", feed_edge="top",
+        reverse_stack=True, imageable_area_pt=(36.0, 12.0, 36.0, 12.0),
+        calibrated_at="2026-01-01T00:00:00", calibration_version=1,
+    )
+    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["Measured"])
+
+    window = _FakeWindow(pages=["one page"])
+    window.profile_loader = lambda name: measured
+    app_main.MainWindow.refresh_printers(window, blocking=True)
+
+    assert window.preview_view.profile is measured
+    assert window.layout_panel.profile is measured
+    assert window.preview_view.refreshed == 1, (
+        "the profile changed and the sheet was not drawn again, so the old "
+        "border stays on screen"
+    )
+
+
+def test_an_uncalibrated_printer_leaves_the_preview_alone(monkeypatch):
+    """The no-op half. This runs on every printer refresh, and a redraw
+    costs a rasterisation of the visible sheet."""
+    monkeypatch.setattr(app_main, "available_printer_names", lambda: ["Plain"])
+
+    window = _FakeWindow(pages=["one page"])
+    app_main.MainWindow.refresh_printers(window, blocking=True)
+
+    assert window.profile == app_main.DEFAULT_PROFILE
+    assert window.preview_view.refreshed == 0
 
 
 # ------------------------------------------- printer vanishes before submit

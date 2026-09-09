@@ -19,7 +19,11 @@ from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
-from deckle.app.views.print_dialog import PrintDialog
+from deckle.app.views.print_dialog import (
+    PrintDialog,
+    resolve_profile,
+    select_preselected_printer,
+)
 from deckle.core.export import clear_sheet_cache, export
 from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
@@ -31,7 +35,7 @@ from deckle.core.project_io import (
     load_project,
     save_project,
 )
-from deckle.core.profiles import BUILTIN_PRESETS
+from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 from deckle.core import recent
 
 LETTER_PT = (612.0, 792.0)
@@ -75,7 +79,49 @@ who is looking straight at their printer."""
 # Used to seed PreviewView before any printer/profile has been chosen -- the
 # same fallback resolve_profile() reaches for when a printer has no saved
 # PrinterProfile yet (see deckle/app/views/print_dialog.py).
+#
+# It is a *seed*, not the answer. Enumeration is asynchronous, so the window
+# is built before anything is known about the printers, and this is what the
+# preview draws for the fraction of a second before `_apply_printers` lands.
+# It stays the answer only when there are no printers at all.
 DEFAULT_PROFILE = next(iter(BUILTIN_PRESETS.values()))
+
+
+def profile_for_printers(
+    printer_names,
+    profile_loader=PrinterProfile.load,
+    fallback: PrinterProfile = DEFAULT_PROFILE,
+) -> PrinterProfile:
+    """The profile the preview should be drawing, given what is installed.
+
+    The preview's red guide, its ``clipped_by_imageable_area`` warnings and
+    the layout panel's "Use printer margins" all come from one
+    ``PrinterProfile``, and until now that was :data:`DEFAULT_PROFILE` for
+    the life of the window -- a fixed 18pt border on every edge, no matter
+    which printer was selected and no matter what had been measured for it.
+    The GUIDE called that red line "your printer's hardware limit"; it was
+    the first builtin preset's stand-in for one.
+
+    Deliberately the *same* answer :class:`PrintDialog` opens with, reached
+    through the same two functions: the first printer with a saved
+    calibration, then that calibration. A preview drawing one printer's
+    border while the print dialog is about to preselect another's would be
+    a worse lie than the constant it replaces.
+
+    Pure and Qt-free, so the choosing is testable without a display.
+
+    :param printer_names: the printers Qt reported, in its order.
+    :param profile_loader: how to load a saved profile; raising means the
+        printer has none.
+    :param fallback: what to answer when no printer is installed. Nothing
+        has been chosen, so nothing better than the generic preset is
+        available -- and Print is disabled in that state anyway.
+    :returns: the profile to draw against.
+    """
+    chosen = select_preselected_printer(list(printer_names), profile_loader)
+    if chosen is None:
+        return fallback
+    return resolve_profile(chosen, profile_loader)
 
 PRINTER_QUERY_TIMEOUT_MS = 5000
 """How long to wait for printer enumeration before giving up on it.
@@ -411,6 +457,16 @@ class MainWindow:
 
         self.state = AppState(default_project(), project_path=project_path)
 
+        #: How a saved calibration is loaded. Injected rather than reached
+        #: for, so a test can drive a calibrated printer without writing
+        #: one into the user's real config directory -- and so the preview
+        #: and the print dialog provably read the same source.
+        self.profile_loader = PrinterProfile.load
+        #: The profile the preview and the layout panel are drawing
+        #: against. Replaced by :meth:`set_printer_profile` once
+        #: enumeration answers; see :func:`profile_for_printers`.
+        self.profile = DEFAULT_PROFILE
+
         self.window = QMainWindow()
         self.window.setWindowTitle("Deckle")
         # Closing the window is the usual way out, and it does not go
@@ -439,7 +495,7 @@ class MainWindow:
         self.import_view = ImportView(self.state, controls)
         controls_layout.addWidget(self.import_view.widget)
 
-        self.layout_panel = LayoutPanel(self.state, controls, profile=DEFAULT_PROFILE)
+        self.layout_panel = LayoutPanel(self.state, controls, profile=self.profile)
         controls_layout.addWidget(self.layout_panel.widget)
 
         controls_layout.addStretch(1)
@@ -520,7 +576,7 @@ class MainWindow:
 
         self.preview_view = PreviewView(
             recompute_plan(self.state.project),
-            DEFAULT_PROFILE,
+            self.profile,
             output,
             layout_settings=self.state.project.layout,
         )
@@ -751,6 +807,39 @@ class MainWindow:
                 message if (no_printers_message or self.state.project.pages) else ""
             )
         self._refresh_status_message()
+        # Enumeration is the first moment the window knows which printer
+        # it is drawing for. Until this call existed, it never found out.
+        self.set_printer_profile(
+            profile_for_printers(self._printers, self.profile_loader)
+        )
+
+    def set_printer_profile(self, profile: PrinterProfile) -> None:
+        """Draw the preview and the margins against ``profile``.
+
+        Three things read a ``PrinterProfile`` outside the print path and
+        all three were pinned to :data:`DEFAULT_PROFILE` for the life of
+        the window: the preview's red imageable-area guide, the
+        ``clipped_by_imageable_area`` warnings computed beside it, and the
+        layout panel's "Use printer margins" button. So the app showed a
+        fixed 18pt border and offered to adopt it, on a machine whose
+        printer had been measured and whose measurement was sitting in a
+        file Deckle had already read.
+
+        :param profile: the profile to draw against.
+        :returns: nothing. A no-op when the profile has not actually
+            changed -- this is reached on every printer refresh, and a
+            re-render costs a rasterisation of the visible sheet.
+        """
+        if profile == self.profile:
+            return
+        self.profile = profile
+        self.layout_panel.profile = profile
+        self.preview_view.profile = profile
+        # The guide is painted from the profile and the warnings are
+        # computed in the render worker from it, so both need the sheet
+        # drawn again -- setting the attribute alone would leave the old
+        # border on screen until something else happened to refresh.
+        self.preview_view.refresh()
 
     def _on_print_clicked(self) -> None:
         # Use the cached list rather than re-enumerating: a second query
@@ -763,8 +852,16 @@ class MainWindow:
             self.status_bar.showMessage(NO_PRINTERS_MESSAGE)
             return
         plan = self.preview_view.plan
-        self.print_dialog = PrintDialog(plan, self.window, printer_names=printers)
+        self.print_dialog = PrintDialog(
+            plan, self.window, printer_names=printers,
+            profile_loader=self.profile_loader,
+        )
         self.print_dialog.widget.exec()
+        # The dialog is where the printer and its paper behaviour are
+        # actually chosen (B16). Picking a face-up printer there and coming
+        # back to a preview still drawing the first preset's border would
+        # put the two halves of the same answer on screen at once.
+        self.set_printer_profile(self.print_dialog.selected_profile())
         self.status_bar.showMessage(f"{len(printers)} printer(s) available.")
 
     def suggested_export_name(self) -> str:

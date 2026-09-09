@@ -171,10 +171,16 @@ its size, slack and placement. Only the scale factor is shared.
 
 The preview draws two rectangles that are easy to confuse:
 
-- **Solid red — the imageable area.** Your printer's hardware limit; the
-  border it physically cannot mark, typically 0.16–0.25 inches. Deckle cannot
-  infer this from the imposition, because the imposer never sees the printer;
-  "Use printer margins" in the app bridges that deliberately.
+- **Solid red — the imageable area.** The border your printer physically
+  cannot mark, typically 0.16–0.25 inches. Deckle cannot infer this from the
+  imposition, because the imposer never sees the printer; the preview and
+  "Use printer margins" both read it from the profile of the printer selected
+  in the Print dialog. **Which means it is only as true as that profile.** A
+  printer you have calibrated draws its measured border. One you have not
+  draws the generic preset's 0.25in stand-in, which is a plausible number and
+  not *your* number — Deckle does not yet ask the driver for the real
+  printable rectangle. Print a proof sheet before trusting the last eighth of
+  an inch.
 - **Dashed blue — the content box.** Your margins. It mirrors between recto
   and verso.
 
