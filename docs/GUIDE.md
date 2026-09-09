@@ -830,6 +830,8 @@ server with no display libraries installed at all.
 | `schedule SOURCE [-o OUT.txt]` | Print the binding schedule. Defaults to stdout. |
 | `crop-preview SOURCE -o OUT.png` | Write a composite of every page with a proposed crop drawn on it, to look at before you commit to the numbers. `--parity odd`/`--parity even` for a scan whose gutter alternates; `--dpi` sets the rasterisation resolution (default `72`). |
 | `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`), `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
+| `print SOURCE --profile NAME` | Plan a manual-duplex run: which sheets go through in which order on each pass, whether the backs need turning, and what to do at the printer in between. **Submits nothing** — see below. With `-o job.pdf` it also writes `job.front.pdf` and `job.back.pdf`, with the profile's registration correction already applied. `--sheets SPEC` narrows it. |
+| `profile list\|show\|set` | The calibrated printer profiles on this machine. Takes no `SOURCE` and no layout options. |
 
 `-o`, or `--output`, is the destination in every command that writes one.
 `schedule` is the only one where it is optional; without it the schedule goes
@@ -891,6 +893,87 @@ is the plan `export` writes.
 
 `impose` additionally takes `--printer NAME`, to record a printer with the
 project.
+
+### Scripting: `--json` and `--dry-run`
+
+The CLI exists to be scripted, and until these landed that meant grepping
+prose written for a person. Prose gets reworded; a script that greps it breaks
+silently when it does, and the failure looks like "this document has no
+warnings" rather than like a broken script.
+
+| Option | Where | Notes |
+|---|---|---|
+| `--json` | `info`, `schedule`, `print`, `profile list`, `profile show` | Print one JSON document instead of prose. **stdout carries the JSON and nothing else** — every other line, including `--auto-crop`'s measurements and the "flags ignored" notes, moves to stderr. On `schedule` it applies to `-o` as well as to stdout: the flag says what the schedule *is*, not where it goes. |
+| `--dry-run` | `export`, `impose` | Say what would be written — destination, paper, sheets, faces, registration — and write nothing. Every check still runs first, so a plan that would fail fails here instead of after the paper is committed. |
+
+Every JSON document opens with `report` (which shape it is), `report_version`
+(which revision of that shape) and `deckle_version`. **The key names are a
+contract**: `tests/test_cli_json.py` pins the exact key set at every level of
+every document, so renaming or dropping one fails the suite. Adding a key does
+not bump `report_version` — a reader that indexes the keys it knows cannot be
+broken by a new sibling — but renaming or removing one does.
+
+### `profile` — the calibrated printer profiles
+
+A profile records how one physical printer behaves on the second pass of a
+manual-duplex job: which edge you flip the sheet on, whether the stack has to
+be turned over, and how far the backs must move to land behind their fronts.
+`--profile` and the desktop app both look it up by the printer's own name.
+
+| Command | What it does |
+|---|---|
+| `profile list` | Every profile this machine can resolve. Saved and built-in are listed apart and labelled, because they are not the same thing: a saved profile was measured against that printer, a built-in is a generic stand-in for a measurement nobody has made. A saved file that cannot be read is listed *with its error* rather than omitted. |
+| `profile show NAME` | One profile's stored values in full, including where the file is and when it was calibrated. |
+| `profile set NAME` | Create a profile from a built-in, or edit a saved one. |
+
+**`set` will not overwrite a calibration on its own.** A calibration is the
+most expensive data Deckle holds — it is not derived from anything, it comes
+from printing a target, measuring it with a ruler, and reprinting when the
+numbers were wrong. So editing a saved profile prints the exact before-and-after
+of every field that would change and **exits 1**; `--force` is what applies it.
+Someone who reads the diff and still wants the change is one flag away; someone
+who typed the wrong printer name has been shown their mistake rather than
+losing an afternoon's measuring to it.
+
+Creating one requires `--from PRESET`, because a profile has no partial form
+and Deckle will not guess a printer's reload behaviour — that is the same guess
+`--pass` refuses to make, and getting it wrong prints every back onto the wrong
+front. Editing a saved profile refuses `--from` for the same reason two ways of
+stating paper thickness are refused: there is no sensible rule for which wins.
+A built-in's own name is refused as a save name, since saving over it would
+hide the built-in everywhere without removing it.
+
+| Option | Notes |
+|---|---|
+| `--from PRESET` | The built-in to start from: `generic_face_down_reversed` or `generic_face_up_in_order`. Required to create; refused when editing. |
+| `--flip-axis {long,short}` | Which edge you turn each sheet on between passes. |
+| `--output-face {up,down}` | Which way up sheets land in the output tray. |
+| `--feed-edge {top,bottom}` | Which edge of the sheet feeds first. |
+| `--reverse-stack` / `--no-reverse-stack` | Whether the printed stack must be turned over before the back pass. Two flags rather than one, so "set this to false" is sayable and distinct from "leave it alone". |
+| `--back-offset X,Y` | The registration correction — how far back-side content moves so it lands behind its front. **The correction applied, not the error measured**: a back sitting 3pt left of where it belongs is corrected with `3,0`. Constant offset only, never skew or scale. |
+| `--imageable-area L,T,R,B` | The printer's non-printable border as four margins. **Note the order differs from `--crop`'s** — this one is left, top, right, bottom, matching how the profile file stores it. |
+| `--force` | Apply a change to a saved calibration. |
+
+`calibrated_at` is left alone by `set`. It records when a calibration *run*
+measured the printer, and typing a number in is not that run — clearing it
+would throw away the date of a measurement mostly still standing, and setting
+it to today would claim one that never happened.
+
+### `print` — plan a manual-duplex run
+
+`deckle print SOURCE --profile NAME` gives you the whole manual-duplex
+workflow in one command: pass order, the half turn, the reload instruction,
+and with `-o` one PDF per pass — instead of two invocations of
+`export --pass` and working out the order yourself.
+
+**It does not send anything to a printer, and it says so on the last line.**
+Submission is the one part of the print path that is not Qt-free. The pass
+planner and the resumable print session are pure Python and run here happily;
+`PrintBackend` is a Protocol whose only implementation is `QtPrintBackend` in
+the desktop app. Reaching it from the CLI would invert the dependency the CLI
+exists to keep — and would break the promise at the top of this section, that
+the CLI runs on a server with no display libraries at all. So `print` does
+everything up to the spooler and hands you two files and an instruction.
 
 **Not available from the CLI:** head, tail and fore-edge margins; `slack_to`;
 `start_on_recto`; landscape policy. Those are app-and-project-file settings

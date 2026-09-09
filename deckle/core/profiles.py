@@ -22,7 +22,7 @@ import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from deckle.core.paths import config_dir, write_text_atomic
 from deckle.core.schema import check_values
@@ -216,6 +216,46 @@ def _safe_profile_stem(name: str) -> str:
 
 def _profile_path(name: str) -> Path:
     return _config_dir() / f"{_safe_profile_stem(name)}.json"
+
+
+def saved_profiles() -> dict[str, Path]:
+    """Every calibrated profile on this machine, as ``{name: file}``.
+
+    :returns: printer names mapped to the file each was read from, in
+        no particular order. Empty when nothing has ever been saved --
+        the directory is not created just to look in it.
+
+    The names are recovered by reversing :func:`_safe_profile_stem`, which
+    is possible only because that function percent-encodes rather than
+    replacing: ``quote``/``unquote`` round-trip, where a scheme mapping
+    every awkward character to ``_`` would have made two printers
+    indistinguishable here as well as on disk.
+
+    Two files can decode to the same name -- an encoded one and a
+    pre-encoding legacy one -- and the encoded file wins, which is the
+    same precedence :meth:`PrinterProfile.load` applies. It reads the
+    legacy path only when the encoded one is absent, so listing a name
+    against a file ``load`` would not open is the one answer that would be
+    actively wrong.
+
+    Nothing here opens or parses a file. A listing must not be able to
+    fail because one calibration has become unreadable -- that is exactly
+    when its owner most needs to see it named -- so validity is the
+    caller's question to ask, per profile, via :meth:`PrinterProfile.load`.
+    """
+    directory = _config_dir()
+    if not directory.exists():
+        return {}
+    found: dict[str, Path] = {}
+    for path in sorted(directory.glob("*.json")):
+        name = unquote(path.stem)
+        # `sorted` alone does not decide this: `%41.json` and `A.json` both
+        # decode to "A" and either could sort first. Ask the same question
+        # `load` asks instead of relying on filename order.
+        if name in found and path != _profile_path(name):
+            continue
+        found[name] = path
+    return found
 
 
 def _legacy_profile_path(name: str) -> Path:
