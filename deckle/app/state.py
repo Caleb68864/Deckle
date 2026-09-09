@@ -26,17 +26,44 @@ headless tests and must not require a display server or event loop.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import threading
+import time
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
+from deckle.core.diagnostics import log_exception
 from deckle.core.loader import apply_page_selection
-from deckle.core.models import BLANK_SOURCE_PATH, Project, SourcePage, SourceRef
+from deckle.core.models import (
+    BLANK_SOURCE_PATH, Project, SourcePage, SourceRef, is_blank_page,
+)
+from deckle.core.paths import data_dir, evict_oldest_files
 from deckle.core.project_io import save_project
 
 DEFAULT_UNDO_DEPTH = 50
 DEFAULT_AUTOSAVE_DELAY_S = 0.5
+
+UNSAVED_AUTOSAVE_DIR = "autosave"
+"""Where a never-saved project's autosave lives, below ``data_dir()``.
+
+``data_dir``, not ``config_dir``: this is data the application accumulates,
+like the diagnostics log, rather than a setting the user chose.
+"""
+
+UNSAVED_AUTOSAVE_KEY_CHARS = 16
+
+UNSAVED_AUTOSAVE_KEEP = 10
+"""How many never-saved autosaves to keep, newest first.
+
+Matching ``recent.MAX_ENTRIES`` for the same reason: long enough to cover
+the jobs someone is moving between, short enough that the recovery list is
+still something a person will read.
+"""
+
+UNSAVED_AUTOSAVE_MAX_AGE_S = 30 * 24 * 60 * 60
 
 # Sentinel SourceRef.path used for a page inserted via "insert blank" --
 # it references no real file on disk. Renderers/exporters that need to
@@ -59,6 +86,144 @@ def autosave_path_for(project_path: str | None) -> str | None:
     if project_path is None:
         return None
     return f"{project_path}.autosave"
+
+
+def unsaved_autosave_key(pages: Sequence[SourcePage]) -> str | None:
+    """A stable identity for a never-saved project, from its sources.
+
+    A project that has never been saved has no path to hang an autosave
+    off, so it is identified by **what it was made from**: the same import
+    lands in the same file across crashes, rather than accumulating one
+    file per launch.
+
+    The pairs are a *set* and are sorted, so a page imported twice does not
+    change the key and neither does page order -- reordering pages is
+    exactly the work being protected, and it has to land in the same file.
+    Blanks reference no file and are left out for the same reason.
+
+    :param pages: the project's pages.
+    :returns: 16 hex characters, or ``None`` when nothing has been
+        imported. A window with nothing in it has nothing worth recovering.
+    """
+    pairs = {
+        (os.path.normpath(os.path.abspath(page.ref.path)), page.ref.sha256)
+        for page in pages
+        if not is_blank_page(page)
+    }
+    if not pairs:
+        return None
+    payload = "".join(f"{path}\n{sha}\n" for path, sha in sorted(pairs))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[
+        :UNSAVED_AUTOSAVE_KEY_CHARS
+    ]
+
+
+def unsaved_autosave_path(pages: Sequence[SourcePage]) -> str | None:
+    """The autosave file for a never-saved project, or ``None``.
+
+    Suffixed ``.deckle.autosave`` so one glob finds both kinds of autosave,
+    and so "an autosave is never mistaken for a save" still reads off the
+    name.
+
+    :param pages: the project's pages.
+    :returns: the path, or ``None`` when nothing has been imported.
+    """
+    key = unsaved_autosave_key(pages)
+    if key is None:
+        return None
+    return str(data_dir(UNSAVED_AUTOSAVE_DIR) / f"{key}.deckle.autosave")
+
+
+@dataclass(frozen=True)
+class UnsavedAutosave:
+    """One never-saved project waiting to be recovered.
+
+    :ivar path: the autosave file.
+    :ivar modified_at: its mtime, epoch seconds.
+    :ivar page_count: how many pages it holds.
+    :ivar first_source: the first page's source path, or ``""`` for none.
+    """
+
+    path: str
+    modified_at: float
+    page_count: int
+    first_source: str
+
+
+def unsaved_autosave_offers(now: float | None = None) -> list[UnsavedAutosave]:
+    """Never-saved autosaves worth offering back, newest first.
+
+    Reads each file's JSON directly rather than through
+    :func:`deckle.core.project_io.load_project`. That function verifies
+    every source hash and raises ``SourceMissingError`` when a source has
+    moved -- and a moved source is exactly when the recovery matters most,
+    so routing the offer list through it would hide the offers a user needs.
+
+    :param now: the current time, injectable for tests.
+    :returns: the offers, newest first. Anything older than
+        :data:`UNSAVED_AUTOSAVE_MAX_AGE_S`, or that is not readable JSON
+        with a ``pages`` list, is left out silently -- a corrupt recovery
+        file has nothing to offer.
+
+    Never raises: a missing directory returns ``[]``.
+    """
+    directory = data_dir(UNSAVED_AUTOSAVE_DIR)
+    moment = time.time() if now is None else now
+    offers: list[UnsavedAutosave] = []
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.name.endswith(".deckle.autosave"):
+            continue
+        try:
+            if not entry.is_file():
+                continue
+            modified_at = entry.stat().st_mtime
+            payload = json.loads(
+                open(entry.path, encoding="utf-8").read()
+            )
+        except (OSError, ValueError):
+            continue
+        if moment - modified_at > UNSAVED_AUTOSAVE_MAX_AGE_S:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        stored = payload.get("pages")
+        if not isinstance(stored, list):
+            continue
+        # A stored page is flat -- `path` sits beside `rotate_deg`, not
+        # under a nested `ref` -- see `project_io._page_to_dict`.
+        first_source = ""
+        for page in stored:
+            if isinstance(page, dict) and page.get("path"):
+                first_source = str(page["path"])
+                break
+        offers.append(
+            UnsavedAutosave(
+                path=entry.path,
+                modified_at=modified_at,
+                page_count=len(stored),
+                first_source=first_source,
+            )
+        )
+    offers.sort(key=lambda offer: offer.modified_at, reverse=True)
+    return offers
+
+
+def unsaved_autosave_label(offer: UnsavedAutosave) -> str:
+    """A one-line description of an unsaved session, for a list.
+
+    Pure so the wording is testable headlessly, matching how the recent
+    list's label is written.
+
+    :param offer: the session to describe.
+    :returns: the label.
+    """
+    name = os.path.basename(offer.first_source) or "Untitled"
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(offer.modified_at))
+    return f"{name} -- {offer.page_count} page(s), {when}"
 
 
 def make_blank_page(paper_pt: tuple[float, float]) -> SourcePage:
@@ -230,7 +395,10 @@ class AppState:
     ``project_path`` is the path the project was opened from (or will be
     saved to); autosave writes to ``f"{project_path}.autosave"`` so it
     never clobbers the user's last explicit save. When ``project_path`` is
-    ``None`` (a brand-new, never-saved project) autosave is a no-op.
+    ``None`` -- a brand-new, never-saved project -- autosave goes to
+    ``data_dir("autosave")`` under a key derived from the imported
+    sources, so an hour of arranging before the first Save is not lost to
+    a crash. Only a window with nothing imported writes nothing.
 
     :param project: the project to own.
     :param project_path: where the project lives on disk, or ``None`` for
@@ -243,8 +411,9 @@ class AppState:
         waiting on a real timer.
     :ivar project_path: the path the project was opened from, or was most
         recently saved to. Assigning it re-points the autosave.
-    :ivar autosave_path: ``f"{project_path}.autosave"``, or ``None`` --
-        derived from ``project_path`` on every read, never cached.
+    :ivar autosave_path: read-only, and never stored. Derived on every read
+        from ``project_path`` when there is one and from the project's own
+        sources when there is not.
     """
 
     def __init__(
@@ -277,20 +446,58 @@ class AppState:
 
     @property
     def autosave_path(self) -> str | None:
-        """Where this project's autosave goes, or ``None`` if it has never
-        been saved.
+        """Where this project's autosave goes right now.
 
-        Derived on every read rather than cached, because ``project_path``
-        changes underneath it: a session almost always starts with no path
-        at all (``main()`` opens a blank project), and Save is what gives it
-        one. A value computed once in ``__init__`` would still be ``None``
-        after that Save, so the project the user has just named would go on
-        autosaving nowhere -- which is precisely the session autosave exists
-        to protect. One rule, one place; see :func:`autosave_path_for`.
+        Derived on every read rather than cached, because **both** inputs
+        change underneath it. ``project_path`` does: a session almost
+        always starts with no path at all (``main()`` opens a blank
+        project), and Save is what gives it one, so a value computed once
+        in ``__init__`` would still be ``None`` after that Save and the
+        project the user had just named would go on autosaving nowhere.
+        And the sources do: a never-saved project is keyed on what it was
+        imported from, which an import changes.
 
-        :returns: the autosave path, or ``None``.
+        With a ``project_path`` this is ``<project>.autosave``, beside the
+        user's own file. Without one it is
+        ``data_dir("autosave")/<key>.deckle.autosave`` -- because the
+        alternative was ``None``, which made every ``_schedule_autosave``
+        and ``flush_autosave`` on a fresh window return immediately.
+        Importing 200 pages, arranging for an hour and losing power wrote
+        nothing at all.
+
+        :returns: the autosave path, or ``None`` for a project that has
+            neither a path nor an imported source.
         """
-        return autosave_path_for(self.project_path)
+        if self.project_path is not None:
+            return autosave_path_for(self.project_path)
+        return unsaved_autosave_path(self._project.pages)
+
+    def discard_unsaved_autosave(
+        self, pages: Sequence[SourcePage] | None = None
+    ) -> None:
+        """Delete the never-saved autosave for ``pages``, if there is one.
+
+        Called after Save project: the work now exists in a file the user
+        named, so offering to recover it at the next launch would be an
+        offer to recover something they already have.
+
+        :param pages: the pages to key on, defaulting to the current ones.
+            A save does not change them, so the default names the right
+            file.
+        :returns: nothing, and never raises -- a recovery file that will
+            not delete must not turn a successful save into an error.
+        """
+        path = unsaved_autosave_path(
+            self._project.pages if pages is None else pages
+        )
+        if path is None:
+            return
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log_exception("unsaved_autosave_discard_failed", exc, path=path)
 
     @property
     def can_undo(self) -> bool:
@@ -389,7 +596,23 @@ class AppState:
         # lock across disk I/O would block every mutation for the length of
         # a write, and the UI thread is what does the mutating.
         with self._save_lock:
+            # `data_dir("autosave")` does not exist on a first run, and
+            # `save_project` -> `write_text_atomic` -> `tempfile.mkstemp`
+            # raises `FileNotFoundError` rather than anything handled here.
+            # Inside `_save_lock` and not `_lock`, for the reason above:
+            # holding the state lock across disk I/O blocks every mutation
+            # for the length of a write.
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
             save_project(self._project, path)
+            if self.project_path is None:
+                evict_oldest_files(
+                    data_dir(UNSAVED_AUTOSAVE_DIR),
+                    UNSAVED_AUTOSAVE_KEEP,
+                    pattern="*.deckle.autosave",
+                    on_error=lambda event, exc, failed: log_exception(
+                        event, exc, path=failed
+                    ),
+                )
 
     def flush_autosave(self) -> None:
         """Cancel any pending debounce timer and save immediately.

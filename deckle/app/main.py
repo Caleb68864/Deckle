@@ -14,7 +14,12 @@ import logging
 import os
 import warnings
 
-from deckle.app.state import AppState, autosave_path_for
+from deckle.app.state import (
+    AppState,
+    autosave_path_for,
+    unsaved_autosave_label,
+    unsaved_autosave_offers,
+)
 from deckle.core.defaults import load_defaults
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.views.arrange_view import ArrangeView
@@ -635,6 +640,7 @@ class MainWindow:
         # Injected so the recovery prompt can be driven headlessly, the
         # way `print_dialog` injects `_confirm_resume`.
         self.confirm_recovery = self._default_confirm_recovery
+        self.confirm_unsaved_recovery = self._default_confirm_unsaved_recovery
         self._printer_query: _PrinterQuery | None = None
         #: A printer fault worth showing, or "" when there is none.
         #: Held rather than written straight to the status bar so the
@@ -645,6 +651,12 @@ class MainWindow:
         self._sync_document_actions()
         self._sync_history_actions()
         self._install_shortcuts()
+        if project_path is None:
+            # Only for a fresh window. A window opened ON a project already
+            # has `_recover_autosave_if_offered` for its own autosave, and
+            # offering someone else's unsaved session on top of it would be
+            # two recovery prompts for one launch.
+            self._offer_unsaved_recovery()
         self.refresh_printers()
 
     def _sync_document_actions(self) -> None:
@@ -987,6 +999,93 @@ class MainWindow:
         log_event("autosave_recovered", path=path, pages=len(recovered.pages))
         return recovered
 
+    def _offer_unsaved_recovery(self) -> None:
+        """Offer back work from a session that never got as far as Save.
+
+        :returns: nothing, and never raises. A recovery store that cannot
+            be read must not be what stops a window opening.
+
+        **Declining deletes nothing.** ``_recover_autosave_if_offered``
+        deletes on decline because the work also exists in the user's own
+        ``.deckle``; here it does not -- this file is the only copy -- so a
+        mis-click must not be destructive. ``UNSAVED_AUTOSAVE_MAX_AGE_S``
+        and ``UNSAVED_AUTOSAVE_KEEP`` are what stop the list growing
+        instead.
+        """
+        offers = unsaved_autosave_offers()
+        if not offers:
+            return
+        chosen = self.confirm_unsaved_recovery(offers)
+        if chosen is None:
+            return
+        try:
+            # `check_sources=False` for the same reason
+            # `unsaved_autosave_offers` reads the JSON directly: a source
+            # that has moved raises `SourceMissingError`, and a moved
+            # source is exactly when this recovery matters most. There is
+            # no other copy of the arrangement to fall back on, so
+            # refusing to load it would be refusing the whole feature at
+            # the moment it is needed. Thumbnails degrade to placeholders
+            # and the import view can point at the file again.
+            #
+            # `on_outside_roots` returns True rather than passing
+            # `allowed_roots`: the sources of an unsaved project are
+            # wherever the user imported from, and there is no project
+            # directory to reason from.
+            project = load_project(
+                chosen.path,
+                check_sources=False,
+                on_outside_roots=lambda _path, _roots: True,
+            )
+        except Exception as exc:  # noqa: BLE001 -- a window is opening
+            self.status_bar.showMessage(f"Could not read the recovered work: {exc}")
+            log_exception(
+                "unsaved_autosave_recovery_failed", exc, path=chosen.path
+            )
+            return
+        clear_sheet_cache()
+        # `project_path=None` deliberately: the work is still unsaved, and
+        # the new `AppState` re-derives the same key from the same sources,
+        # so continuing to edit keeps writing to the same file.
+        self.state = AppState(project, project_path=None)
+        self.import_view.state = self.state
+        self.arrange_view.state = self.state
+        self.layout_panel.state = self.state
+        self.arrange_view.refresh()
+        self.layout_panel.refresh_from_project()
+        self._on_pages_changed()
+        self.status_bar.showMessage(
+            f"Recovered {len(project.pages)} unsaved page(s)."
+        )
+        log_event(
+            "unsaved_autosave_recovered",
+            path=chosen.path,
+            pages=len(project.pages),
+        )
+
+    def _default_confirm_unsaved_recovery(self, offers):
+        """Ask which unsaved session to pick up, if any.
+
+        :param offers: the :class:`~deckle.app.state.UnsavedAutosave`
+            entries, newest first.
+        :returns: the chosen offer, or ``None`` to start fresh.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        labels = [unsaved_autosave_label(offer) for offer in offers]
+        start_fresh = "Start a new project"
+        label, ok = QInputDialog.getItem(
+            self.window,
+            "Recover unsaved work?",
+            "Deckle closed with work that was never saved. Pick it up?",
+            labels + [start_fresh],
+            0,
+            False,
+        )
+        if not ok or label == start_fresh:
+            return None
+        return offers[labels.index(label)]
+
     def _default_confirm_recovery(self, project_name: str) -> bool:
         """Ask whether to take the autosave. Replaceable for tests."""
         QMessageBox = _qt_message_box()
@@ -1192,6 +1291,11 @@ class MainWindow:
             log_exception("project_write_failed", exc, path=path)
             return
         self.state.project_path = path
+        # The work now exists in a file the user named, so the never-saved
+        # copy under `data_dir("autosave")` would only be an offer to
+        # recover something they already have. Re-derives the key from the
+        # current pages, which the save did not change.
+        self.state.discard_unsaved_autosave()
         # Saving is how a project first comes into existence, so it
         # belongs in the list as much as opening one does.
         recent.record(path)

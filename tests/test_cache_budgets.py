@@ -153,3 +153,120 @@ def test_clearing_the_cache_still_removes_its_files(tmp_path, monkeypatch):
     export_mod.clear_sheet_cache()
 
     assert all(not os.path.exists(p) for p in made)
+
+
+# -- keeping the newest N, by modification time ---------------------------
+#
+# `evict_oldest_files` is a sibling of `evict_lru_files`, not a variant.
+# The cache one budgets BYTES and ranks by ACCESS time, both of which are
+# wrong for a recovery store: its budget is "how many offers is a person
+# willing to read", and merely listing the offers at startup stats and
+# reads every file, which would reorder an atime ranking and evict the
+# ones the user was about to pick.
+
+
+def _plant(directory, names, base_mtime=1_000_000):
+    import os as _os
+
+    made = []
+    for index, name in enumerate(names):
+        path = directory / name
+        path.write_text("x" * 16, encoding="utf-8")
+        _os.utime(path, (base_mtime + index, base_mtime + index))
+        made.append(path)
+    return made
+
+
+def test_a_store_under_the_count_is_left_alone(tmp_path):
+    from deckle.core.paths import evict_oldest_files
+
+    planted = _plant(tmp_path, [f"{i}.deckle.autosave" for i in range(3)])
+
+    evict_oldest_files(tmp_path, keep=10, pattern="*.deckle.autosave")
+
+    assert all(path.exists() for path in planted)
+
+
+def test_the_oldest_by_modification_time_go_first(tmp_path):
+    from deckle.core.paths import evict_oldest_files
+
+    planted = _plant(tmp_path, [f"{i}.deckle.autosave" for i in range(6)])
+
+    evict_oldest_files(tmp_path, keep=2, pattern="*.deckle.autosave")
+
+    assert [p.name for p in sorted(tmp_path.iterdir())] == [
+        "4.deckle.autosave", "5.deckle.autosave",
+    ]
+    assert not planted[0].exists()
+
+
+def test_reading_a_file_does_not_save_it_from_eviction(tmp_path):
+    """The atime trap `evict_lru_files` would have walked into: the startup
+    scan reads every offer, so ranking by access time would keep whichever
+    the scan happened to touch last."""
+    from deckle.core.paths import evict_oldest_files
+
+    planted = _plant(tmp_path, [f"{i}.deckle.autosave" for i in range(4)])
+    planted[0].read_text(encoding="utf-8")  # the oldest, just read
+
+    evict_oldest_files(tmp_path, keep=2, pattern="*.deckle.autosave")
+
+    assert not planted[0].exists()
+
+
+def test_the_pattern_confines_the_eviction(tmp_path):
+    from deckle.core.paths import evict_oldest_files
+
+    _plant(tmp_path, [f"{i}.deckle.autosave" for i in range(5)])
+    bystander = tmp_path / "notes.txt"
+    bystander.write_text("keep me", encoding="utf-8")
+
+    evict_oldest_files(tmp_path, keep=1, pattern="*.deckle.autosave")
+
+    assert bystander.exists()
+    assert len(list(tmp_path.glob("*.deckle.autosave"))) == 1
+
+
+def test_keeping_none_deletes_everything_matching(tmp_path):
+    from deckle.core.paths import evict_oldest_files
+
+    _plant(tmp_path, [f"{i}.deckle.autosave" for i in range(3)])
+
+    evict_oldest_files(tmp_path, keep=0, pattern="*.deckle.autosave")
+
+    assert list(tmp_path.glob("*.deckle.autosave")) == []
+
+
+def test_a_missing_store_is_not_an_error(tmp_path):
+    from deckle.core.paths import evict_oldest_files
+
+    evict_oldest_files(tmp_path / "nope", keep=3)
+
+
+def test_an_undeletable_offer_is_reported_and_the_rest_still_go(
+    tmp_path, monkeypatch
+):
+    import os as _os
+
+    from deckle.core.paths import evict_oldest_files
+
+    planted = _plant(tmp_path, [f"{i}.deckle.autosave" for i in range(4)])
+    real_remove = _os.remove
+    stubborn = str(planted[0])
+
+    def remove(path):
+        if str(path) == stubborn:
+            raise PermissionError(path)
+        real_remove(path)
+
+    monkeypatch.setattr(_os, "remove", remove)
+    seen = []
+
+    evict_oldest_files(
+        tmp_path, keep=2, pattern="*.deckle.autosave",
+        on_error=lambda event, exc, path: seen.append(event),
+    )
+
+    assert seen == ["autosave_eviction_failed"]
+    assert planted[0].exists()
+    assert not planted[1].exists()
