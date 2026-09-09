@@ -99,12 +99,37 @@ paper, and a warning you cannot act on is noise. If you want to check: tear a
 scrap: it tears straight along the grain and ragged across it. Or bend it both
 ways — it resists less along the grain.
 
-### Caliper
+### Thickness, and how many sheets a gathering should hold
 
-`--paper-thickness 0.004in` (or `0.1mm`, or whatever you measure). It affects
-**no placement Deckle emits** — not one. It exists purely so the binding
+Deckle needs one number about your paper: the caliper of a single sheet. It
+affects **no placement Deckle emits** — not one. It exists so the binding
 schedule can predict fore-edge creep and spine thickness, both of which you
 need before the block is finished and cannot measure yet.
+
+Three ways to give it, in the order most people can:
+
+- **Pick the stock.** In the app, the paper dropdown on Page setup —
+  `80gsm copier`, `100gsm offset`, `160gsm card` and two others.
+- **Type the weight off the ream wrapper.** `--paper-weight 80gsm`, or
+  `--paper-weight 24lb --paper-grade bond`. A US basis weight means nothing
+  without the grade: 20lb is 75gsm as bond and 54gsm as cover, so Deckle
+  refuses a pound weight without one rather than guessing wrong by half.
+  `--paper-type` says how bulky the stock is, which is what separates two
+  papers of the same weight; it defaults to `offset`.
+- **Measure it.** `--paper-thickness 0.004in`, or `0.1mm`, or whatever your
+  calipers say.
+
+**A derived caliper is an estimate.** Bulk varies about 10% between
+manufacturers, which is why the schedule reports spine width as a range rather
+than a number, and why this value never moves a page.
+
+Once Deckle knows the thickness it will suggest a gathering size: how many
+sheets to nest, and **which constraint decided it**. The remedy differs —
+`creep` means plan a fore-edge trim, `fold` means the paper is thick and the
+gathering has to be smaller. 80gsm with a quarter-inch trim comes out at 8
+sheets, a 32-page gathering, which is the standard trade signature. In the app
+the suggestion appears under *Sheets per signature* with an **Apply** button,
+and disappears once you have taken it.
 
 ---
 
@@ -313,8 +338,12 @@ page — they always describe the same set of pages, because a rectangle
 measured from half of them and drawn over all of them would make a crop that
 clips look safe.
 
-There is no interactive crop editor in the desktop app; it has no crop controls
-at all. This is a picture you look at, then a `--crop` you type.
+The desktop app has the same numbers on its **Crop & trim** tab — eight spin
+boxes, odd and even pages separately, and a **Measure crop from the ink**
+button that does what `--auto-crop` does. What it does not have is an
+interactive editor: there is no picture in the app to drag a rectangle on. So
+this is still a composite you look at, then numbers you type — into the tab or
+into a `--crop`, whichever you are already in.
 
 **4. Proof one sheet.** Before committing a stack, print sheet 0 on its own.
 Sheets are numbered from 0, the same as everywhere else Deckle counts them.
@@ -344,6 +373,24 @@ the edge you are binding.
 **6. Bind.** Nothing to fold. Stack in order, jog the spine edge square, and
 bind along the gutter side.
 
+### If Deckle stops unexpectedly
+
+Deckle autosaves beside the project on every edit. Reopen a project it did not
+close cleanly and it asks whether to recover the unsaved changes.
+
+Detection is by modification time, not by whether an autosave exists — a clean
+quit flushes one too, so "does the file exist" would prompt on every single
+open, and a prompt that always fires is one people learn to dismiss without
+reading. Saving makes the project newer than its autosave, which is what keeps
+it quiet.
+
+Declining deletes the autosave. That is deliberate: leaving it would bring the
+prompt back on every subsequent open of the same project.
+
+A project that has never been saved has nowhere to autosave *to*, so this
+protects a job you have named and not the one you started ten minutes ago.
+Save early.
+
 ---
 
 ## 5 · Path B — signatures, end to end (experimental)
@@ -371,7 +418,7 @@ gatherings that get sewn through the fold.
 >
 > Two ways to close the question yourself, both cheap. Do one.
 
-**Check 0 — fold a numbered dummy.** Five minutes, and the only one of these
+**Check 1 — fold a numbered dummy.** Five minutes, and the only one of the two
 that answers the question outright.
 
 ```bash
@@ -402,7 +449,8 @@ automatically in `tests/test_dummy.py` — but only against the manual's
 *arithmetic*. Software still cannot tell you which way paper folds, which is
 why the scrap print is the check that closes it.
 
-**Check 1 — read the schedule against a manual.** Thirty seconds.
+**Check 2 — read the schedule against a manual.** Thirty seconds, and it
+checks the arithmetic rather than the fold.
 
 ```bash
 python -m deckle.cli schedule book.pdf --fold-scheme folio --landscape
@@ -422,9 +470,6 @@ For a 16-page signature it prints (this is real output):
 
 Every bookbinding manual has that table. If they agree, the arithmetic is
 right, and it will stay right.
-
-**Check 2 — fold a dummy.** Five minutes, and it is the one that actually
-settles it. Print one signature onto scrap, fold it, read it.
 
 ### Step by step
 
@@ -552,9 +597,20 @@ before reloading, flip each sheet on its long edge, face down, and print pass
 **The calibration wizard is not built.** Until it is, Deckle uses two built-in
 generic presets covering the two common reload behaviours: a face-down printer
 whose stack comes out reversed, and a face-up printer that keeps its order.
-Profiles are persisted per printer name as JSON under the OS config directory
-(`%APPDATA%\Deckle\printer_profiles` on Windows), so a hand-edited one
-survives.
+
+Both are reachable. The Print dialog's **Paper** picker lists them by what
+they mean at the tray — "Comes out face up, order kept" — rather than by name,
+because those two axes are the whole of what decides the reload instruction.
+The choice is remembered under the printer's name, and re-offered per printer,
+since a saved calibration belongs to one machine. On the command line they are
+`--profile generic_face_down_reversed` and
+`--profile generic_face_up_in_order`.
+
+A profile you have measured and written by hand outranks both: it sorts first
+in the picker and is preselected, and Deckle will not overwrite it with a
+preset. Profiles are persisted per printer name as JSON under the OS config
+directory (`%APPDATA%\Deckle\printer_profiles` on Windows), so a hand-edited
+one survives.
 
 ### Test one sheet first
 
@@ -772,10 +828,26 @@ server with no display libraries installed at all.
 | `export SOURCE -o OUT.pdf` | Impose and write the imposed PDF. |
 | `impose SOURCE -o OUT.deckle` | Impose and write a `.deckle` project file, to open in the app. Also takes `--printer NAME` to record a printer with it. |
 | `schedule SOURCE [-o OUT.txt]` | Print the binding schedule. Defaults to stdout. |
+| `crop-preview SOURCE -o OUT.png` | Write a composite of every page with a proposed crop drawn on it, to look at before you commit to the numbers. `--parity odd`/`--parity even` for a scan whose gutter alternates; `--dpi` sets the rasterisation resolution (default `72`). |
+| `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`), `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
 
-`SOURCE` is a PDF file **or a directory of images**. Image folders are ordered
-naturally by filename (`page2` before `page10`), EXIF orientation is honoured,
-DPI is inferred, and images are embedded losslessly.
+`-o`, or `--output`, is the destination in every command that writes one.
+`schedule` is the only one where it is optional; without it the schedule goes
+to stdout.
+
+`SOURCE` is a PDF file, **a directory of images**, or **a `.deckle` project
+you saved earlier**. Image folders are ordered naturally by filename (`page2`
+before `page10`), EXIF orientation is honoured, DPI is inferred, and images
+are embedded losslessly.
+
+A `.deckle` carries its own layout, and **that layout wins**: it is the one
+you set up, previewed and saved, and silently overriding it from flag defaults
+would make `deckle export project.deckle` produce a different book from the
+one the project describes. Layout flags typed beside a project are reported as
+ignored on stderr rather than quietly dropped — and rather than applied, which
+would be worse. `--sheets`, `--pass`, `--profile` and `--printer` are not
+layout, and are honoured. (`dummy` is the exception to all of this: it has no
+`SOURCE`.)
 
 ### Layout options
 
@@ -793,10 +865,32 @@ is the plan `export` writes.
 | `--blank-mode {end,balanced}` | `end` | Folio only. Where padding blanks land. |
 | `--grain {long,short,unknown}` | `unknown` | Fibre direction. `unknown` is silent. |
 | `--paper-thickness LENGTH` | `0` | Caliper of one sheet. Affects advisories only — never a placement. |
+| `--paper-weight WEIGHT` | unset | What the ream wrapper says — `80gsm`, or `24lb` with `--paper-grade`. An alternative to `--paper-thickness` for anyone without calipers; giving both is refused rather than resolved. |
+| `--paper-type {bulky,coated,copier,laser,offset}` | `offset` | How bulky the stock is, which is what separates two papers of the same weight. |
+| `--paper-grade {bond,cover,index,tag,text}` | unset | Which basis size a pound weight is quoted against. Required with a `lb` `--paper-weight`: 20lb is 75gsm as bond and 54gsm as cover. |
+| `--signatures N,N,N` | unset | Each gathering's sheet count — `10,10,8` — instead of one uniform `--sheets-per-signature`. Must add up to the document's sheet count. |
+| `--crop L,B,R,T` | none | Remove space from every source page before imposing: insets from left, bottom, right and top. |
+| `--crop-even L,B,R,T` | none | A different crop for even-numbered pages, for a scan whose gutter swaps sides every leaf. Without it, `--crop` applies to the whole document. |
+| `--auto-crop` | off | Measure the crop from where the ink actually is. Odd and even pages are measured separately, and the values found are printed so you can pin them with `--crop`. |
+| `--auto-crop-margin LENGTH` | `0` | Keep this much back from every edge `--auto-crop` found, for descenders and hairline rules a low-dpi scan can miss. |
+| `--trim LENGTH` | `0` | Draw cut lines this far in from head, tail and fore-edge, where the block is trimmed square after sewing. The spine is never cut. |
 | `--sewing-stations N` | `3` | Folio only. `0` disables the marks. |
 
 **Lengths** accept `in`, `pt`, `mm` or `cm`, with or without a space:
 `0.75in`, `18pt`, `5 mm`. A bare number means points.
+
+### `export` only
+
+| Option | Default | Notes |
+|---|---|---|
+| `--sheets SPEC` | every sheet | Export only these, counting from 0 — `0`, `2,0`, `0,2-4`. Print sheet 0 on its own to proof a job before committing the stack. |
+| `--rule` | off | Draw a ruler of known length on every sheet, to check whether the printer scaled the page. Use it on a proof, not on the job. |
+| `--pass {front,back}` | both faces | Write one manual-duplex pass instead of both: every front, or every back in the order your printer's reload behaviour demands. Requires `--profile`. |
+| `--profile NAME` | none | The printer profile describing your reload behaviour: one saved under the printer's name, or a built-in — `generic_face_down_reversed` or `generic_face_up_in_order`. |
+| `--back-offset X,Y` | the profile's | Move back faces by X,Y so they land behind their fronts — `3,-2`, or `0.5mm,-1mm`. Overrides the value stored in the profile. Corrects a constant offset only, not skew or scale. |
+
+`impose` additionally takes `--printer NAME`, to record a printer with the
+project.
 
 **Not available from the CLI:** head, tail and fore-edge margins; `slack_to`;
 `start_on_recto`; landscape policy. Those are app-and-project-file settings

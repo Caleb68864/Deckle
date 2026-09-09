@@ -1,17 +1,32 @@
 {
   "project_name": "Deckle",
   "repo": "https://github.com/Caleb68864/Deckle",
+  "default_branch": "main",
   "project_vault": "docs",
-  "spec_output_dir": "docs/specs",
-  "plan_output_dir": "docs/plans",
-  "tech_stack": ["Python 3.12", "PySide6", "pikepdf", "pypdfium2", "img2pdf"],
+  "tech_stack": [
+    "Python 3.12",
+    "PySide6",
+    "pikepdf",
+    "pypdfium2",
+    "img2pdf"
+  ],
   "build_command": null,
   "test_command": "python -m pytest -q",
+  "e2e_command": "python -m deckle dummy -o /tmp/e2e.pdf --pages 8 && python -m deckle impose /tmp/e2e.pdf -o /tmp/e2e-imposed.pdf && python -m deckle info /tmp/e2e-imposed.pdf",
+  "notes": [
+    "Tests need the project's virtualenv: use .venv/bin/python -m pytest -q, and add -p no:cacheprovider in a sandbox.",
+    "There is no build step for the app itself; run.bat package builds a Windows binary via packaging/deckle.spec.",
+    "tests/test_preview_paint.py segfaults in Qt teardown AFTER passing. Pre-existing and harmless; do not chase it.",
+    "The suite enforces its own rules: test_core_purity (no Qt in deckle.core), test_docs_coverage (every module has a docs/api/*.rst page), test_single_source_decisions."
+  ],
+  "spec_output_dir": "docs/specs",
+  "plan_output_dir": "docs/plans",
   "reference_sources": {
     "bookbinding_research": {
-      "path": "C:\\Users\\CalebBennett\\Documents\\Notes\\Caleb's Vault\\Software",
+      "path": null,
       "label": "Verified bookbinding/PDF library research (executed, version-stamped)",
-      "max_files": 40
+      "max_files": 40,
+      "note": "Pointed at a personal Obsidian vault on the Windows machine this project started on. That path does not exist on any other machine, so it is null rather than a lie. Set it to wherever the research actually lives."
     }
   },
   "infrastructure": null

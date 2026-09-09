@@ -1,10 +1,11 @@
 """Deckle's main window: wires ``AppState`` to ``ImportView``/``ArrangeView``.
 
 Zero printers installed is a defined, first-class state (red-team A-1):
-``available_printer_names`` is queried once at window construction (and
-whenever the printer menu is opened), and when it comes back empty the
-print action is disabled with an explanatory status message instead of
-opening an empty/broken print dialog or raising.
+``available_printer_names`` is queried once, on a background worker, at
+window construction; when it comes back empty the print action is disabled
+with an explanatory status message instead of opening an empty/broken print
+dialog or raising. There is no printer menu and no re-query -- a printer
+plugged in after launch is not seen until Deckle restarts (B30).
 """
 
 from __future__ import annotations

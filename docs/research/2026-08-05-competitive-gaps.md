@@ -64,8 +64,10 @@ ranking below still reads as though nothing has been built. What has:
   `--auto-crop` for krop's "trim margins" equivalent, measured off the
   existing ink-bbox cache, and `deckle crop-preview` for the briss-style
   overlay. The overlay is a written image, not an interactive in-app
-  editor -- the desktop app has no crop controls at all, so an in-app
-  preview would mean building those first.
+  editor -- when this was written the desktop app had no crop controls at
+  all, so an in-app preview would have meant building those first. The
+  controls shipped 2026-09-04 (`fa7d888`, the Crop & trim tab); showing the
+  composite inside the app is the part still outstanding.
 - **#9 page-number stamping** — shipped 2026-08-06 as the small version the
   analysis recommends: `deckle dummy` generates a numbered source rather
   than stamping user content. Built to make the folio check cheap.

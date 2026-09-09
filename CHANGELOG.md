@@ -33,8 +33,13 @@ see the README. The calibration wizard is not built.
 - **Print** — manual-duplex pass splitting, per-printer profiles, reload
   instructions, test-one-sheet, chunked submission, sheet-granular resume,
   and a session log.
-- **CLI** — `impose`, `export`, `info`, `--version`. Imports only
-  `deckle.core`, so it runs headlessly.
+- **CLI** — `impose`, `export`, `info`, `schedule`, `crop-preview` and
+  `dummy`, plus `--version`. Imports only `deckle.core`, so it runs
+  headlessly. `export` additionally takes `--sheets` (a subset, for proofs),
+  `--rule` (a printed ruler to check the printer's scaling), and
+  `--pass`/`--profile`/`--back-offset` for manual duplex. Every command
+  accepts a saved `.deckle` as its source, whose stored layout wins over any
+  layout flag typed beside it.
 - `run.bat` dev launcher with a `doctor` subcommand.
 - **Signature imposition (experimental)** — `--fold-scheme folio` imposes
   two-up saddle-stitch signatures with fold lines, sewing-station marks and

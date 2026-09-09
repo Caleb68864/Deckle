@@ -301,8 +301,11 @@ Organised the way the work happens.
 
 ### 2 · Import and arrange
 
-- PDFs and image folders, interleaved. Natural filename ordering, EXIF
-  orientation honoured, DPI inferred, images embedded losslessly via `img2pdf`
+- PDFs and image folders, interleaved — tick **Add to the current document**
+  and a second import extends the book instead of replacing it, so a scan and
+  a typeset title page make one job. Natural filename ordering, EXIF
+  orientation honoured, DPI inferred, images embedded losslessly via `img2pdf`.
+  (One source per command on the CLI; assembling from several is the app's.)
 - Metadata-only import, so a 300-page PDF opens without rasterising anything
 - Reorder, rotate, skip, and insert blanks anywhere, with undo bounded to 50
   steps and debounced autosave
@@ -376,7 +379,7 @@ Not released. Expect breaking changes.
 | **Folio / saddle stitch** | **Experimental.** Geometry verified, ordering unverified on paper. [See above](#signatures--folio-saddle-stitch-experimental). |
 | **Manual-duplex printing** | Works, on built-in printer presets. |
 | **Binding schedules** | Works. |
-| **Calibration wizard** | **Not built.** Printing uses two generic built-in presets rather than a profile measured from your own printer. |
+| **Calibration wizard** | **Not built.** Printing uses two generic built-in presets rather than a profile measured from your own printer. You can now *choose* between them — the Print dialog's **Paper** picker describes each by how the sheets come out, remembers the choice per printer, and a hand-written calibration outranks both — but nothing measures your printer for you yet. |
 | **Front/back registration offset** | **Works, measured by hand.** Two numbers on the printer profile shift every back face so it lands behind its front — `--back-offset`, or `back_offset_x_pt`/`back_offset_y_pt` in the profile. Applied by both the CLI and the desktop print path. No other tool has this, because every other tool ends at a PDF and cannot know what your printer does to the second side. Corrects a **constant** offset only, not skew or scale. Finding your two numbers is currently trial-and-error against a printed proof; the calibration wizard is what will measure them in one pass. |
 | **Cut lines** | **Works.** `--trim 0.25in` draws the trim depth on head, tail and fore-edge — where the plough goes after sewing, and whether any text is inside it. The spine is never cut, and the fore-edge alternates with the gutter. |
 | **Source cropping** | **Works, in the app and on the command line.** `--crop L,B,R,T` removes space the source already has, with `--crop-even` for a scan whose gutter alternates, and `--auto-crop` to measure it from where the ink actually is. The insets are measured against the page **as displayed**, so a scan a viewer has straightened — one carrying a `/Rotate` flag — crops on the edges you can see rather than the ones the file stores. Every other setting adds space; this is the only one that takes it away, and it is what keeps type readable at a small trim size. |
@@ -390,9 +393,14 @@ Not released. Expect breaking changes.
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |
 
-The test suite is **608 passing, 17 skipped** — verified by running
-`python -m pytest -q` at the repository root. The skips are golden-fixture
-comparisons whose fixture is not committed.
+The test suite is **1,720 passing, 22 skipped** at `5e7280a` — verified by
+running `python -m pytest -q` at the repository root (on Linux, with
+`QT_QPA_PLATFORM=offscreen`). Fourteen of the skips are packaging-audit tests
+that need a built bundle in `dist/`, four are Windows-only path cases, three
+are the golden-fixture comparison whose 30 MB fixture is not committed, and
+one needs `psutil`. GitHub Actions runs the same command on Linux under
+CPython 3.11, 3.12 and 3.14 on every push, so this number is checked rather
+than remembered.
 
 ---
 
@@ -405,8 +413,9 @@ app layer stays replaceable.
 
 ```
 deckle/core/    models, loader, layout, export, render, printing, profiles,
-                marks, schedule, signatures, print_session, project_io,
-                outputs, session_log, diagnostics
+                marks, schedule, signatures, print_session, plan_digest,
+                project_io, outputs, session_log, diagnostics,
+                paper, paths, locate, schema, recent, dummy
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli.py   headless entry point, imports only deckle.core
 ```

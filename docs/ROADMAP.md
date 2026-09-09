@@ -29,6 +29,13 @@ nothing else. Start at that directory's `index.md`; read its
 > Verified by running the suite on Linux: **1636 passed, 22 skipped**.
 > New findings from the same audit are in `vault/` (gitignored), and the
 > cross-project view is in `../../ROADMAP.md`.
+>
+> **Second pass, 2026-09-09.** **B15**, **B26** and the whole of §4
+> (**D1-D11**, plus a new **D12** from the `vault/` audit) landed, along with
+> the "replaced `AppState` leaves a live debounce timer" clause of **B35**.
+> §4 is now closed. Suite on Linux: **1720 passed, 22 skipped, 1 xfailed**.
+> `tests/test_preview_paint.py` segfaults at Qt teardown *after* passing;
+> that is pre-existing and unrelated.
 
 Each item carries an ID so it can be referred to in that conversation.
 Sizes: **S** under a day, **M** a few days, **L** a week or more, or gated on
@@ -149,7 +156,7 @@ most of the HIGH bugs above are direct consequences of the first two.
 | **F1** ◐ | **Picker done 2026-09-08 (B16); the editor is not.** Choosing between the presets and having the choice persist now works — `PrinterProfile.save` has its first caller in `deckle/`, guarded so it declines rather than overwriting a hand-measured calibration. Setting back offset X/Y and imageable area by hand is still unbuilt, and is the rest of this item. Original finding: **Printer profile picker + editor in the app.** Choose between the two built-in presets, set back offset X/Y and imageable area, save under the printer's name. Nothing in `deckle/` ever calls `PrinterProfile.save`; the only writer of a profile today is a human with a text editor. This is most of the calibration wizard's *value* at a fraction of its cost, and it fixes B16, B21 and makes F3 usable. | GUIDE §6, README status table | Model + save/load complete | S |
 | **F2** | **Calibration wizard** (MVP sub-spec 13). The spec itself says: enumerate the 16-state space in a spike first, stop and escalate if it needs more than 5 questions. | README, CHANGELOG, GUIDE §6, hardening plan WS3 | Nothing beyond F1's model | L |
 | **F3** | **Registration target you read numbers off** (competitive gaps #1, "build it with the wizard"). Today: `--rule` and three rounds of trial and error. | README, GUIDE §6 | `--back-offset`, `--rule` | M |
-| **F4** | **Fold the folio dummy on paper** and record it. Gates F7, F8 and formal removal of "experimental". Cheap version is README "Check 0"; formal version (signatures v2 sub-spec 13) wants a calibrated profile first. | README, GUIDE §5, v2 index | `deckle dummy`, `fold_reading_order` | S effort, hardware |
+| **F4** | **Fold the folio dummy on paper** and record it. Gates F7, F8 and formal removal of "experimental". Cheap version is GUIDE §5 "Check 1" (the roadmap said README "Check 0"; it is in neither place under that name — corrected 2026-09-09 with D11); formal version (signatures v2 sub-spec 13) wants a calibrated profile first. | README, GUIDE §5, v2 index | `deckle dummy`, `fold_reading_order` | S effort, hardware |
 | **F5** | **CLI parity for margins**: `--margin-top/bottom/outer`, `--slack-to`, `--start-on-verso`, `--landscape-policy`. GUIDE §8 calls this "a genuine gap". `deckle impose` always writes zero-margin projects. | GUIDE §3, §8 | All are `LayoutSettings` fields | S |
 | **F6** | **Sheet-subset reprint from the GUI.** Design doc SC-10: select sheets in the preview → filtered plan. Dialog exposes only a signature selector; CLI has `--sheets`. | print-prep design | `plan_passes(sheets=)`, `export(sheets=)` | S |
 | **F7** | **Quarto / octavo** (competitive gaps #3). Layout is already cell-general; missing the 2×2 grid, per-cell 180° rotation, ordering table. Gated on F4. | competitive gaps, v2 design | `Cell`, `cell_geometry`, `fold_scheme` seam | M |
@@ -192,19 +199,28 @@ exclusions: fully offline), localisation, plugin API, cover generation
 
 ## 4. Documentation drift
 
+**This section is closed.** All twelve rows landed on 2026-09-09, and the two
+that are inventories rather than sentences -- the README's module list and the
+GUIDE's CLI reference -- are now enforced by `tests/test_docs_are_current.py`,
+which walks the real parser and the real package and fails naming what is
+missing. Everything else here is prose no test can keep honest, so it will
+drift again; §6 item 10 says to run this pass at the end of each milestone
+for that reason. Kept for the record.
+
 | ID | Claim | Reality |
 |---|---|---|
-| **D1** | README: "608 passing, 17 skipped" | 1531 collected, 1509 passing with 22 skipped on a green tree; decisions.md recorded 1416 on 2026-08-07. The README's explanation of the skips is also wrong: 14 of the 22 are packaging-audit skips, not golden-fixture ones |
-| **D2** | GUIDE §4, competitive-gaps status: "the desktop app has no crop controls at all" | False since `fa7d888` (Crop & trim tab, Measure crop from the ink) |
-| **D3** | GUIDE §6: "two built-in generic presets" | The app only ever resolves the first (B16) |
+| **D1** ✅ | README: "608 passing, 17 skipped" | ~~1531 collected, 1509 passing with 22 skipped on a green tree~~ **Fixed 2026-09-09:** 1,720 passing, 22 skipped at `5e7280a`, with the commit named beside the number and the 22 broken down by reason (14 packaging, 4 Windows-only, 3 golden, 1 `psutil`) instead of the old "golden-fixture comparisons", which was wrong about all but three of them |
+| **D2** ✅ | GUIDE §4, competitive-gaps status: "the desktop app has no crop controls at all" | ~~False since `fa7d888` (Crop & trim tab, Measure crop from the ink)~~ **Fixed 2026-09-09.** The GUIDE now names the tab and says what is genuinely still missing (an *interactive* editor — N11); the research record got a dated past-tense correction rather than a rewrite, and `docs/decisions.md` was left alone because the log is append-only |
+| **D3** ✅ | GUIDE §6: "two built-in generic presets" | ~~The app only ever resolves the first (B16)~~ **True as of B16, and the GUIDE says how 2026-09-09:** the Paper picker lists both by what they mean at the tray, remembers the choice per printer, and a hand-written calibration outranks both. The CLI names are given for anyone scripting it |
 | **D4** ✅ | GUIDE §3, README §4: red guide is "the printer's hardware limit" | ~~It is the generic preset's fixed 0.25in (B15)~~ **Both fixed 2026-09-09.** The guide now follows the selected printer's profile (B15), and both docs say which of the two you are looking at -- a measured calibration, or the generic preset standing in for one until N2 asks the driver. |
-| **D5** | GUIDE §8 CLI reference | Omits `crop-preview`, `dummy`, `--paper-weight/-type/-grade`, `--signatures`, `--crop*`, `--auto-crop*`, `--trim`, `--sheets`, `--rule`, `--pass`, `--back-offset`, `--profile`, and that a `.deckle` is accepted as SOURCE everywhere with its stored layout winning |
-| **D6** | GUIDE has no coverage of paper-by-weight, gathering suggestion, or autosave recovery (plan Task 10 called for a section) | README and CHANGELOG got it; GUIDE did not |
-| **D7** | README architecture module list | Omits `paper`, `paths`, `recent`, `schema`, `locate`, `dummy` |
-| **D8** | CHANGELOG Added: "CLI — impose, export, info, --version" | `crop-preview`, `dummy`, and most export flags appear only under Fixed or not at all |
-| **D9** | `tests/fixtures/README.md`: sample.pdf "checked in" | Gitignored (R0.1) |
-| **D10** | `main.py` docstring: printers refresh "whenever the printer menu is opened" | No such menu (B30) |
-| **D11** | GUIDE §5: "Check 0" and "Check 2" are the same check | Editorial |
+| **D5** ✅ | GUIDE §8 CLI reference | ~~Omits `crop-preview`, `dummy`, `--paper-weight/-type/-grade`, `--signatures`, `--crop*`, `--auto-crop*`, `--trim`, `--sheets`, `--rule`, `--pass`, `--back-offset`, `--profile`, and that a `.deckle` is accepted as SOURCE everywhere with its stored layout winning~~ **Fixed 2026-09-09**, all of it, plus an `export` only table and `-o`/`--output`. Now enforced: `tests/test_docs_are_current.py` walks the real parser and fails naming any command or `--flag` the section does not mention. The "Not available from the CLI" paragraph is untouched and still true — that is F5 |
+| **D6** ✅ | GUIDE has no coverage of paper-by-weight, gathering suggestion, or autosave recovery (plan Task 10 called for a section) | ~~README and CHANGELOG got it; GUIDE did not~~ **Fixed 2026-09-09.** The Caliper subsection became "Thickness, and how many sheets a gathering should hold" (three ways to give the number, why a derived one is an estimate, and what the suggestion's `creep`/`fold` reason means), and §4 ends with "If Deckle stops unexpectedly" — including the case the recovery cannot cover, a project never saved |
+| **D7** ✅ | README architecture module list | ~~Omits `paper`, `paths`, `recent`, `schema`, `locate`, `dummy`~~ **Fixed 2026-09-09** — those six plus `plan_digest`, which B3 added after this row was written. Enforced by `test_the_readme_lists_every_core_module` |
+| **D8** ✅ | CHANGELOG Added: "CLI — impose, export, info, --version" | ~~`crop-preview`, `dummy`, and most export flags appear only under Fixed or not at all~~ **Fixed 2026-09-09.** All six commands and the export flags are in Added; the Fixed entries for `crop-preview` and `dummy` were left alone, being true and dated |
+| **D9** ✅ | `tests/fixtures/README.md`: sample.pdf "checked in" | ~~Gitignored~~ Made true by **R0.1**, not by editing the sentence. Verified 2026-09-09: the file is tracked and `tests/test_fixture_is_tracked.py` says so |
+| **D10** ✅ | `main.py` docstring: printers refresh "whenever the printer menu is opened" | ~~No such menu~~ **Fixed 2026-09-09.** The docstring now describes the background worker that exists and states the consequence outright -- a printer plugged in after launch is not seen until restart -- naming B30 as the fix rather than describing it as already done |
+| **D12** ✅ | `run.bat`: "Install Python 3.12+" | ~~`pyproject.toml` and CI both say 3.11~~ **Filed and fixed 2026-09-09** (found in the `vault/` audit, absent from this table). `run.bat` now says 3.11+, matching `requires-python` and the CI matrix's floor. Two other rows from the same audit were re-checked and are already true: `refresh_from_project`'s "Signals are blocked throughout" (B12 made it so) and `list_resumable`'s "Never raises" (B38) |
+| **D11** ✅ | GUIDE §5: "Check 0" and "Check 2" are the same check | ~~Editorial~~ **Fixed 2026-09-09.** The duplicate is deleted and the remaining two renumbered 1 and 2, matching the preamble's "Two ways ... do one". F4's pointer to a README "Check 0" was corrected in the same pass: there is no such heading in the README, and never was |
 
 ---
 

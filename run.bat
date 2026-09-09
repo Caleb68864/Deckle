@@ -25,7 +25,7 @@ if exist "venv\Scripts\python.exe"  set "PY=venv\Scripts\python.exe"
 "%PY%" --version >nul 2>&1
 if errorlevel 1 (
     echo [deckle] Python not found on PATH.
-    echo          Install Python 3.12+ or create a venv in .venv\
+    echo          Install Python 3.11+ or create a venv in .venv\
     goto :fail
 )
 
