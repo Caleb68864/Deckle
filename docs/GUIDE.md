@@ -200,12 +200,27 @@ The preview draws two rectangles that are easy to confuse:
   cannot mark, typically 0.16–0.25 inches. Deckle cannot infer this from the
   imposition, because the imposer never sees the printer; the preview and
   "Use printer margins" both read it from the profile of the printer selected
-  in the Print dialog. **Which means it is only as true as that profile.** A
-  printer you have calibrated draws its measured border. One you have not
-  draws the generic preset's 0.25in stand-in, which is a plausible number and
-  not *your* number — Deckle does not yet ask the driver for the real
-  printable rectangle. Print a proof sheet before trusting the last eighth of
-  an inch.
+  in the Print dialog. **Which means it is only as true as that profile.**
+  There are three cases, in descending order of how much they are worth:
+
+  1. **A printer you have calibrated** draws its measured border — you
+     printed a target and put a ruler on it. This is the only one that has
+     been checked against paper.
+  2. **A printer you have not calibrated, whose driver reports a border,**
+     draws what the driver said. Deckle asks each printer at startup for its
+     non-printable margins and fills them in. It is *your* printer's number,
+     but nobody has verified it against a sheet, and drivers are known to
+     round it, report it for the wrong paper size, or state it for a page
+     orientation you are not using.
+  3. **Everything else** — a driver that reports nothing, a virtual printer,
+     a queue Qt does not recognise, or no printer at all — draws the generic
+     preset's 0.25in stand-in, which is a plausible number and not *your*
+     number.
+
+  Deckle never treats "this printer reports no border" as "this printer
+  prints to the very edge of the sheet"; a driver that declines to answer
+  falls back to case 3. In every case, print a proof sheet before trusting
+  the last eighth of an inch.
 - **Dashed blue — the content box.** Your margins. It mirrors between recto
   and verso.
 
