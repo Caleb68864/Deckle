@@ -42,3 +42,4 @@ of it.
    core.schedule
    core.session_log
    core.diagnostics
+   core.about

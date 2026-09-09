@@ -427,6 +427,42 @@ def proof_rule_length_pt(paper_width_pt: float) -> float:
     return whole_inches * PT_PER_INCH
 
 
+RULE_TOO_NARROW_NOTE = "this sheet is too narrow for a rule, so none was drawn"
+"""Said when :func:`proof_rule_length_pt` answers zero.
+
+Worth saying at all because the alternative is a proof sheet that looks
+like every other proof sheet and carries no rule -- a user measuring
+nothing and concluding their printer is fine.
+"""
+
+
+def proof_rule_advice(paper_width_pt: float) -> str:
+    """What to measure on a proof sheet, and what a short answer means.
+
+    The rule is labelled on the sheet, but the number belongs in the
+    program's own words too: it is what turns "print this and look at it"
+    into a check with a pass condition, and the person reading it is the
+    one about to walk to the printer.
+
+    Shared by the CLI's ``--rule`` and the print dialog's proof checkbox,
+    because they are the same check and a user who has done one should
+    recognise the other.
+
+    :param paper_width_pt: the sheet width in points.
+    :returns: the sentence to show, or :data:`RULE_TOO_NARROW_NOTE` when
+        the sheet is too narrow to carry a rule at all.
+    """
+    length = proof_rule_length_pt(paper_width_pt)
+    if length <= 0:
+        return RULE_TOO_NARROW_NOTE
+    inches = int(round(length / PT_PER_INCH))
+    return (
+        f"measure the printed rule: it should be {inches} in exactly. "
+        "If it is short, the printer scaled the page -- turn off "
+        '"fit to page" and print again.'
+    )
+
+
 def _draw_proof_rule(dest_page: pikepdf.Page, paper_pt: tuple[float, float]) -> None:
     """Draw a ruler of known length, labelled with that length.
 

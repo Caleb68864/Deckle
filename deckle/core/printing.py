@@ -185,3 +185,62 @@ def plan_passes(
             rotate_backs=profile.flip_axis == "long",
         ),
     ]
+
+
+@dataclass(frozen=True)
+class PassExport:
+    """One pass, expressed as the arguments that write it to a PDF.
+
+    A pass printed here and a pass exported to be printed somewhere else --
+    a copy shop, a second machine, a friend's laser -- are the same physical
+    pass, so they must come from the same arithmetic. They did not: the CLI
+    assembled the ``export`` call for ``--pass`` itself, and the desktop app
+    could not export a pass at all.
+
+    :ivar side: which face this pass carries.
+    :ivar sheets: the sheet indices in the order they are fed.
+    :ivar rotate_180: whether every page needs the half turn a long-edge
+        flip demands.
+    :ivar back_offset_pt: the profile's measured back-side correction, which
+        applies to the back pass and is inert on the front.
+    :ivar reload_instruction: what the person at the printer has to do
+        before feeding this pass. It travels with the file because whoever
+        prints it may never have seen Deckle.
+    """
+
+    side: Literal["front", "back"]
+    sheets: list[int]
+    rotate_180: bool
+    back_offset_pt: tuple[float, float]
+    reload_instruction: str
+
+
+def pass_export(
+    plan: SheetPlan,
+    profile: PrinterProfile,
+    side: Literal["front", "back"],
+    sheets: Sequence[int] | None = None,
+) -> PassExport:
+    """The one pass named by ``side``, ready to hand to ``export``.
+
+    Everything comes from :func:`plan_passes`; nothing is recomputed. A
+    second implementation of the ordering table would be free to disagree
+    with the first about the same printer, and the paper would be wrong
+    while both halves looked right.
+
+    :param plan: the imposed sheets.
+    :param profile: how the printer hands paper back. Not optional and
+        never defaulted -- neither the sheet order nor the half turn has a
+        safe default, and guessing prints every back onto the wrong front.
+    :param sheets: a narrower selection, or ``None`` for the whole plan.
+    :returns: the pass, as export arguments.
+    """
+    passes = plan_passes(plan, profile, sheets=sheets)
+    print_pass = next(p for p in passes if p.side == side)
+    return PassExport(
+        side=print_pass.side,
+        sheets=list(print_pass.sheet_order),
+        rotate_180=print_pass.side == "back" and print_pass.rotate_backs,
+        back_offset_pt=(profile.back_offset_x_pt, profile.back_offset_y_pt),
+        reload_instruction=print_pass.reload_instruction,
+    )
