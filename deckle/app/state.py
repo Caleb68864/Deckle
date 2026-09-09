@@ -29,8 +29,9 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import replace
-from typing import Callable
+from typing import Callable, Sequence
 
+from deckle.core.loader import apply_page_selection
 from deckle.core.models import BLANK_SOURCE_PATH, Project, SourcePage, SourceRef
 from deckle.core.project_io import save_project
 
@@ -156,6 +157,58 @@ def toggle_skip(project: Project, index: int) -> Project:
     pages = list(project.pages)
     pages[index] = replace(pages[index], skipped=not pages[index].skipped)
     return replace(project, pages=pages)
+
+
+def skip_pages(project: Project, indices: Sequence[int]) -> Project:
+    """Mark every page in ``indices`` skipped, leaving the rest alone.
+
+    Distinct from :func:`toggle_skip`, which flips one page, and from
+    ``arrange_view.skip_many``, which decides once for a selection: a range
+    is *stated*, not toggled, so naming a page that is already skipped is
+    not a request to bring it back.
+
+    :param project: the project to derive a new one from.
+    :param indices: 0-based page indices.
+    :returns: a new project.
+    :raises ValueError: an index is outside the document.
+    """
+    return replace(
+        project,
+        pages=apply_page_selection(project.pages, skip=list(indices)),
+    )
+
+
+def remove_pages(project: Project, indices: Sequence[int]) -> Project:
+    """Delete pages from the document.
+
+    The only operation here that removes rather than flags. Skipping keeps
+    a page in the list so un-skipping restores it where it was, which is
+    right for "not in this book" and wrong for "not in this project at
+    all": a 312-page scan whose sixteen pages of front matter are merely
+    skipped is still 312 pages in the grid, in the ``.deckle``, and in
+    every source-hash check ``load_project`` runs on open.
+
+    Undoable like every other mutation -- it goes through
+    :meth:`AppState.mutate`, which snapshots the whole frozen ``Project``
+    first, so a removal is one Ctrl+Z away for as long as it is on the
+    bounded stack.
+
+    :param project: the project to derive a new one from. Never mutated.
+    :param indices: which pages to remove. Order and repeats are
+        irrelevant; each named page is removed once.
+    :returns: a new project without them.
+    :raises IndexError: an index is out of range -- matching
+        :func:`set_rotation` and :func:`toggle_skip`, which raise rather
+        than skipping a bad index.
+    """
+    doomed = set(indices)
+    for index in doomed:
+        if not 0 <= index < len(project.pages):
+            raise IndexError(index)
+    return replace(
+        project,
+        pages=[page for i, page in enumerate(project.pages) if i not in doomed],
+    )
 
 
 def insert_blank(project: Project, index: int) -> Project:

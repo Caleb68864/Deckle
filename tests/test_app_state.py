@@ -374,3 +374,89 @@ def test_300_page_import_completes_well_under_100ms_on_calling_thread(tmp_path, 
     load_and_apply_import(state, str(tmp_path / "big.pdf"))
     elapsed_ms = (time.monotonic() - started) * 1000
     assert elapsed_ms < 100
+
+
+# --- removing and skipping whole ranges ----------------------------------
+
+
+def test_remove_pages_deletes_them():
+    from deckle.app.state import remove_pages
+
+    result = remove_pages(_make_project(5), [1, 3])
+
+    assert [p.ref.page_index for p in result.pages] == [0, 2, 4]
+
+
+def test_remove_pages_ignores_order_and_repeats():
+    from deckle.app.state import remove_pages
+
+    project = _make_project(5)
+
+    assert remove_pages(project, [3, 1, 3]) == remove_pages(project, [1, 3])
+
+
+def test_remove_pages_does_not_mutate_the_original():
+    from deckle.app.state import remove_pages
+
+    project = _make_project(5)
+
+    remove_pages(project, [0])
+
+    assert len(project.pages) == 5
+
+
+def test_remove_pages_rejects_a_bad_index():
+    """Raises rather than skipping it, matching `set_rotation` and
+    `toggle_skip` -- a silently ignored index removes the wrong page."""
+    import pytest
+
+    from deckle.app.state import remove_pages
+
+    with pytest.raises(IndexError):
+        remove_pages(_make_project(5), [9])
+
+
+def test_removing_every_page_leaves_an_empty_document():
+    from deckle.app.state import remove_pages
+
+    assert remove_pages(_make_project(5), list(range(5))).pages == []
+
+
+def test_remove_is_undoable():
+    from deckle.app.state import remove_pages
+
+    state = AppState(_make_project(5))
+
+    state.mutate(lambda p: remove_pages(p, [0, 1]))
+    state.undo()
+
+    assert [p.ref.page_index for p in state.project.pages] == [0, 1, 2, 3, 4]
+
+
+def test_skip_pages_states_rather_than_toggles():
+    """A range is stated, so naming a page that is already skipped is not
+    a request to bring it back."""
+    from deckle.app.state import skip_pages
+
+    project = skip_pages(_make_project(4), [0])
+
+    result = skip_pages(project, [0, 1])
+
+    assert [p.skipped for p in result.pages] == [True, True, False, False]
+
+
+def test_skip_pages_never_removes_anything():
+    from deckle.app.state import skip_pages
+
+    result = skip_pages(_make_project(4), [1, 2])
+
+    assert [p.ref.page_index for p in result.pages] == [0, 1, 2, 3]
+
+
+def test_skip_pages_rejects_a_page_the_document_does_not_have():
+    import pytest
+
+    from deckle.app.state import skip_pages
+
+    with pytest.raises(ValueError, match="no page 400"):
+        skip_pages(_make_project(4), [399])

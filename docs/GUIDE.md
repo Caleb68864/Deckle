@@ -829,7 +829,7 @@ server with no display libraries installed at all.
 | `impose SOURCE -o OUT.deckle` | Impose and write a `.deckle` project file, to open in the app. Also takes `--printer NAME` to record a printer with it. |
 | `schedule SOURCE [-o OUT.txt]` | Print the binding schedule. Defaults to stdout. |
 | `crop-preview SOURCE -o OUT.png` | Write a composite of every page with a proposed crop drawn on it, to look at before you commit to the numbers. `--parity odd`/`--parity even` for a scan whose gutter alternates; `--dpi` sets the rasterisation resolution (default `72`). |
-| `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`), `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
+| `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`) — here a *count*, not the page selection the layout options below describe, because `dummy` has no source to select from — and `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
 
 `-o`, or `--output`, is the destination in every command that writes one.
 `schedule` is the only one where it is optional; without it the schedule goes
@@ -875,6 +875,7 @@ is the plan `export` writes.
 | `--auto-crop-margin LENGTH` | `0` | Keep this much back from every edge `--auto-crop` found, for descenders and hairline rules a low-dpi scan can miss. |
 | `--trim LENGTH` | `0` | Draw cut lines this far in from head, tail and fore-edge, where the block is trimmed square after sewing. The spine is never cut. |
 | `--sewing-stations N` | `3` | Folio only. `0` disables the marks. |
+| `--pages SPEC` | every page | Use only these pages of the source, counting from **1** as your PDF viewer does — `7-312`, `1,3`, `7-312,400`. A public-domain scan carries a scanner target, a bookplate and a colophon, and none of them belong in the book. The pages you leave out are marked *skipped*, not deleted: a `.deckle` written this way keeps the whole source and the decision, so reopening it shows what was excluded rather than a document that mysteriously starts at page 7. Applied before `--auto-crop`, so a scanner target's calibration bar cannot widen the measured ink extent of the book. Ignored for a `.deckle` source, which carries its own. |
 
 **Lengths** accept `in`, `pt`, `mm` or `cm`, with or without a space:
 `0.75in`, `18pt`, `5 mm`. A bare number means points.

@@ -1,4 +1,16 @@
-"""ArrangeView: the thumbnail grid -- drag reorder, rotate, skip, insert-blank.
+"""ArrangeView: the grid -- drag reorder, rotate, skip, remove, insert-blank.
+
+Removing is the one operation here that deletes rather than flags.
+Everything else keeps the page in the list, because a skipped page
+un-skips where it was; Remove is for a page that should not be in the
+project at all. It still goes through ``AppState.mutate``, so it is one
+Ctrl+Z away.
+
+Every multi-page gesture is a single ``mutate``. A loop over the one-page
+helpers would be simpler to write and wrong to use: selecting forty pages
+and skipping them would bury forty entries in a bounded undo stack, so the
+single Ctrl+Z the user expects would undo one page and lose the rest of
+their history.
 
 Reordering, rotating, skipping, and inserting a blank all mutate the
 in-memory ``list[SourcePage]`` on ``AppState.project`` -- **never** a
@@ -31,9 +43,11 @@ from deckle.core.models import is_blank_page
 from deckle.app.state import (
     AppState,
     insert_blank,
+    remove_pages,
     reorder_pages,
     reorder_pages_to,
     set_rotation,
+    skip_pages,
     toggle_skip,
 )
 from deckle.core.models import Project, SourcePage
@@ -204,6 +218,92 @@ def skip_many(state: AppState, indices: Sequence[int]) -> None:
         return project
 
     state.mutate(apply)
+
+
+def skip_page_range(state: AppState, indices: Sequence[int]) -> None:
+    """Mark a stated range skipped, as one change.
+
+    One ``mutate`` for the whole range, for the same reason
+    :func:`skip_many` is one: sixteen pages of front matter skipped one
+    call at a time would bury sixteen entries in a bounded undo stack, and
+    the single Ctrl+Z the user expects would bring back one page.
+
+    Distinct from :func:`skip_many`, which toggles what is *selected*. A
+    range is stated, so a page already skipped stays skipped.
+
+    :param state: the app state to mutate.
+    :param indices: 0-based page indices.
+    :returns: nothing. An empty range is a no-op.
+    :raises ValueError: an index is outside the document.
+    """
+    rows = list(indices)
+    if not rows:
+        return
+    state.mutate(lambda project: skip_pages(project, rows))
+
+
+def remove(state: AppState, indices: Sequence[int]) -> None:
+    """Delete pages, through ``AppState.mutate``.
+
+    One mutation for the whole set, so removing a chapter is one step of
+    undo rather than one per page -- and so the single Ctrl+Z that brings
+    them back does not also cost the rest of the history.
+
+    :param state: the app state to mutate.
+    :param indices: which pages to remove.
+    :returns: nothing.
+    :raises IndexError: an index is out of range.
+    """
+    state.mutate(lambda project: remove_pages(project, indices))
+
+
+def parse_page_range(text: str, page_count: int) -> list[int]:
+    """A ``1-6, 309-312`` range as 0-based page indices.
+
+    The same grammar ``deckle export --sheets`` and ``deckle export
+    --pages`` accept -- numbers and inclusive ranges, comma-separated --
+    and 1-based for the same reason ``--pages`` is: a person types what
+    their PDF viewer shows.
+
+    Written here rather than imported from :mod:`deckle.cli`, because the
+    app must not depend on the CLI: ``deckle.cli`` sits above
+    ``deckle.core`` alone and never touches ``deckle.app``. The duplication
+    is a real cost; a parity test pins the two together, and the CLI split
+    is where they finally share one implementation in ``deckle.core``.
+
+    :param text: the raw text the user typed.
+    :param page_count: how many pages the document has, for bounds.
+    :returns: 0-based indices, ascending, without repeats.
+    :raises ValueError: empty, malformed, backwards, or out of range. The
+        message is shown to the user, so it names the remedy.
+    """
+    items = [item.strip() for item in text.split(",")]
+    if not text.strip() or any(not item for item in items):
+        raise ValueError(
+            "give page numbers or ranges separated by commas, such as "
+            "1-6, 309-312 -- counting from 1, as your PDF viewer does"
+        )
+    indices: set[int] = set()
+    for item in items:
+        bounds = [part.strip() for part in item.split("-")]
+        if len(bounds) > 2 or any(not part.isdigit() for part in bounds):
+            raise ValueError(
+                f"{item!r} is not a page number or an inclusive range "
+                "like 309-312"
+            )
+        start, end = int(bounds[0]), int(bounds[-1])
+        if start < 1 or end < 1:
+            raise ValueError("pages are numbered from 1")
+        if end < start:
+            raise ValueError(f"the range {item!r} runs backwards")
+        for number in range(start, end + 1):
+            if number > page_count:
+                raise ValueError(
+                    f"no page {number} in this document -- it has "
+                    f"{page_count} page(s)"
+                )
+            indices.add(number - 1)
+    return sorted(indices)
 
 
 def blank_insert_choices(page_count: int) -> list[tuple[str, int]]:
@@ -524,6 +624,8 @@ class ArrangeView:
         *,
         choose_blank_position=None,
         choose_move_target=None,
+        ask_skip_range=None,
+        confirm_remove=None,
     ) -> None:
         """
         :param state: the app state to arrange.
@@ -532,6 +634,12 @@ class ArrangeView:
             :func:`blank_insert_choices` and returning the chosen index, or
             ``None`` to cancel. Injectable so the flow can be driven
             headlessly -- the default opens a modal, which a test cannot.
+        :param ask_skip_range: called with the page count and returning the
+            range text, or ``None`` to cancel. Injectable for the same
+            reason.
+        :param confirm_remove: called with how many pages are about to be
+            deleted and returning whether to go ahead. Injectable for the
+            same reason.
         """
         QObject, QThread, Signal = _qt_core()
 
@@ -570,6 +678,8 @@ class ArrangeView:
         self._choose_move_target = (
             choose_move_target or self._default_choose_move_target
         )
+        self._ask_skip_range = ask_skip_range or self._default_ask_skip_range
+        self._confirm_remove = confirm_remove or self._default_confirm_remove
         self.widget = QWidget(parent)
         outer = QVBoxLayout(self.widget)
 
@@ -612,15 +722,37 @@ class ArrangeView:
         toolbar = QHBoxLayout()
         self.rotate_button = QPushButton("Rotate", self.widget)
         self.skip_button = QPushButton("Skip", self.widget)
+        self.skip_range_button = QPushButton("Skip range...", self.widget)
+        self.skip_range_button.setToolTip(
+            "Mark a range of pages skipped in one go -- 1-6, 309-312.\n\n"
+            "Page numbers count from 1, as your PDF viewer does. A scanned "
+            "book usually opens with a scanner target, a bookplate and two "
+            "blank leaves and closes with a colophon; skipping them one at "
+            "a time is sixteen clicks.\n\n"
+            "Skipped pages stay in the list and can be brought back."
+        )
         self.insert_blank_button = QPushButton("Insert Blank", self.widget)
+        self.remove_button = QPushButton("Remove", self.widget)
+        self.remove_button.setToolTip(
+            "Delete the selected pages from the project.\n\n"
+            "Different from Skip: a skipped page stays in the list and "
+            "comes back with one click, which is what you want for a page "
+            "that is not in THIS book. Remove is for a page that should "
+            "not be in the project at all.\n\n"
+            "Undoable with Ctrl+Z. It does not touch the source file."
+        )
         toolbar.addWidget(self.rotate_button)
         toolbar.addWidget(self.skip_button)
+        toolbar.addWidget(self.skip_range_button)
         toolbar.addWidget(self.insert_blank_button)
+        toolbar.addWidget(self.remove_button)
         outer.addLayout(toolbar)
 
         self.rotate_button.clicked.connect(self._on_rotate_clicked)
         self.skip_button.clicked.connect(self._on_skip_clicked)
+        self.skip_range_button.clicked.connect(self._on_skip_range_clicked)
         self.insert_blank_button.clicked.connect(self._on_insert_blank_clicked)
+        self.remove_button.clicked.connect(self.remove_selection)
         self.list_widget.reorder_requested.connect(self.move_pages)
         self.list_widget.setContextMenuPolicy(_qt_custom_context_menu())
         self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
@@ -736,6 +868,93 @@ class ArrangeView:
         self._reselect(rows)
         self.pages_changed.emit()
 
+    def _default_ask_skip_range(self, page_count: int) -> str | None:
+        """Ask which pages to skip. Replaceable for tests.
+
+        :param page_count: how many pages the document has, for the prompt.
+        :returns: the text typed, or ``None`` if cancelled.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        text, ok = QInputDialog.getText(
+            self.widget,
+            "Skip a range of pages",
+            f"Which pages should be skipped?  (1 to {page_count}, "
+            "e.g. 1-6, 309-312)",
+        )
+        return text if ok else None
+
+    def _on_skip_range_clicked(self) -> None:
+        """Mark a stated range skipped, then re-impose.
+
+        :returns: nothing. A malformed range is reported on the button's
+            tooltip and does nothing else -- it is a typo, and the grid is
+            not a place to raise.
+        """
+        count = len(self.state.project.pages)
+        if count == 0:
+            return
+        text = self._ask_skip_range(count)
+        if not text:
+            return
+        try:
+            indices = parse_page_range(text, count)
+        except ValueError as exc:
+            self.skip_range_button.setToolTip(str(exc))
+            return
+        skip_page_range(self.state, indices)
+        self.refresh()
+        self._reselect(indices)
+        self.pages_changed.emit()
+
+    def _default_confirm_remove(self, count: int) -> bool:
+        """Ask before deleting pages. Replaceable for tests.
+
+        :param count: how many pages are about to go.
+        :returns: whether to go ahead.
+        """
+        from PySide6.QtWidgets import QMessageBox
+
+        answer = QMessageBox.question(
+            self.widget,
+            "Remove pages?",
+            f"Remove {count} page(s) from the project?\n\n"
+            "Skip instead if you only want them left out of this book -- "
+            "a skipped page stays in the list. This can be undone with "
+            "Ctrl+Z, and it does not change the source file.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def remove_selection(self) -> None:
+        """Delete the selected pages, after confirming.
+
+        Confirmed because it is the only destructive action in the grid and
+        the only one whose result is not visible as a change to something
+        still on screen -- an accidental Remove of twelve pages in a
+        312-page document looks exactly like nothing happening.
+
+        :returns: nothing. One mutation for the whole selection, so one
+            Ctrl+Z brings them all back -- a loop over a one-page helper
+            would bury the rest of the history under the removal.
+        """
+        rows = self._selected_indices()
+        if not rows:
+            return
+        if not self._confirm_remove(len(rows)):
+            return
+        remove(self.state, rows)
+        self.refresh()
+        # Land the cursor where the removed pages were, so the next action
+        # has somewhere obvious to act. `refresh` drops the selection, as
+        # `move_pages` records; there is nothing to restore here, because
+        # the rows it named are gone.
+        if self.state.project.pages:
+            self.list_widget.setCurrentRow(
+                min(rows[0], len(self.state.project.pages) - 1)
+            )
+        self.pages_changed.emit()
+
     def _reselect(self, rows: Sequence[int]) -> None:
         """Put the selection back after a refresh that did not move anything.
 
@@ -827,7 +1046,14 @@ class ArrangeView:
         skip_action = menu.addAction(
             "Skip / unskip" if len(rows) == 1 else f"Skip / unskip {len(rows)} pages"
         )
+        skip_range_action = menu.addAction("Skip range...")
         blank_action = menu.addAction("Insert blank...")
+        # Below a separator, at the bottom, away from Skip -- they are one
+        # click apart and only one of them is destructive.
+        menu.addSeparator()
+        remove_action = menu.addAction(
+            "Remove page" if len(rows) == 1 else f"Remove {len(rows)} pages"
+        )
 
         chosen = menu.exec(self.list_widget.viewport().mapToGlobal(point))
         if chosen is None:
@@ -838,8 +1064,12 @@ class ArrangeView:
             self._on_rotate_clicked()
         elif chosen is skip_action:
             self._on_skip_clicked()
+        elif chosen is skip_range_action:
+            self._on_skip_range_clicked()
         elif chosen is blank_action:
             self._on_insert_blank_clicked()
+        elif chosen is remove_action:
+            self.remove_selection()
 
     def _move_selection_via_dialog(self, rows: Sequence[int]) -> None:
         """Ask where ``rows`` should go, then move them there.

@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+from dataclasses import replace
 from pathlib import Path
+from typing import Sequence
 
 import img2pdf
 import natsort
@@ -232,6 +234,63 @@ class ImportedPages(list):
     def __init__(self, pages, warnings: list[LayoutWarning] | None = None):
         super().__init__(pages)
         self.warnings: list[LayoutWarning] = warnings or []
+
+
+def apply_page_selection(
+    pages: Sequence[SourcePage],
+    *,
+    keep: Sequence[int] | None = None,
+    skip: Sequence[int] | None = None,
+) -> list[SourcePage]:
+    """Mark pages skipped, by keeping some or by skipping some.
+
+    Skipped, never removed. A skipped page holds its place in the list,
+    shows as ``(skipped)`` in the arrange grid, is excluded from imposition
+    by every consumer of ``SourcePage.skipped``, and is one click from
+    coming back -- none of which is true of a page that was deleted. It is
+    also what makes a saved project honest: it records what was left out,
+    rather than a document that mysteriously starts at page 7.
+
+    :param pages: the loaded pages, in document order.
+    :param keep: 0-based indices to KEEP. Every other page is marked
+        skipped. A page already skipped stays skipped even if kept -- this
+        narrows a document, it never un-skips.
+    :param skip: 0-based indices to mark skipped, leaving the rest as they
+        are.
+    :returns: a new list. The input is never mutated; ``SourcePage`` is
+        frozen.
+    :raises ValueError: both ``keep`` and ``skip`` were given, or an index
+        is outside the document. Refused rather than ignored: a range that
+        names nothing is a typo, and silently producing a different book
+        than the one asked for is the failure this whole feature exists to
+        prevent.
+    """
+    if keep is not None and skip is not None:
+        raise ValueError(
+            "give either keep or skip, not both: they are opposite ways "
+            "of naming the same selection"
+        )
+    named = list(keep if keep is not None else (skip or ()))
+    out_of_range = sorted({i for i in named if not 0 <= i < len(pages)})
+    if out_of_range:
+        # 1-based in the message because that is what the user typed --
+        # the same split `schedule._page_numbers` draws between the page a
+        # person names and the index that addresses a file.
+        raise ValueError(
+            "no page "
+            + ", ".join(str(i + 1) for i in out_of_range)
+            + f" in this document -- it has {len(pages)} page(s), "
+            f"numbered 1 to {len(pages)}"
+        )
+    if keep is None and skip is None:
+        return list(pages)
+    chosen = set(named)
+    return [
+        replace(page, skipped=True)
+        if ((index not in chosen) if keep is not None else (index in chosen))
+        else page
+        for index, page in enumerate(pages)
+    ]
 
 
 def _sha256_file(path: str) -> str:

@@ -183,3 +183,129 @@ def test_export_says_nothing_extra_when_there_are_no_warnings(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "layout warnings" not in result.stderr
+
+
+# --- --pages: narrowing a scan to the book inside it ---------------------
+#
+# Skipped, never deleted. A `.deckle` written with `--pages` keeps the whole
+# source and the decision, so reopening it shows what was excluded rather
+# than a document that mysteriously starts at page 7.
+
+
+def _dummy(tmp_path, pages: int = 8):
+    path = tmp_path / "d.pdf"
+    assert main(["dummy", "-o", str(path), "--pages", str(pages)]) == 0
+    return str(path)
+
+
+def test_pages_narrows_the_document(tmp_path):
+    import json
+
+    source = _dummy(tmp_path, 8)
+    out = tmp_path / "job.deckle"
+
+    rc = main(["impose", source, "-o", str(out), "--pages", "3-6"])
+
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert len(data["pages"]) == 8, "pages were deleted, not skipped"
+    assert [p["skipped"] for p in data["pages"]] == [
+        True, True, False, False, False, False, True, True
+    ]
+
+
+def test_pages_naming_a_page_that_is_not_there_fails_cleanly(tmp_path, capsys):
+    source = _dummy(tmp_path, 8)
+    out = tmp_path / "job.deckle"
+
+    rc = main(["impose", source, "-o", str(out), "--pages", "400"])
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "no page 400" in err
+    assert "8 page(s)" in err
+    assert not out.exists(), "a refused selection still wrote a project"
+
+
+def test_pages_that_keep_nothing_fails_cleanly(tmp_path, capsys, monkeypatch):
+    """Skipping every page produces a plan with no sheets, and `export`
+    would then write a 0-page PDF and report success -- the worst pair.
+
+    Reached by patching the loader, because the CLI cannot otherwise hand
+    `--pages` a document whose kept set is already empty.
+    """
+    from dataclasses import replace
+
+    import deckle.cli as cli
+
+    source = _dummy(tmp_path, 4)
+    real = cli._load_source
+
+    def all_skipped(path):
+        return [replace(page, skipped=True) for page in real(path)]
+
+    monkeypatch.setattr(cli, "_load_source", all_skipped)
+    out = tmp_path / "job.deckle"
+
+    rc = main(["impose", source, "-o", str(out), "--pages", "1-4"])
+
+    assert rc == 1
+    assert "kept no pages" in capsys.readouterr().err
+
+
+def test_pages_is_reported_as_ignored_for_a_project_source(tmp_path, capsys):
+    source = _dummy(tmp_path, 4)
+    project = tmp_path / "job.deckle"
+    assert main(["impose", source, "-o", str(project)]) == 0
+    out = tmp_path / "out.pdf"
+
+    rc = main(["export", str(project), "-o", str(out), "--pages", "1-2"])
+
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--pages" in err
+    assert "carries its own layout" in err
+
+
+def test_pages_narrows_what_auto_crop_measures(tmp_path, capsys, monkeypatch):
+    """The selection is applied BEFORE `--auto-crop`, so a scanner target's
+    calibration bar cannot widen the measured ink extent of the book."""
+    import deckle.cli as cli
+
+    source = _dummy(tmp_path, 4)
+    seen: list[list[bool]] = []
+
+    def record(pages, margin_pt=0.0):
+        seen.append([page.skipped for page in pages])
+        return (None, None)
+
+    monkeypatch.setattr("deckle.core.render.auto_crop_insets", record)
+    out = tmp_path / "job.deckle"
+
+    assert main([
+        "impose", source, "-o", str(out), "--auto-crop", "--pages", "2-4",
+    ]) == 0
+
+    assert seen == [[True, False, False, False]], (
+        "auto-crop measured pages the selection had already excluded"
+    )
+    assert cli is not None
+
+
+def test_the_import_warnings_survive_a_page_selection(tmp_path, capsys):
+    """`apply_page_selection` returns a plain list, which drops
+    `ImportedPages.warnings`. The CLI rewraps them, or every mixed-DPI
+    advisory vanishes the moment someone uses --pages."""
+    from PIL import Image
+
+    folder = tmp_path / "scan"
+    folder.mkdir()
+    for index, dpi in enumerate((72, 300)):
+        image = Image.new("RGB", (200, 300), "white")
+        image.save(folder / f"p{index}.png", dpi=(dpi, dpi))
+    out = tmp_path / "job.deckle"
+
+    rc = main(["impose", str(folder), "-o", str(out), "--pages", "1-2"])
+
+    assert rc == 0
+    assert "mixed_dpi" in capsys.readouterr().err

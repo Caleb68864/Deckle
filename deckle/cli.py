@@ -27,7 +27,13 @@ from deckle.core.printing import plan_passes
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 from deckle.core.layout import GutterShiftStrategy, LayoutStrategy, SaddleStitchStrategy
 from deckle.core.diagnostics import log_event, log_exception
-from deckle.core.loader import SourceLoadError, load_image_dir, load_pdf
+from deckle.core.loader import (
+    ImportedPages,
+    SourceLoadError,
+    apply_page_selection,
+    load_image_dir,
+    load_pdf,
+)
 from deckle.core.models import LayoutSettings, Project, SourcePage
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.paper import (
@@ -294,6 +300,64 @@ def _parse_crop(value: str) -> tuple[float, float, float, float]:
     return tuple(_parse_length_pt(part) for part in parts)
 
 
+def _parse_index_selection(
+    value: str, *, noun: str, example: str, offset: int = 0
+) -> list[int]:
+    """Comma-separated numbers and inclusive ranges, as a list of indices.
+
+    One grammar, two flags. ``--sheets`` counts from 0 because it names
+    Deckle's own artefact (``Sheet.index``, the warnings, the schedule);
+    ``--pages`` counts from 1 because it names the user's document and a
+    person types what their PDF viewer shows. ``offset`` is what reconciles
+    them: it is subtracted from every number, so the caller states the base
+    once instead of every consumer remembering it.
+
+    Order is preserved and repeats are kept, because
+    :func:`deckle.core.export.export` documents both for its ``sheets``
+    argument. A caller that does not care (``--pages`` sets flags, so it
+    does not) may ignore that.
+
+    Open-ended ranges (``2-``) are deliberately not accepted: neither the
+    sheet count nor the page count is known when argparse runs.
+
+    :param value: the raw flag text.
+    :param noun: what the numbers name, for the messages.
+    :param example: the forms that are accepted, for the messages.
+    :param offset: the base the user counts from.
+    :returns: the indices, in the order named.
+    :raises argparse.ArgumentTypeError: empty, malformed, a range that runs
+        backwards, or a number below ``offset``.
+    """
+    selection: list[int] = []
+    items = [item.strip() for item in value.split(",")]
+    if not value.strip() or any(not item for item in items):
+        raise argparse.ArgumentTypeError(
+            f"invalid {noun} {value!r}: expected {example}"
+        )
+    for item in items:
+        bounds = [part.strip() for part in item.split("-")]
+        if len(bounds) > 2 or any(not part.isdigit() for part in bounds):
+            raise argparse.ArgumentTypeError(
+                f"invalid {noun} {value!r}: {item!r} is not a {noun[:-1]} "
+                "number or an inclusive range like 2-4"
+            )
+        start = int(bounds[0])
+        end = int(bounds[-1])
+        if start < offset or end < offset:
+            raise argparse.ArgumentTypeError(
+                f"invalid {noun} {value!r}: {noun} are numbered from {offset}"
+            )
+        if len(bounds) == 1:
+            selection.append(start - offset)
+            continue
+        if end < start:
+            raise argparse.ArgumentTypeError(
+                f"invalid {noun} {value!r}: the range {item!r} runs backwards"
+            )
+        selection.extend(range(start - offset, end - offset + 1))
+    return selection
+
+
 def _parse_sheet_selection(value: str) -> list[int]:
     """A ``--sheets`` value as the sheet indices it names, in order.
 
@@ -301,46 +365,44 @@ def _parse_sheet_selection(value: str) -> list[int]:
     ``0``, ``2,0``, ``1-3``, ``0,2-4``. Indices are **0-based**, matching
     every other sheet number Deckle prints -- the layout warnings, the
     schedule's gathering list, ``Sheet.index``. A 1-based flag would
-    disagree with all three.
-
-    Order is preserved rather than sorted, and repeats are kept: both are
-    what :func:`deckle.core.export.export` documents for its ``sheets``
-    argument, and neither is worth silently correcting -- ``2,0`` is a
-    reasonable thing to ask for.
-
-    Open-ended ranges (``2-``) are deliberately not accepted: the total
-    sheet count is not known until the document is imposed, which is after
-    argparse has run, so the flag cannot honour one at the point it is read.
+    disagree with all three. See :func:`_parse_index_selection`.
 
     :param value: the raw flag text.
     :returns: the indices, in the order named.
     :raises argparse.ArgumentTypeError: empty, malformed, negative, or a
         range that runs backwards.
     """
-    selection: list[int] = []
-    items = [item.strip() for item in value.split(",")]
-    if not value.strip() or any(not item for item in items):
-        raise argparse.ArgumentTypeError(
-            f"invalid sheets {value!r}: expected sheet numbers like 0, 2,0 "
-            "or 0,2-4 -- counting from 0, as the schedule and the warnings do"
-        )
-    for item in items:
-        bounds = [part.strip() for part in item.split("-")]
-        if len(bounds) > 2 or any(not part.isdigit() for part in bounds):
-            raise argparse.ArgumentTypeError(
-                f"invalid sheets {value!r}: {item!r} is not a sheet number "
-                "or an inclusive range like 2-4"
-            )
-        if len(bounds) == 1:
-            selection.append(int(bounds[0]))
-            continue
-        start, end = int(bounds[0]), int(bounds[1])
-        if end < start:
-            raise argparse.ArgumentTypeError(
-                f"invalid sheets {value!r}: the range {item!r} runs backwards"
-            )
-        selection.extend(range(start, end + 1))
-    return selection
+    return _parse_index_selection(
+        value,
+        noun="sheets",
+        example=(
+            "sheet numbers like 0, 2,0 or 0,2-4 -- counting from 0, as the "
+            "schedule and the warnings do"
+        ),
+    )
+
+
+def _parse_page_selection(value: str) -> list[int]:
+    """A ``--pages`` value as 0-based page indices, in order.
+
+    1-based on the way in, because a person types what their PDF viewer's
+    page counter shows -- the same reason the binding schedule prints
+    1-based page numbers over 0-based ``page_index`` values.
+
+    :param value: the raw flag text.
+    :returns: 0-based page indices, in the order named.
+    :raises argparse.ArgumentTypeError: empty, malformed, a range that runs
+        backwards, or a page number below 1.
+    """
+    return _parse_index_selection(
+        value,
+        noun="pages",
+        example=(
+            "page numbers like 7, 1,3 or 7-312,400 -- counting from 1, as "
+            "your PDF viewer does"
+        ),
+        offset=1,
+    )
 
 
 def _report_missing_sheets(plan, selection: list[int], total: int) -> bool:
@@ -661,6 +723,29 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
     pages = _load_source_or_report(args.source)
     if pages is None:
         return None
+    # Before the layout, and so before `--auto-crop`, deliberately: a
+    # scanner target's black calibration bar must not widen the measured
+    # ink extent of a book it is not part of. `auto_crop_insets` already
+    # excludes skipped pages.
+    selection = getattr(args, "page_selection", None)
+    if selection is not None:
+        try:
+            selected = apply_page_selection(pages, keep=selection)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            log_exception("page_selection_rejected", exc)
+            return None
+        # `apply_page_selection` returns a plain list, which drops
+        # `ImportedPages.warnings` -- and with them every mixed-DPI
+        # advisory an image-directory import raised.
+        pages = ImportedPages(selected, list(getattr(pages, "warnings", [])))
+        if all(page.skipped for page in pages):
+            print(
+                "error: --pages kept no pages, so there would be nothing "
+                "to impose",
+                file=sys.stderr,
+            )
+            return None
     try:
         settings = _build_layout_settings(args)
     except ValueError as exc:
@@ -870,6 +955,18 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
             "draw cut lines this far in from head, tail and fore-edge -- "
             "where the block is trimmed square after sewing, e.g. 0.25in. "
             "The spine is never cut. Default 0, meaning no cut lines"
+        ),
+    )
+    parser.add_argument(
+        "--pages", dest="page_selection",
+        type=_parse_page_selection, default=None, metavar="SPEC",
+        help=(
+            "use only these pages of the source, counting from 1 as your "
+            "PDF viewer does -- e.g. 7-312,400. A public-domain scan "
+            "carries a scanner target, a bookplate and a colophon, and "
+            "none of them belong in the book. The rest are marked skipped "
+            "rather than deleted, so they are still there if you open the "
+            "project. Ignored for a .deckle source, which carries its own"
         ),
     )
 
