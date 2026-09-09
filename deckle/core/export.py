@@ -1041,7 +1041,27 @@ _call_count_lock = threading.Lock()
 
 
 def _cache_dir() -> str:
-    directory = os.path.join(tempfile.gettempdir(), _CACHE_DIR_NAME)
+    """Where single-sheet exports are cached.
+
+    ``DECKLE_EXPORT_CACHE_DIR`` overrides it, the way
+    ``DECKLE_SESSION_STATE_DIR`` overrides the print session's state
+    directory and for the same reason: this one is **machine-global**.
+    Every Deckle on the machine shares ``<temp>/deckle_export_cache``, so a
+    test that diffs a listing of it is diffing shared state -- it sees a
+    file another process left behind, and it sees files this directory's
+    own 512 MB eviction pass deletes out from under it between two
+    listings. The suite sets the variable in ``tests/conftest.py``, beside
+    the data and config roots it already redirects for exactly this
+    reason.
+
+    Read at call time, never cached, so a test can point it somewhere and
+    have it take effect.
+    """
+    override = os.environ.get("DECKLE_EXPORT_CACHE_DIR")
+    directory = (
+        override if override
+        else os.path.join(tempfile.gettempdir(), _CACHE_DIR_NAME)
+    )
     os.makedirs(directory, exist_ok=True)
     # The in-memory LRU bounds what this cache will hand back. It does
     # nothing about the *directory*, which keeps every file a killed

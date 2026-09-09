@@ -93,6 +93,11 @@ class _StubSession:
     backend: object
     test_first: bool = False
     printer_name: str = ""
+    # The real PrintSession takes this and calls it when a chunk printed
+    # but could not be recorded (B37). The stub only records that the
+    # dialog handed it over -- the *answer* landing on the sheet cursor is
+    # PrintSession's own business, tested in test_print_log_failure.py.
+    ask_sheets_printed: object = None
     passes: list = field(default_factory=lambda: [
         {"reload_instruction": "Load pass 1 fronts."},
         {"reload_instruction": "Reload and print pass 2 backs."},
@@ -131,8 +136,10 @@ class _StubSession:
         self._pass_index = 1
 
     @classmethod
-    def load(cls, plan, profile, backend, session_id):
-        return cls(plan=plan, profile=profile, backend=backend, printer_name="Resumed Printer")
+    def load(cls, plan, profile, backend, session_id, ask_sheets_printed=None):
+        return cls(plan=plan, profile=profile, backend=backend,
+                   printer_name="Resumed Printer",
+                   ask_sheets_printed=ask_sheets_printed)
 
     @property
     def finished(self) -> bool:
@@ -298,9 +305,10 @@ def test_cancelling_the_sheet_count_abandons_the_resume():
 
     class WatchfulSession(_StubSession):
         @classmethod
-        def load(cls, plan, profile, backend, session_id):
+        def load(cls, plan, profile, backend, session_id, ask_sheets_printed=None):
             loaded.append(session_id)
-            return super().load(plan, profile, backend, session_id)
+            return super().load(plan, profile, backend, session_id,
+                                ask_sheets_printed=ask_sheets_printed)
 
     dialog = _make_dialog(
         session_cls=WatchfulSession,
@@ -334,6 +342,119 @@ def test_zero_sheets_is_a_real_answer_and_still_resumes():
 
     assert dialog._session is not None
     assert dialog._session.resumed_with == 0
+
+
+# -- printed, but not recorded (B37) ---------------------------------------
+
+
+def _unrecorded(**overrides):
+    from deckle.core.print_session import UnrecordedSheets
+
+    base = dict(
+        printer_name="Printer A",
+        pass_index=0,
+        side="front",
+        sheets=(0, 1, 2),
+        submitted=3,
+        error="3 sheet(s) printed, but the print could not be recorded "
+              "in the session log (No space left on device).",
+    )
+    base.update(overrides)
+    return UnrecordedSheets(**base)
+
+
+def test_the_prompt_says_what_happened_before_it_asks_anything():
+    """Order matters more than wording here. Someone at a stopped printer
+    reaches for a reprint unless they are told the paper is fine first, so
+    the situation has to arrive before the question does."""
+    from deckle.app.views.print_dialog import unrecorded_sheets_prompt
+
+    text = unrecorded_sheets_prompt(_unrecorded())
+
+    said_it_printed = text.lower().index("printed")
+    asked = text.lower().index("how many sheets came out")
+    assert said_it_printed < asked, f"the question came first:\n{text}"
+
+
+def test_the_prompt_carries_the_count_the_printer_the_pass_and_the_reason():
+    from deckle.app.views.print_dialog import unrecorded_sheets_prompt
+
+    text = unrecorded_sheets_prompt(_unrecorded())
+
+    assert "3 sheets" in text
+    assert "Printer A" in text
+    assert "front pass" in text
+    assert "No space left on device" in text
+
+
+def test_the_prompt_says_what_cancel_does():
+    """Cancel is a real answer with a real consequence -- the job stays
+    resumable and the question comes back -- and an operator will not
+    press it unless the dialog says so."""
+    from deckle.app.views.print_dialog import unrecorded_sheets_prompt
+
+    text = unrecorded_sheets_prompt(_unrecorded()).lower()
+
+    assert "cancel" in text
+    assert "resumable" in text or "asked again" in text
+
+
+def test_the_prompt_asks_the_same_question_the_resume_prompt_asks():
+    """One question about one output tray. Two spellings of it would teach
+    the operator that the two answers mean different things."""
+    import inspect
+
+    from deckle.app.views import print_dialog as dialog_mod
+
+    resume_source = inspect.getsource(dialog_mod.PrintDialog._default_ask_resume_count)
+    assert "How many sheets came out?" in resume_source
+    assert "How many sheets came out?" in dialog_mod.unrecorded_sheets_prompt(
+        _unrecorded()
+    )
+
+
+def test_one_sheet_is_not_asked_about_as_sheets():
+    from deckle.app.views.print_dialog import unrecorded_sheets_prompt
+
+    text = unrecorded_sheets_prompt(_unrecorded(sheets=(0,), submitted=1))
+
+    assert "1 sheet of" in text
+
+
+def test_the_dialog_hands_the_question_to_a_fresh_session():
+    """The seam is useless unless the session gets it. The dialog is the
+    only thing that knows how to raise a modal, and the session is the
+    only thing that knows where the answer goes."""
+    asked = []
+    dialog = _make_dialog(ask_sheets_printed=lambda question: asked.append(question))
+
+    dialog.start_print()
+
+    assert dialog._session.ask_sheets_printed is dialog._ask_sheets_printed
+
+
+def test_the_dialog_hands_the_question_to_a_resumed_session_too():
+    """A resumed run fails the same way the first one did. ``load``
+    rebuilds the session field by field, which is exactly where a seam
+    goes missing on one path only."""
+    summary = SessionSummary(
+        session_id="abc123",
+        printer_name="Printer A",
+        started_at=0.0,
+        pass_index=0,
+        sheet_cursor=3,
+        state_path="/tmp/abc123.json",
+    )
+
+    dialog = _make_dialog(
+        resumable_lister=lambda: [summary],
+        confirm_resume=lambda resumable: resumable[0],
+        ask_resume_count=lambda chosen: 1,
+        ask_sheets_printed=lambda question: 0,
+    )
+
+    assert dialog._session is not None
+    assert dialog._session.ask_sheets_printed is dialog._ask_sheets_printed
 
 
 def test_no_resumable_sessions_means_no_resume_prompt():
@@ -393,7 +514,7 @@ def test_resume_is_refused_and_explained_when_the_plan_has_changed():
 
     class RefusingSession(_StubSession):
         @classmethod
-        def load(cls, plan, profile, backend, session_id):
+        def load(cls, plan, profile, backend, session_id, ask_sheets_printed=None):
             raise StaleSessionError(
                 session_id=session_id,
                 reason="plan",

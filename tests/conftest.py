@@ -47,4 +47,18 @@ os.environ["XDG_CONFIG_HOME"] = os.path.join(_SCRATCH_HOME, "config")
 # Windows and macOS resolve both roots from this one.
 os.environ["APPDATA"] = os.path.join(_SCRATCH_HOME, "appdata")
 
+# The one that got away. The single-sheet export cache does not live under
+# either root above -- it is `<temp>/deckle_export_cache`, shared by every
+# Deckle process on the machine, and the suite writes into it. Two tests
+# diff a listing of that directory to prove a failed export strands
+# nothing, and a shared directory makes that a diff against other people's
+# residue: a file an interrupted run left behind, or one that the
+# directory's own 512 MB eviction pass removed between the two listings.
+# Neither is the thing being asserted, and both fail the test.
+#
+# Set here for the same reason as the roots above rather than through a
+# fixture: the export cache is written from the preview's render worker
+# threads, which outlive a function-scoped monkeypatch.
+os.environ["DECKLE_EXPORT_CACHE_DIR"] = os.path.join(_SCRATCH_HOME, "export-cache")
+
 atexit.register(shutil.rmtree, _SCRATCH_HOME, True)

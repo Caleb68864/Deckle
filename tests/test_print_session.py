@@ -410,7 +410,11 @@ def test_print_session_public_surface_is_unchanged():
         "advance": ("self",),
         "confirm_test_sheet": ("self",),
         "resume": ("self", "sheets_completed"),
-        "load": ("plan", "profile", "backend", "session_id"),
+        # `ask_sheets_printed` is keyword-defaulted and last: a caller
+        # written against the four-argument form still works. It is pinned
+        # here because a resumed run that cannot ask how many sheets came
+        # out is the one path where the B37 question silently disappears.
+        "load": ("plan", "profile", "backend", "session_id", "ask_sheets_printed"),
         "list_resumable": (),
     }
     expected_properties = {
