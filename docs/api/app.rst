@@ -18,6 +18,8 @@ requires neither PySide6 nor a display server.
    app.backend
    app.printer_capabilities
    app.printer_query
+   app.project_actions
+   app.exporting
    app.shutdown
    app.views.import_view
    app.views.arrange_view
