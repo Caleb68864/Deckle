@@ -15,12 +15,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A push that supersedes an in-flight run cancels it. The suite is ~60s;
-# this is about not queueing behind yourself, not about cost.
-concurrency:
-  group: tests-${{ github.ref }}
-  cancel-in-progress: true
-
 permissions:
   contents: read
 
@@ -28,6 +22,22 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # A push that supersedes an in-flight run cancels it. The suite is
+    # ~60s; this is about not queueing behind yourself, not about cost.
+    #
+    # On the JOB, not the workflow. Declared at workflow level it also
+    # cancelled `package-audit` below -- a 30-minute release gate whose
+    # only trigger is a push to `main`, on a project that merges locally
+    # and pushes commits minutes apart. A cancelled run is neither green
+    # nor red, so the gate could stop running and say nothing.
+    #
+    # The group carries `matrix.python-version` because a job-level group
+    # is shared by every leg of the matrix: without it, 3.11, 3.12 and
+    # 3.14 would cancel each other inside a single run, and `fail-fast:
+    # false` above exists precisely so all three report.
+    concurrency:
+      group: tests-${{ github.ref }}-${{ matrix.python-version }}
+      cancel-in-progress: true
     strategy:
       # Every interpreter reports. A failure on one is a fact about that
       # one, and cancelling the others throws away the comparison that
