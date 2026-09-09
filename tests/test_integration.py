@@ -328,3 +328,58 @@ def test_end_to_end_import_arrange_layout_preview_export_print(tmp_path):
     # padding of an already-even three-page-plus-reorder document.
     assert plan.paper_pt == state.project.layout.paper
     assert len(plan.sheets) == (len(state.project.pages) + 1) // 2
+
+
+# --- a new project starts from the user's own defaults -------------------
+
+
+@pytest.fixture
+def config_root(tmp_path, monkeypatch):
+    """Both variables, because `paths._root` reads the environment at call
+    time and an unguarded test would change the developer's next launch."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    return tmp_path
+
+
+def test_a_new_project_uses_the_saved_defaults(config_root):
+    from deckle.core.defaults import save_defaults
+    from deckle.core.models import LayoutSettings
+
+    save_defaults(LayoutSettings(
+        paper=(841.89, 595.28), gutter_pt=36.0, binding_edge="left",
+        fold_scheme="folio",
+    ))
+
+    layout = default_project().layout
+
+    assert layout.paper == (841.89, 595.28)
+    assert layout.gutter_pt == 36.0
+    assert layout.fold_scheme == "folio"
+
+
+def test_a_new_project_falls_back_to_letter(config_root):
+    layout = default_project().layout
+
+    assert layout.paper == (612.0, 792.0)
+    assert layout.gutter_pt == 0.0
+    assert layout.fold_scheme == "none"
+
+
+def test_an_unreadable_defaults_file_does_not_stop_a_new_project(config_root):
+    """`default_project` runs inside `MainWindow.__init__`. An exception
+    there is a window that does not open, over a preference."""
+    from deckle.core.defaults import defaults_path
+
+    path = defaults_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json", encoding="utf-8")
+
+    assert default_project().layout.paper == (612.0, 792.0)
+
+
+def test_the_new_project_carries_no_pages_and_no_printer(config_root):
+    project = default_project()
+
+    assert project.pages == []
+    assert project.printer is None

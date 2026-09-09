@@ -15,6 +15,7 @@ import os
 import warnings
 
 from deckle.app.state import AppState, autosave_path_for
+from deckle.core.defaults import load_defaults
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView
@@ -335,11 +336,18 @@ def available_printer_names() -> list[str]:
 
 
 def default_project() -> Project:
-    """An empty project on US Letter, for a freshly launched window.
+    """An empty project for a freshly launched window.
 
-    :returns: a project with no pages, no gutter and no printer.
+    Uses the user's saved defaults when there are any, and US Letter with
+    no gutter and no margins when there are not. Someone who buys the same
+    paper every time should not reset a dozen controls before the first
+    useful preview.
+
+    :returns: a project with no pages and no printer.
     """
-    layout = LayoutSettings(paper=LETTER_PT, gutter_pt=0.0, binding_edge="left")
+    layout = load_defaults()
+    if layout is None:
+        layout = LayoutSettings(paper=LETTER_PT, gutter_pt=0.0, binding_edge="left")
     return Project(pages=[], layout=layout, printer=None)
 
 

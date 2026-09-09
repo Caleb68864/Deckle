@@ -458,3 +458,25 @@ def test_no_landscape_policy_value_is_unreachable():
         f"two landscape_policy values produce identical placements for a "
         f"landscape page: {placements}"
     )
+
+
+def test_the_layout_serialiser_is_public():
+    """`deckle.core.defaults` writes the same shape a `.deckle` does, and
+    calls this rather than growing a second serialiser -- three copies of a
+    rule is three chances for one of them to drift."""
+    from deckle.core.models import LayoutSettings
+    from deckle.core.project_io import layout_from_dict, layout_to_dict
+
+    original = LayoutSettings(
+        paper=(792.0, 612.0), gutter_pt=36.0, binding_edge="right",
+        fold_scheme="folio", trim_pt=18.0,
+    )
+
+    assert layout_from_dict(layout_to_dict(original)) == original
+
+
+def test_the_private_aliases_still_name_the_same_functions():
+    from deckle.core import project_io
+
+    assert project_io._layout_to_dict is project_io.layout_to_dict
+    assert project_io._layout_from_dict is project_io.layout_from_dict

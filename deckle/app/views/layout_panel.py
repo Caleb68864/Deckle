@@ -22,6 +22,7 @@ from deckle.app.state import AppState
 from deckle.core.layout import GutterShiftStrategy, SaddleStitchStrategy
 import os
 
+from deckle.core.defaults import defaults_path, forget_defaults, save_defaults
 from deckle.core.diagnostics import log_event, log_exception
 # Aliased on import. `PAPER_PRESETS` in this module has meant sheet
 # *sizes* (A4, Letter) since it was written, and the new list is paper
@@ -52,6 +53,22 @@ GRAINS: tuple[tuple[str, str], ...] = (
     ("unknown", "Unknown"),
     ("long", "Long grain"),
     ("short", "Short grain"),
+)
+
+SAVE_DEFAULTS_TOOLTIP = (
+    "Remember these settings and start every new project from them.\n\n"
+    "Paper, orientation, grain, thickness, margins, gutter, how it folds, "
+    "trim and sewing -- everything on this panel except the crop boxes and "
+    "the gathering list, which are measured from one document and mean "
+    "nothing on the next.\n\n"
+    "Affects new projects only. Opening a saved .deckle always uses that "
+    "project's own settings."
+)
+
+FORGET_DEFAULTS_TOOLTIP = (
+    "Delete your saved defaults, so new projects go back to Deckle's own: "
+    "US Letter, portrait, no gutter, no margins, flat sheets.\n\n"
+    "Does not change the project you have open."
 )
 
 SCHEDULE_TOOLTIP = (
@@ -722,6 +739,7 @@ def _qt_widgets():
         QComboBox,
         QDoubleSpinBox,
         QFormLayout,
+        QHBoxLayout,
         QLabel,
         QLineEdit,
         QPushButton,
@@ -734,7 +752,7 @@ def _qt_widgets():
 
     return (
         QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-        QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
+        QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
         QTabWidget, QVBoxLayout, QWidget,
     )
 
@@ -764,8 +782,8 @@ class LayoutPanel:
         QObject, Signal = _qt_core()
         (
             QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
-            QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
-            QTabWidget, QVBoxLayout, QWidget,
+            QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton,
+            QSpinBox, QTabWidget, QVBoxLayout, QWidget,
         ) = _qt_widgets()
 
         class _Signals(QObject):
@@ -1269,6 +1287,24 @@ class LayoutPanel:
         outer.addWidget(self.save_schedule_button)
         self.save_schedule_button.clicked.connect(self._on_save_schedule_clicked)
 
+        # Also mode-independent: a default is about how this person makes
+        # books, not about which fold scheme is selected right now.
+        defaults_row = QHBoxLayout()
+        self.save_defaults_button = QPushButton("Save as my defaults", self.widget)
+        self.save_defaults_button.setToolTip(SAVE_DEFAULTS_TOOLTIP)
+        # "Forget", not "Reset": the second is ambiguous between forgetting
+        # the saved file and resetting THIS project's settings, and only
+        # one of those is non-destructive. The destructive reading is what
+        # undo is for, so it is not built and the button is named for the
+        # one it does.
+        self.forget_defaults_button = QPushButton("Forget my defaults", self.widget)
+        self.forget_defaults_button.setToolTip(FORGET_DEFAULTS_TOOLTIP)
+        defaults_row.addWidget(self.save_defaults_button)
+        defaults_row.addWidget(self.forget_defaults_button)
+        outer.addLayout(defaults_row)
+        self.save_defaults_button.clicked.connect(self._on_save_defaults_clicked)
+        self.forget_defaults_button.clicked.connect(self._on_forget_defaults_clicked)
+
         self.tabs.setCurrentIndex(
             self._signature_tab_index
             if state.project.layout.fold_scheme == "folio"
@@ -1399,6 +1435,41 @@ class LayoutPanel:
         """
         self._document_loaded = loaded
         self._sync_signature_tab()
+
+    def _on_save_defaults_clicked(self) -> None:
+        """Remember the current settings for new projects.
+
+        :returns: nothing. A config directory that cannot be written is
+            reported in the wording :mod:`deckle.core.outputs` owns, so it
+            reads the same as any other failed write -- and it IS reported,
+            because ``save_defaults`` raises rather than swallowing, which
+            is the whole difference between an explicit action and a
+            preference read at startup.
+        """
+        try:
+            save_defaults(self.state.project.layout)
+        except OSError as exc:
+            log_exception("defaults_write_failed", exc, path=str(defaults_path()))
+            self.schedule_saved.emit(describe_write_failure(str(defaults_path()), exc))
+            return
+        log_event("defaults_saved", path=str(defaults_path()))
+        self.schedule_saved.emit(
+            "Saved these settings as your defaults for new projects."
+        )
+
+    def _on_forget_defaults_clicked(self) -> None:
+        """Delete the saved defaults.
+
+        :returns: nothing. Not confirmed: it discards a preference, not
+            work, and saving them again is one click.
+        """
+        if forget_defaults():
+            log_event("defaults_forgotten", path=str(defaults_path()))
+            self.schedule_saved.emit(
+                "Forgot your defaults. New projects start from Deckle's own."
+            )
+        else:
+            self.schedule_saved.emit("You have no saved defaults.")
 
     def _on_save_schedule_clicked(self) -> None:
         """Write the binding schedule beside wherever the source came from.

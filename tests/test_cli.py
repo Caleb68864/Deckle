@@ -322,3 +322,40 @@ def test_schedule_under_flat_sheets_reports_the_block(capsys):
     assert "BINDING THE STACK" in out
     assert "Block thickness" in out
     assert "swell from the sewing thread" not in out
+
+
+def test_the_cli_ignores_saved_defaults(tmp_path, monkeypatch, capsys):
+    """`deckle export book.pdf` must produce the same book on two machines.
+
+    A machine-local defaults file silently changing the paper size, gutter
+    and fold scheme of every headless run is the opposite of what a
+    scriptable tool is for, and it would make the golden-fixture regression
+    depend on the developer's config directory. The CLI's template is a
+    `.deckle` named in the invocation, which is explicit and reproducible.
+    """
+    from deckle.core.defaults import save_defaults
+    from deckle.core.models import LayoutSettings
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    save_defaults(LayoutSettings(
+        paper=(841.89, 595.28), gutter_pt=144.0, binding_edge="right",
+        fold_scheme="folio",
+    ))
+
+    assert main(["info", FIXTURE]) == 0
+
+    out = capsys.readouterr().out
+    assert "841" not in out, "the CLI read a machine-local defaults file"
+
+
+def test_the_cli_module_never_reaches_for_the_defaults_store():
+    """A grep, not a behaviour check: the decision above is easy to undo by
+    accident and hard to notice once undone."""
+    import deckle.cli
+
+    source = open(deckle.cli.__file__, encoding="utf-8").read()
+
+    assert "core.defaults" not in source
+    assert "load_defaults" not in source
+    assert "defaults_path" not in source

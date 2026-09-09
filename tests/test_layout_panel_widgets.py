@@ -327,3 +327,86 @@ def test_saving_a_flat_sheet_schedule_writes_the_block_thickness(
     assert "Block thickness: about 0.02in (2pt)" in text
     assert "nothing to gather or sew" in text
     assert any("Saved binding schedule to" in m for m in messages), messages
+
+
+# -- "save as my defaults" -------------------------------------------------
+
+
+@pytest.fixture
+def config_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    return tmp_path
+
+
+def test_the_panel_offers_saving_and_forgetting_defaults(panel):
+    assert panel.save_defaults_button.text() == "Save as my defaults"
+    assert panel.forget_defaults_button.text() == "Forget my defaults"
+
+
+def test_the_defaults_buttons_are_not_on_a_mode_tab(panel):
+    assert panel.save_defaults_button.parentWidget() is panel.widget
+    assert panel.forget_defaults_button.parentWidget() is panel.widget
+
+
+def test_saving_defaults_writes_the_current_layout(panel, config_root):
+    from deckle.core.defaults import load_defaults
+
+    messages = []
+    panel.schedule_saved.connect(messages.append)
+
+    panel.save_defaults_button.click()
+
+    saved = load_defaults()
+    assert saved is not None
+    assert saved.gutter_pt == 36.0
+    assert saved.fold_scheme == "folio"
+    assert any("Saved these settings as your defaults" in m for m in messages)
+
+
+def test_forgetting_defaults_says_so(panel, config_root):
+    from deckle.core.defaults import defaults_path
+
+    messages = []
+    panel.schedule_saved.connect(messages.append)
+    panel.save_defaults_button.click()
+    messages.clear()
+
+    panel.forget_defaults_button.click()
+
+    assert not defaults_path().exists()
+    assert messages == [
+        "Forgot your defaults. New projects start from Deckle's own."
+    ]
+
+
+def test_forgetting_nothing_says_so(panel, config_root):
+    messages = []
+    panel.schedule_saved.connect(messages.append)
+
+    panel.forget_defaults_button.click()
+
+    assert messages == ["You have no saved defaults."]
+
+
+def test_a_failed_save_is_reported_not_raised(panel, config_root, monkeypatch):
+    def boom(layout):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("deckle.app.views.layout_panel.save_defaults", boom)
+    messages = []
+    panel.schedule_saved.connect(messages.append)
+
+    panel.save_defaults_button.click()
+
+    assert messages and "defaults.json" in messages[0]
+
+
+def test_saving_defaults_does_not_touch_the_open_project(panel, config_root):
+    before = panel.state.project
+
+    panel.save_defaults_button.click()
+    panel.forget_defaults_button.click()
+
+    assert panel.state.project is before
+    assert panel.state.can_undo is False

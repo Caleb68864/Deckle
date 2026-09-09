@@ -283,9 +283,9 @@ def _page_from_dict(data: dict[str, Any]) -> SourcePage:
     )
 
 
-def _layout_to_dict(layout: LayoutSettings) -> dict[str, Any]:
+def layout_to_dict(layout: LayoutSettings) -> dict[str, Any]:
     # No per-field conversion on the way out, deliberately mirroring
-    # `_layout_from_dict`: `json` serialises a tuple as an array already,
+    # `layout_from_dict`: `json` serialises a tuple as an array already,
     # so naming `paper` here achieved nothing that the encoder was not
     # doing for every other tuple field anyway. Naming one field was how
     # the read side came to be wrong; leaving the same shape here would
@@ -343,7 +343,7 @@ def _check_layout_values(kwargs: dict[str, Any]) -> None:
         )
 
 
-def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
+def layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
     """Build ``LayoutSettings`` from stored JSON, tolerating field drift.
 
     Unknown keys are dropped with a warning rather than raising, and missing
@@ -403,6 +403,15 @@ def _layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
     return LayoutSettings(**kwargs)
 
 
+# The private names these two were introduced under. Kept because they are
+# what the drift-tolerance tests import, and because a rename is not worth
+# a second edit in a second file -- but there is one implementation, and
+# `deckle.core.defaults` calls the public one rather than growing a second
+# layout serialiser of its own.
+_layout_to_dict = layout_to_dict
+_layout_from_dict = layout_from_dict
+
+
 def save_project(project: Project, path: str) -> None:
     """Write ``project`` to ``path`` as a ``.deckle`` JSON file.
 
@@ -428,7 +437,7 @@ def save_project(project: Project, path: str) -> None:
     payload = {
         "version": FORMAT_VERSION,
         "pages": [_page_to_dict(p) for p in project.pages],
-        "layout": _layout_to_dict(project.layout),
+        "layout": layout_to_dict(project.layout),
         "printer": project.printer,
     }
     buffer = io.StringIO()
@@ -569,6 +578,6 @@ def load_project(
             if current_hash != ref.sha256:
                 raise SourceChangedWarning(ref.path)
 
-    layout = _layout_from_dict(payload["layout"])
+    layout = layout_from_dict(payload["layout"])
     printer = payload.get("printer")
     return Project(pages=pages, layout=layout, printer=printer)
