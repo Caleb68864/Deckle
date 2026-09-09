@@ -280,3 +280,44 @@ def test_a_distribution_that_names_no_licence_is_not_silently_accepted():
     )
 
     assert not _declares_a_licence(quiet)
+
+
+# -- the builder can build what the metadata declares ---------------------
+#
+# `license = "MIT"` is the PEP 639 SPDX expression form. setuptools accepts
+# it from 77 onwards and raises `ValueError: invalid pyproject.toml config:
+# 'project.license'` before that. pip's build isolation always fetches the
+# newest setuptools, so the declared floor is never exercised on the happy
+# path and can drift below what the file needs indefinitely -- it bites on
+# `--no-build-isolation`, a pinned builder, or a distro setuptools.
+
+# PEP 639 `License-Expression` support landed in setuptools 77.0.0.
+PEP_639_SETUPTOOLS_FLOOR = 77
+
+
+def test_the_declared_build_backend_can_build_this_metadata():
+    from packaging.specifiers import SpecifierSet
+
+    data = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+    licence = data["project"].get("license")
+    assert isinstance(licence, str), (
+        "this test is about the PEP 639 SPDX form; a license table does not "
+        "need setuptools 77 and this guard should be revisited if it returns"
+    )
+
+    requires = [Requirement(r) for r in data["build-system"]["requires"]]
+    setuptools_req = next(r for r in requires if r.name == "setuptools")
+
+    # Every version the declared specifier admits must be one that can
+    # actually build this file. Asserting on the floor is the whole point:
+    # a specifier that allows 68 declares a builder that raises on
+    # `project.license`.
+    too_old = SpecifierSet(str(setuptools_req.specifier)).contains(
+        f"{PEP_639_SETUPTOOLS_FLOOR - 1}.0"
+    )
+    assert not too_old, (
+        f"build-system.requires allows setuptools "
+        f"<{PEP_639_SETUPTOOLS_FLOOR}, which cannot build "
+        f"'license = {licence!r}' (PEP 639); it raises "
+        f"\"invalid pyproject.toml config: 'project.license'\""
+    )
