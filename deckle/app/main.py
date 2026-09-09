@@ -18,7 +18,7 @@ from typing import Literal, Sequence
 
 from deckle.app.state import (
     AppState,
-    autosave_path_for,
+    autosave_recovery_offer,
     unsaved_autosave_label,
     unsaved_autosave_offers,
 )
@@ -27,10 +27,8 @@ from deckle.app.printer_capabilities import (
     query_imageable_area_pt,
 )
 from deckle.core.defaults import load_defaults
-from deckle.core.diagnostics import log_event, log_exception
 from deckle.app.menus import MENUS, build_menu_bar
 from deckle.app import shutdown
-from deckle.app.state import AppState, autosave_path_for
 from deckle.core import about
 from deckle.core.diagnostics import (
     diagnostics_log_path,
@@ -376,48 +374,6 @@ def _qt_vertical():
     from PySide6.QtCore import Qt
 
     return Qt.Orientation.Vertical
-
-
-def autosave_recovery_offer(project_path: str | None) -> str | None:
-    """The autosave worth offering back, or ``None`` to stay silent.
-
-    Autosave has been written on every edit and flushed on close since the
-    beginning, and nothing ever offered it back -- the file was a corpse.
-    This is the decision that changes that, kept pure and out of the
-    dialog so it can be tested without a display.
-
-    **Detection cannot be "does the file exist".** ``_on_close_event``
-    flushes the autosave, so it exists after every clean quit. It is
-    *mtime*: offer when the autosave is newer than the project.
-
-    That rule is chosen for the crash case and gets close-without-saving
-    right as a consequence -- those edits are real, the user declined to
-    save them, and offering them back is correct rather than a false
-    positive. Saving makes the project newer, which is what stops the
-    prompt appearing on every open.
-
-    Ties go to silence. A spurious prompt teaches someone to dismiss
-    prompts, which costs more than the rare recovery it would offer.
-
-    :param project_path: where the project lives, or ``None`` for one
-        that has never been saved and so has no autosave.
-    :returns: the autosave path, or ``None``.
-    """
-    autosave_path = autosave_path_for(project_path)
-    if autosave_path is None or not os.path.isfile(autosave_path):
-        return None
-    try:
-        autosave_time = os.path.getmtime(autosave_path)
-    except OSError:
-        return None
-    try:
-        project_time = os.path.getmtime(project_path)
-    except OSError:
-        # The project is gone and the autosave is not. That is the case
-        # where recovery matters most, not a reason to discard the only
-        # remaining copy of the work.
-        return autosave_path
-    return autosave_path if autosave_time > project_time else None
 
 
 def _recent_label(path: str) -> str:
