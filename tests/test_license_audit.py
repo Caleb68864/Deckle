@@ -84,9 +84,50 @@ def _dependency_closure(roots: list[str]) -> dict[str, "metadata.Distribution"]:
 
 
 def _license_text(dist: "metadata.Distribution") -> str:
-    license_field = dist.metadata.get("License") or ""
-    classifiers = " ".join(dist.metadata.get_all("Classifier") or [])
-    return f"{license_field} {classifiers}"
+    """Everything a distribution says about its licence, as one string.
+
+    **All three places**, because a distribution only has to use one of them.
+    The legacy ``License`` field and the ``License ::`` classifiers were the
+    only ones read until 2026-09-09, and by then three of the eleven
+    distributions in Deckle's own closure -- pikepdf, pillow and packaging --
+    had moved to PEP 639's ``License-Expression`` and set neither of the
+    others. For those three this function returned nothing but
+    ``Development Status ::`` and ``Programming Language ::`` lines, so
+    :func:`test_no_agpl_dependency` was grepping text that could not contain a
+    licence whatever the licence was.
+
+    Modern build backends emit ``License-Expression`` by default, so that was
+    not a stable three: it was every dependency added from then on. In a
+    project whose packaging audit exists because an AGPL renderer once reached
+    a shipped bundle, a licence check that silently stops seeing licences is
+    the failure worth guarding hardest.
+    """
+    return " ".join(
+        part
+        for part in (
+            dist.metadata.get("License") or "",
+            dist.metadata.get("License-Expression") or "",
+            " ".join(dist.metadata.get_all("Classifier") or []),
+        )
+        if part
+    )
+
+
+#: Licence tokens that count as *something having been said*. Deliberately not
+#: an allow-list of acceptable licences -- it is the tripwire for a
+#: distribution whose licence this audit cannot see at all, which is the state
+#: pikepdf, pillow and packaging were in while the suite stayed green.
+LICENCE_TOKENS = (
+    "agpl", "gpl", "lgpl", "mpl", "mit", "bsd", "apache", "isc", "zlib",
+    "psf", "python software foundation", "unlicense", "cc0", "public domain",
+    "proprietary", "artistic", "eclipse", "mozilla",
+)
+
+
+def _declares_a_licence(dist: "metadata.Distribution") -> bool:
+    """Whether anything in this distribution's metadata names a licence."""
+    text = _license_text(dist).lower()
+    return any(token in text for token in LICENCE_TOKENS)
 
 
 def _top_level_names(dist: "metadata.Distribution") -> set[str]:
@@ -129,11 +170,31 @@ def test_no_pymupdf_or_fitz_dependency(dependency_closure):
     assert not offenders, f"forbidden AGPL PDF tooling present in dependency closure: {offenders}"
 
 
+class _FakeMetadata:
+    """The two accessors ``_license_text`` uses, over a plain dict."""
+
+    def __init__(self, fields: dict[str, str], classifiers: list[str]) -> None:
+        self._fields = fields
+        self._classifiers = classifiers
+
+    def get(self, key: str, default=None):
+        return self._fields.get(key, default)
+
+    def get_all(self, key: str):
+        return self._classifiers if key == "Classifier" else None
+
+
 class _FakeDistribution:
     """Minimal stand-in for ``importlib.metadata.Distribution`` in tests."""
 
-    def __init__(self, top_level: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        top_level: set[str] | None = None,
+        fields: dict[str, str] | None = None,
+        classifiers: list[str] | None = None,
+    ) -> None:
         self._top_level = top_level or set()
+        self.metadata = _FakeMetadata(fields or {}, classifiers or [])
 
     def read_text(self, filename: str) -> str:
         if filename == "top_level.txt":
@@ -164,3 +225,58 @@ def test_injected_pdfimpose_fails_the_denylist_check():
     fake_closure = {"pdfimpose": _FakeDistribution(top_level={"pdfimpose"})}
     with pytest.raises(AssertionError):
         _check_forbidden(fake_closure)
+
+
+def test_every_dependency_says_what_its_licence_is(dependency_closure):
+    """A distribution this audit cannot read a licence from is a failure.
+
+    Not an allow-list of acceptable licences -- a tripwire for the state the
+    audit was silently in: three distributions whose licence lived only in a
+    field it did not read, so the AGPL grep ran over text that could not have
+    contained the answer. Passing because there is nothing to see is the one
+    outcome a licence check must never have.
+    """
+    silent = [
+        name for name, dist in dependency_closure.items()
+        if not _declares_a_licence(dist)
+    ]
+    assert not silent, (
+        "no licence could be read for: "
+        f"{silent}. If the distribution declares one, this audit is not "
+        "looking in the right field; if it does not, it cannot ship."
+    )
+
+
+def test_an_agpl_distribution_is_caught_when_it_uses_a_licence_expression():
+    """The wiring proof the licence half was missing.
+
+    `test_injected_pdfimpose_fails_the_denylist_check` proves the *denylist*
+    is wired to real data. Nothing proved the same of the licence text, and
+    that is exactly where the blindness lived: this fake declares AGPL the way
+    pikepdf, pillow and packaging declare their licences, and before
+    `_license_text` read `License-Expression` it sailed through.
+    """
+    fake = _FakeDistribution(fields={"License-Expression": "AGPL-3.0-or-later"})
+
+    assert "agpl" in _license_text(fake).lower()
+
+
+def test_an_agpl_distribution_is_caught_in_the_legacy_field_and_in_classifiers():
+    """The other two spellings still work; the fix added a field, it did not
+    move to one."""
+    legacy = _FakeDistribution(fields={"License": "AGPL-3.0"})
+    classified = _FakeDistribution(
+        classifiers=["License :: OSI Approved :: GNU Affero General Public License v3"]
+    )
+
+    assert "agpl" in _license_text(legacy).lower()
+    assert "affero" in _license_text(classified).lower()
+
+
+def test_a_distribution_that_names_no_licence_is_not_silently_accepted():
+    """The state pikepdf was in: metadata present, licence absent."""
+    quiet = _FakeDistribution(
+        classifiers=["Development Status :: 5 - Production/Stable"]
+    )
+
+    assert not _declares_a_licence(quiet)
