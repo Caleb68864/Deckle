@@ -609,10 +609,10 @@ class PreviewView:
         self.scroll_area.setWidget(self.image_label)
         outer.addWidget(self.scroll_area, stretch=1)
 
-        self.fit_button.clicked.connect(lambda: self._set_zoom(None))
-        self.actual_button.clicked.connect(lambda: self._set_zoom(1.0))
-        self.zoom_in_button.clicked.connect(lambda: self._zoom_step(1))
-        self.zoom_out_button.clicked.connect(lambda: self._zoom_step(-1))
+        self.fit_button.clicked.connect(self.zoom_fit)
+        self.actual_button.clicked.connect(self.zoom_actual)
+        self.zoom_in_button.clicked.connect(self.zoom_in)
+        self.zoom_out_button.clicked.connect(self.zoom_out)
 
         # A per-sheet warning badge -- a plain, non-modal label.
         self.warning_label = QLabel("", self.widget)
@@ -657,6 +657,55 @@ class PreviewView:
         self.front_button.setEnabled(not self._spread)
         self.back_button.setEnabled(not self._spread)
         self.refresh()
+
+    # -- commands ------------------------------------------------------------
+    # Named, argument-free operations rather than lambdas wired to buttons,
+    # because the menu bar and the keyboard reach for the same four zoom
+    # steps and the same four places in the document. A toolbar button and
+    # Ctrl+0 must be one behaviour, not two spellings of it.
+
+    def zoom_in(self) -> None:
+        """Step one zoom stop closer.
+
+        :returns: nothing.
+        """
+        self._zoom_step(1)
+
+    def zoom_out(self) -> None:
+        """Step one zoom stop further away.
+
+        :returns: nothing.
+        """
+        self._zoom_step(-1)
+
+    def zoom_actual(self) -> None:
+        """Show the sheet at 100%, the size it will print.
+
+        :returns: nothing.
+        """
+        self._set_zoom(1.0)
+
+    def zoom_fit(self) -> None:
+        """Fit the whole sheet in the window, and keep it fitted.
+
+        :returns: nothing.
+        """
+        self._set_zoom(None)
+
+    def next_sheet(self) -> None:
+        """Show the next sheet.
+
+        :returns: nothing. Clamped by :meth:`go_to_sheet`, so the last
+            sheet stays the last sheet rather than scrolling into nothing.
+        """
+        self.go_to_sheet(self.sheet_index + 1)
+
+    def previous_sheet(self) -> None:
+        """Show the previous sheet.
+
+        :returns: nothing. Clamped, as above.
+        """
+        self.go_to_sheet(self.sheet_index - 1)
 
     def go_to_first_sheet(self) -> None:
         """Show the first sheet.
