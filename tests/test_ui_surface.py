@@ -287,6 +287,9 @@ class _StubSession:
     test_first: bool = False
     printer_name: str = ""
     sheets: tuple[int, ...] | None = None
+    # Accepted because PrintDialog hands it to every session it builds
+    # (B37); this stub has nothing to do with it.
+    ask_sheets_printed: object = None
     _finished: bool = False
     _pass_index: int = 0
     seen: list = field(default_factory=list)

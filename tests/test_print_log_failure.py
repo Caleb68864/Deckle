@@ -233,26 +233,203 @@ def test_an_unwritable_log_reports_through_the_session_without_raising(backend, 
     assert backend.printed == [0, 1, 2], "and the paper still came out"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Open: the cursor does not follow the paper. `PrintResult.submitted` "
-        "is the backend's count of sheets that physically printed -- it is "
-        "set carefully on both branches and read by nobody. `_advance` "
-        "returns on `result.error` before `sheet_cursor += len(chunk)`, so a "
-        "chunk that printed and then failed to log leaves the cursor behind "
-        "it and a resume reprints that paper. Removing the session's "
-        "duplicate log call (B4) closed the traceback route into this; the "
-        "route through the error branch is untouched and is its own decision, "
-        "because advancing past a chunk that only partly printed would be "
-        "worse than reprinting it."
-    ),
-    strict=True,
-)
+# -- the cursor follows the paper (B37) -----------------------------------
+#
+# This section was a strict `xfail` until 2026-09-09. `PrintResult.submitted`
+# was set carefully on both branches of `submit` to say how many sheets
+# physically printed, and no caller read it: `_submit_chunk` returned on
+# `result.error` before touching `sheet_cursor`, so a chunk that printed and
+# then failed to log left the cursor behind it and a resume fed that paper
+# through a second time.
+#
+# It stayed open because the obvious edit -- advance by `result.submitted` --
+# is a guess about the output tray, and advancing past a chunk that only
+# partly printed is worse than reprinting it. The owner's answer removed the
+# guess: ask the operator, who can see the tray. `ask_sheets_printed` is the
+# seam, the app's dialog is the default implementation, and the answer lands
+# on `sheet_cursor`.
+
+
+def _answered(count):
+    """An operator who says ``count``, recording what they were asked."""
+    asked: list = []
+
+    def ask(question):
+        asked.append(question)
+        return count
+
+    ask.asked = asked
+    return ask
+
+
 def test_the_cursor_follows_the_paper_not_the_bookkeeping(backend, failing_log):
-    """The sheets came out. A resume should ask about three, not zero."""
+    """The sheets came out, the operator says so, and the cursor moves."""
+    operator = _answered(3)
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=operator)
+
+    session.start()
+
+    assert session._state.sheet_cursor == 3
+    assert session.last_error is not None, "the run still stops"
+
+
+def test_the_operator_is_told_what_happened_before_being_asked(backend, failing_log):
+    """The question carries the situation, not just a blank number field."""
+    operator = _answered(3)
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=operator)
+
+    session.start()
+
+    assert len(operator.asked) == 1
+    question = operator.asked[0]
+    assert question.submitted == 3, "how many were sent"
+    assert question.sheets == (0, 1, 2)
+    assert question.side == "front" and question.pass_index == 0
+    assert question.printer_name == "P"
+    assert "record" in question.error.lower(), "why it stopped"
+
+
+def test_the_operator_can_say_fewer_came_out_than_were_sent(backend, failing_log):
+    """The whole reason for asking. Two of three in the tray means two
+    behind the cursor -- the third gets printed again, which is right."""
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=_answered(2))
+
+    session.start()
+
+    assert session._state.sheet_cursor == 2
+
+
+def test_declining_to_answer_leaves_the_cursor_where_it_was(backend, failing_log):
+    """``None`` is "I would rather not say", which is not "none came out"
+    but is treated as the same *cursor*: reprinting costs paper and
+    skipping costs the book. The offer comes back on resume."""
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=lambda question: None)
+
+    session.start()
+
+    assert session._state.sheet_cursor == 0
+
+
+def test_with_nobody_to_ask_the_cursor_does_not_move(backend, failing_log):
+    """No seam injected means no operator. The session does not fill the
+    silence with `result.submitted` -- that is the guess this was opened
+    rather than made."""
     session = PrintSession(_plan(3), backend.profile, backend,
                            printer_name="P", chunk_size=10)
 
     session.start()
 
+    assert session._state.sheet_cursor == 0
+
+
+def test_an_answer_larger_than_the_chunk_is_clamped_not_raised(backend, failing_log):
+    """More sheets cannot come out than went in. `start()` promises not to
+    raise, so a nonsense count is clamped rather than refused."""
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=_answered(99))
+
+    session.start()
+
     assert session._state.sheet_cursor == 3
+
+
+def test_a_negative_answer_is_clamped_to_nothing(backend, failing_log):
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=_answered(-4))
+
+    session.start()
+
+    assert session._state.sheet_cursor == 0
+
+
+def test_an_offline_printer_is_not_a_question_about_paper(backend, monkeypatch):
+    """The other branch. Painting failed, so `submitted` is 0 and nothing
+    is known to have come out -- there is nothing to count and nobody is
+    interrupted to count it. Asking here would train the operator to
+    answer a question the program cannot use."""
+    def explode(*args, **kwargs):
+        raise RuntimeError("printer offline")
+
+    monkeypatch.setattr(type(backend), "_submit_chunk", explode)
+    operator = _answered(3)
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=operator)
+
+    session.start()
+
+    assert operator.asked == [], "no paper is known to have come out"
+    assert session._state.sheet_cursor == 0
+
+
+def test_a_stalled_chunk_never_walks_on_into_the_back_pass(backend, failing_log):
+    """Counting the whole chunk fills the front pass, and the pass index
+    must still not move. The run is stopped; printing backs against fronts
+    that are still an open question is the ruined-stack failure."""
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=_answered(3))
+
+    session.start()
+
+    assert session._state.sheet_cursor == 3
+    assert session._state.pass_index == 0, "still on the fronts"
+    assert session.finished is False
+
+
+def test_the_counted_cursor_survives_to_disk(backend, failing_log):
+    """The answer has to outlive the process, because the point of it is
+    the resume -- which may be after a crash, or tomorrow."""
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           ask_sheets_printed=_answered(2))
+
+    session.start()
+
+    import json
+
+    stored = json.loads(session.state_path.read_text(encoding="utf-8"))
+    assert stored["sheet_cursor"] == 2
+
+
+def test_a_test_sheet_that_printed_is_counted_too(backend, failing_log):
+    """One sheet in the tray is still a sheet in the tray."""
+    operator = _answered(1)
+    session = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10,
+                           test_first=True, ask_sheets_printed=operator)
+
+    session.start()
+
+    assert operator.asked[0].submitted == 1
+    assert session._state.sheet_cursor == 1
+
+
+def test_a_resumed_session_can_still_ask(backend, failing_log):
+    """`load` rebuilds the session by hand, field by field, so the seam is
+    exactly the kind of thing that gets left off there and is then missing
+    only on the path a resume takes."""
+    working = PrintSession(_plan(3), backend.profile, backend,
+                           printer_name="P", chunk_size=10)
+    working._save()
+    session_id = working.state["session_id"]
+
+    operator = _answered(3)
+    resumed = PrintSession.load(
+        _plan(3), backend.profile, backend, session_id,
+        ask_sheets_printed=operator,
+    )
+    resumed.resume(0)
+
+    assert operator.asked, "the resumed session asked"
+    assert resumed._state.sheet_cursor == 3

@@ -10,8 +10,11 @@ and ``PrintSession.list_resumable`` / ``PrintSession.load``. It never
 recomputes sheet order or flips a stack itself.
 
 The confirmation prompts (reload-between-passes, resume count, offline
-error, resume offer) are all injectable callables so headless tests can
-drive the full flow without blocking on a real modal event loop.
+error, resume offer, unrecorded sheet count) are all injectable callables
+so headless tests can drive the full flow without blocking on a real modal
+event loop. Two of them ask the same question -- how many sheets came out
+-- because it is the same question: software cannot see the output tray,
+and the person at the printer can. The wording is shared on purpose.
 """
 
 from __future__ import annotations
@@ -21,7 +24,12 @@ from typing import Callable, Sequence
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import proof_rule_advice
 from deckle.core.models import SheetPlan
-from deckle.core.print_session import PrintSession, SessionSummary, StaleSessionError
+from deckle.core.print_session import (
+    PrintSession,
+    SessionSummary,
+    StaleSessionError,
+    UnrecordedSheets,
+)
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 
 
@@ -55,6 +63,42 @@ def select_preselected_printer(
         else:
             return name
     return printer_names[0] if printer_names else None
+
+
+def unrecorded_sheets_prompt(question: UnrecordedSheets) -> str:
+    """What the operator reads when a chunk printed but was not recorded.
+
+    The situation comes first and the question last, because that is the
+    order it has to arrive in for someone standing at a stopped printer.
+    They already know something went wrong -- what they do not know, and
+    what changes what they do next, is that **the paper is fine**. Leading
+    with the question would have them counting sheets before they know
+    why, and reaching for the reprint they do not need.
+
+    Pure and Qt-free so the wording is directly testable, the way
+    :func:`select_preselected_printer` is. The prompt is prose a person
+    acts on at the moment a stack of paper is at stake; it is worth a test
+    of its own rather than being buried inside a modal.
+
+    :param question: the chunk, the pass, and what the backend said.
+    :returns: the label text for the count dialog.
+    """
+    n = question.submitted
+    sheets = "sheet" if n == 1 else "sheets"
+    where = f" to {question.printer_name!r}" if question.printer_name else ""
+    return (
+        f"{n} {sheets} of the {question.side} pass "
+        f"(pass {question.pass_index + 1}) went{where} and printed, but the "
+        f"run could not be recorded:\n\n"
+        f"    {question.error}\n\n"
+        "The printing is done; only the record of it is missing. Deckle "
+        "cannot see the output tray and will not guess -- counting a sheet "
+        "that never came out leaves a hole in the book, and not counting "
+        "one that did prints it twice.\n\n"
+        "Look at the tray. How many sheets came out?\n\n"
+        "Cancel to leave it undecided: the job stays resumable and you will "
+        "be asked again."
+    )
 
 
 PROOF_DPI = 300
@@ -236,6 +280,11 @@ class PrintDialog:
         is taken as ground truth from the person holding the stack.
         Returning ``None`` declines the resume and leaves the session
         untouched; ``0`` is a genuine count, not a refusal.
+    :param ask_sheets_printed: asked how many sheets of a chunk that
+        printed and then failed to be recorded actually came out. Handed to
+        the ``PrintSession``, which is where the answer lands -- on the
+        sheet cursor. Same three-way answer as ``ask_resume_count``:
+        a count, ``0``, or ``None`` for "I would rather not say".
     :param confirm_reload: shown the reload instruction between passes.
     :param confirm_test_sheet: asked whether the test sheet printed
         correctly.
@@ -258,6 +307,7 @@ class PrintDialog:
         resumable_lister: Callable[[], list[SessionSummary]] | None = None,
         confirm_resume: Callable[[list[SessionSummary]], SessionSummary | None] | None = None,
         ask_resume_count: Callable[[SessionSummary], int | None] | None = None,
+        ask_sheets_printed: Callable[[UnrecordedSheets], int | None] | None = None,
         confirm_reload: Callable[[str], None] | None = None,
         confirm_test_sheet: Callable[[], bool] | None = None,
         show_offline_error: Callable[[str, str], None] | None = None,
@@ -276,6 +326,9 @@ class PrintDialog:
 
         self._confirm_resume = confirm_resume or self._default_confirm_resume
         self._ask_resume_count = ask_resume_count or self._default_ask_resume_count
+        self._ask_sheets_printed = (
+            ask_sheets_printed or self._default_ask_sheets_printed
+        )
         self._confirm_reload = confirm_reload or self._default_confirm_reload
         self._confirm_test_sheet = confirm_test_sheet or self._default_confirm_test_sheet
         self._show_offline_error = show_offline_error or self._default_show_offline_error
@@ -490,6 +543,7 @@ class PrintDialog:
             backend,
             test_first=self.test_first_checkbox.isChecked(),
             printer_name=printer_name,
+            ask_sheets_printed=self._ask_sheets_printed,
             **kwargs,
         )
         self._session = session
@@ -540,7 +594,11 @@ class PrintDialog:
         backend = self._backend_cls(profile)
         try:
             session = self._session_cls.load(
-                self.plan, profile, backend, chosen.session_id
+                self.plan,
+                profile,
+                backend,
+                chosen.session_id,
+                ask_sheets_printed=self._ask_sheets_printed,
             )
         except StaleSessionError as exc:
             # Refusing is the safe direction. The user has already reloaded
@@ -630,6 +688,33 @@ class PrintDialog:
             "How many sheets came out?",
             0,
             0,
+        )
+        return count if ok else None
+
+    def _default_ask_sheets_printed(self, question: UnrecordedSheets) -> int | None:
+        """How many of a failed chunk's sheets came out, or ``None``.
+
+        Deliberately the same widget and the same closing sentence as
+        :meth:`_default_ask_resume_count`: it is the same question about
+        the same tray, and a program that asks it two ways teaches the
+        operator that the two answers mean different things. What differs
+        is everything before the question -- see
+        :func:`unrecorded_sheets_prompt`.
+
+        The spin box opens on the backend's own count and is bounded by it.
+        That number is the likeliest answer, so it is the default; it is
+        not the answer, so it is not assumed. Nothing above it is
+        meaningful -- more sheets cannot come out than went in.
+        """
+        from PySide6.QtWidgets import QInputDialog
+
+        count, ok = QInputDialog.getInt(
+            self.widget,
+            "Printed, but not recorded",
+            unrecorded_sheets_prompt(question),
+            question.submitted,
+            0,
+            question.submitted,
         )
         return count if ok else None
 

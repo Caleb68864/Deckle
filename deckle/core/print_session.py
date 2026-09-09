@@ -11,6 +11,15 @@ caller supplies the completed sheet count -- software cannot know how many
 sheets physically emerged, so the session takes it as input rather than
 inferring it.
 
+The same question is asked at the other end of the run, and for the same
+reason. A chunk can reach paper and *then* fail -- the session log is a
+hard constraint and an unwritable one stops the job -- and at that moment
+the sheets are in the output tray while the cursor still says nothing was
+printed. ``ask_sheets_printed`` is the seam that asks the person who can
+see the tray, and their answer moves the cursor. It is injected (a
+callable, defaulted in the app layer) because this module must not import
+Qt, and because a count of paper is not something to derive.
+
 "Test one sheet" is a session mode, not a UI behavior: ``start(...,
 test_first=True)`` submits exactly one sheet and parks the session
 awaiting confirmation.
@@ -26,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import tempfile
 import time
@@ -33,7 +43,7 @@ import uuid
 import dataclasses
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Literal, Sequence
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
@@ -145,6 +155,38 @@ class SessionSummary:
     pass_index: int
     sheet_cursor: int
     state_path: str
+
+
+@dataclass(frozen=True)
+class UnrecordedSheets:
+    """A chunk that reached paper and then failed, put to the operator.
+
+    Everything needed to say what happened before asking the question --
+    which is the order it has to be said in. Someone standing at a printer
+    that has just stopped needs to be told that the paper is not the
+    problem before being asked to count it.
+
+    The count of sheets is ``submitted``, taken from
+    :attr:`deckle.core.printing.PrintResult.submitted`, which the backend
+    sets to the number that physically printed. It is what the question is
+    *about*, not its answer: the backend knows how many sheets it painted
+    and handed to the spooler, and nothing in software knows how many
+    landed in the tray.
+
+    :ivar printer_name: the queue the chunk went to.
+    :ivar pass_index: ``0`` fronts, ``1`` backs.
+    :ivar side: which face this pass was printing.
+    :ivar sheets: the chunk's sheet indices, in submission order.
+    :ivar submitted: how many of them the backend says reached paper.
+    :ivar error: why the run stopped, in the backend's own words.
+    """
+
+    printer_name: str
+    pass_index: int
+    side: Literal["front", "back"]
+    sheets: tuple[int, ...]
+    submitted: int
+    error: str
 
 
 @dataclass
@@ -278,6 +320,13 @@ class PrintSession:
     :param copies: copies per submitted chunk.
     :param chunk_size: sheets submitted per chunk. Chunking is what bounds
         the blast radius of a mid-run failure to one chunk.
+    :param ask_sheets_printed: asked how many sheets of a failed chunk
+        actually came out, when the backend reports that some did. Given an
+        :class:`UnrecordedSheets`; returns the count, or ``None`` to decline
+        to say. ``None`` -- and the absence of the callable altogether --
+        leaves the cursor where it was, which reprints the chunk on resume;
+        that is the safe direction, and it is the direction taken whenever
+        nobody has answered.
     """
 
     def __init__(
@@ -291,6 +340,7 @@ class PrintSession:
         dpi: int = 300,
         copies: int = 1,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        ask_sheets_printed: Callable[["UnrecordedSheets"], int | None] | None = None,
     ) -> None:
         self.plan = plan
         self.profile = profile
@@ -299,6 +349,7 @@ class PrintSession:
         self.dpi = dpi
         self.copies = copies
         self.chunk_size = chunk_size
+        self.ask_sheets_printed = ask_sheets_printed
 
         self._passes: list[PrintPass] = plan_passes(plan, profile, sheets=sheets)
         indices = (
@@ -407,6 +458,7 @@ class PrintSession:
         profile: PrinterProfile,
         backend: PrintBackend,
         session_id: str,
+        ask_sheets_printed: Callable[["UnrecordedSheets"], int | None] | None = None,
     ) -> "PrintSession":
         """Reconstruct a session from its on-disk state file.
 
@@ -416,6 +468,10 @@ class PrintSession:
         :param backend: where the remaining sheets will be submitted.
         :param session_id: which session to load, as reported by
             :meth:`list_resumable`.
+        :param ask_sheets_printed: as on the constructor. A resumed run can
+            fail the same way the original did, so it needs the same seam;
+            a resumed session that could not ask would silently be the one
+            place the app stopped asking.
         :returns: the restored session, positioned where it left off.
         :raises FileNotFoundError: no state file for ``session_id``.
         :raises json.JSONDecodeError: the state file is corrupt. Unlike
@@ -480,6 +536,7 @@ class PrintSession:
         session.dpi = state.dpi
         session.copies = state.copies
         session.chunk_size = DEFAULT_CHUNK_SIZE
+        session.ask_sheets_printed = ask_sheets_printed
         session._passes = plan_passes(plan, profile, sheets=state.sheets)
         session._state = state
         session._finished = False
@@ -575,6 +632,79 @@ class PrintSession:
             pass_index=pass_.index,
         )
 
+    def _sheets_that_reached_paper(
+        self, pass_: PrintPass, chunk: list[int], result: PrintResult
+    ) -> int:
+        """How far the cursor may move past a chunk that failed.
+
+        A chunk fails in two physically different ways and the backend
+        already distinguishes them. Painting that raised leaves
+        ``submitted`` at 0 -- no sheet is known to have come out, the chunk
+        may have died on its first page or its last, and the cursor stays
+        put so a resume reprints it. A chunk that printed and then could
+        not be *recorded* leaves ``submitted`` at the full count: the paper
+        is in the tray and the cursor saying otherwise is what sends the
+        operator back through the machine for a second stack.
+
+        Which of those actually happened is a question about the output
+        tray, so it is asked rather than assumed -- `docs/decisions.md`,
+        2026-09-09. The app supplies ``ask_sheets_printed``; declining to
+        answer, or having nobody to ask, leaves the cursor where it was.
+        Reprinting a chunk costs paper, and advancing past sheets that
+        never came out costs the book.
+
+        The answer is clamped to the chunk. It counts *these* sheets, so
+        neither a negative nor a number larger than what was sent can mean
+        anything -- and refusing at this depth would turn an answered
+        question into a traceback out of :meth:`start`, which promises the
+        opposite. ``resume`` raises on a negative because it is called by a
+        caller that can still show the message; this is not.
+
+        :param pass_: the pass the chunk belongs to, for the question.
+        :param chunk: the sheet indices submitted.
+        :param result: what the backend reported.
+        :returns: how many sheets to count as done, 0 through ``len(chunk)``.
+        """
+        if result.submitted <= 0 or self.ask_sheets_printed is None:
+            return 0
+
+        question = UnrecordedSheets(
+            printer_name=self.printer_name,
+            pass_index=pass_.index,
+            side=pass_.side,
+            sheets=tuple(chunk),
+            submitted=result.submitted,
+            error=result.error or "",
+        )
+        answer = self.ask_sheets_printed(question)
+        if answer is None:
+            log_event(
+                "unrecorded_sheets_undecided",
+                printer=self.printer_name,
+                pass_index=pass_.index,
+                sheets=list(chunk),
+            )
+            return 0
+
+        counted = max(0, min(int(answer), len(chunk)))
+        if counted != answer:
+            log_event(
+                "unrecorded_sheets_count_clamped",
+                level=logging.WARNING,
+                printer=self.printer_name,
+                answered=answer,
+                counted=counted,
+                chunk=len(chunk),
+            )
+        log_event(
+            "unrecorded_sheets_counted",
+            printer=self.printer_name,
+            pass_index=pass_.index,
+            sheets=list(chunk),
+            counted=counted,
+        )
+        return counted
+
     def start(self) -> None:
         """Begin the session: submit the first chunk (or test sheet) of pass 1.
 
@@ -592,6 +722,12 @@ class PrintSession:
             result = self._submit_sheets(pass_, first)
             if result.error:
                 self._last_error = result.error
+                # One sheet is still a sheet. A test sheet that printed and
+                # then could not be recorded is the same paper in the same
+                # tray as any other chunk's, so it is counted the same way.
+                self._state.sheet_cursor += self._sheets_that_reached_paper(
+                    pass_, first, result
+                )
                 self._save()
                 return
             self._state.sheet_cursor = 1
@@ -627,6 +763,16 @@ class PrintSession:
         result = self._submit_sheets(pass_, chunk)
         if result.error:
             self._last_error = result.error
+            # The cursor follows the paper. Sheets that came out are behind
+            # the cursor even though the run stopped -- otherwise a resume
+            # feeds them through a second time, onto a stack the operator
+            # has by then already reloaded. The pass is deliberately *not*
+            # advanced even if this fills it: the run is stalled, and
+            # walking on to the back pass here would print backs while the
+            # fronts are still an open question.
+            self._state.sheet_cursor += self._sheets_that_reached_paper(
+                pass_, chunk, result
+            )
             self._save()
             return
 
