@@ -149,7 +149,11 @@ def test_a_custom_paper_survives_editing_something_else():
     _load(state, paper=CUSTOM)
     panel.refresh_from_project()
 
-    panel._on_gutter_changed(0.5)
+    # Driven through the widget rather than a handler named by hand:
+    # the per-control handlers are generated from `CONTROLS` now, so
+    # nudging the box is both what a user does and the only way to reach
+    # the same code.
+    panel.gutter_spinbox.setValue(0.5)
 
     assert state.project.layout.paper == CUSTOM
 
@@ -344,8 +348,12 @@ def test_a_unit_change_then_a_nudge_does_not_rewrite_trim_in_the_new_unit():
 
     panel.unit_combo.setCurrentText("mm")
     # Whatever the box now shows, committing it must mean the same physical
-    # depth it meant a moment ago -- not 0.25mm.
-    panel._on_trim_changed(panel.trim_spinbox.value())
+    # depth it meant a moment ago -- not 0.25mm. Typed back in, rather
+    # than pushed through a handler named by hand: nudging away and back
+    # is what a user does, and it commits exactly the number on screen.
+    shown = panel.trim_spinbox.value()
+    panel.trim_spinbox.setValue(0.0)
+    panel.trim_spinbox.setValue(shown)
 
     assert state.project.layout.trim_pt == pytest.approx(18.0)
 
@@ -374,7 +382,7 @@ def test_switching_units_redisplays_the_same_positions():
 
     assert panel.station_positions_edit.text() == "12.7, 50.8"
 
-    panel._on_station_positions_changed()
+    panel.station_positions_edit.editingFinished.emit()
 
     positions = state.project.layout.sewing_station_positions_pt
     assert [round(p, 3) for p in positions] == [36.0, 144.0]
@@ -386,6 +394,6 @@ def test_a_bad_position_is_reported_not_raised():
     panel.schedule_saved.connect(messages.append)
     panel.station_positions_edit.setText("two")
 
-    panel._on_station_positions_changed()
+    panel.station_positions_edit.editingFinished.emit()
 
     assert messages and messages[0].startswith("Station positions:")

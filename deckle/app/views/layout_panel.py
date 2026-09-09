@@ -16,7 +16,7 @@ the content box, which fills the page height whenever geometry allows.
 from __future__ import annotations
 
 import threading
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from deckle.app.state import AppState
@@ -896,6 +896,661 @@ def _composited_page_count(pages, parity) -> int:
     return count
 
 
+# -- the control table ----------------------------------------------------
+#
+# The panel used to maintain the same controls by hand in four places: the
+# constructor, `refresh_from_project`, `_on_unit_changed`, and twenty-odd
+# near-identical `_on_*_changed` handlers. Three shipped bugs came from a
+# list that was extended in one place and not the others -- B11 (the unit
+# change skipped trim and the eight crop boxes), B12 (the refresh blocked
+# signals on a list that omitted trim, crop and paper stock, so opening a
+# project filled the undo stack), and B29 (thickness declared four decimals
+# at construction and zero-in-`pt` on every unit change afterwards).
+#
+# So there is one table. It says, per control, what the widget is, which
+# field it shows, whether it is a length, its cap, its precision, and what
+# happens when it changes. The constructor builds from it, the refresh
+# reads from it, the unit change is driven by the widget types it produces,
+# and the handlers are generated from it. Adding a control means adding a
+# row -- there is nowhere else to forget.
+
+
+@dataclass(frozen=True)
+class Control:
+    """One control on the layout panel.
+
+    :param name: the attribute the panel files the widget under.
+    :param kind: what to build. ``"length"`` is a
+        :func:`length_spin_box_class` box over a value the model keeps in
+        points; ``"count"`` a ``QSpinBox``; ``"flag"`` a ``QCheckBox``;
+        ``"choice"`` a ``QComboBox``; ``"text"`` a ``QLineEdit`` committed
+        on ``editingFinished``; ``"unit_text"`` the same but holding
+        lengths, so a unit change re-renders it; ``"action"`` a
+        ``QPushButton``; ``"label"`` a read-only ``QLabel``.
+    :param tab: which form it goes on -- ``"paper"``, ``"crop"``,
+        ``"margins"``, ``"single"``, ``"signature"``, or ``"composite"``
+        for the two controls inside the ink-composite box.
+    :param label: the form label to its left. Empty spans the row, which
+        is what a checkbox, a button and a hint paragraph all want.
+    :param tooltip: the control's tooltip.
+    :param field: the ``LayoutSettings`` field it displays, when reading
+        one attribute is enough.
+    :param read: displays something more than one field -- a crop inset,
+        say. Takes the layout, returns the value. Wins over ``field``.
+    :param apply: ``(project, value) -> project``, the mutator a change
+        routes through. ``None`` means the control is handled elsewhere
+        (``handler``) or shows something that is not a project field.
+    :param needs_unit: ``apply`` also takes the display unit.
+    :param handler: a panel method that owns this control instead of the
+        generic path, for the half-dozen that genuinely differ -- the
+        paper pair, the linked margins, the crop parities.
+    :param refresh: a panel method that re-displays this control, for the
+        same few.
+    :param after: what to redo once the change lands, in order:
+        ``"readout"``, ``"suggestion"``, ``"composite"``, ``"stock_custom"``.
+    :param error_prefix: how a refused value is announced. A refusal is a
+        number the user can correct, not a traceback.
+    :param group: ``(dict_attr, key)`` to also file the widget in a dict,
+        for the margin and crop families.
+    :param cap_pt: ``"length"`` only -- the largest value, in points.
+    :param decimals: ``"length"`` only -- decimals shown, in every unit.
+    :param step_pt: ``"length"`` only -- one nudge, in points.
+    :param minimum: ``"count"`` only.
+    :param maximum: ``"count"`` only.
+    :param choices: ``"choice"`` only -- ``(key, label)`` pairs, or a
+        callable returning them for a list built at runtime.
+    :param by_key: ``"choice"`` only -- the combo carries labels and the
+        model carries keys, so it is read by index rather than by text.
+    :param placeholder: ``"text"`` only.
+    :param text: ``"label"`` only -- its fixed text.
+    :param word_wrap: ``"label"`` only.
+    :param default: what to show when the control has no ``field`` and no
+        ``read`` -- the display unit, whether the composite is on. A
+        refresh leaves these alone, because the project does not hold them.
+    """
+
+    name: str
+    kind: str
+    tab: str
+    label: str = ""
+    tooltip: str = ""
+    field: str | None = None
+    read: object = None
+    apply: object = None
+    needs_unit: bool = False
+    handler: str | None = None
+    refresh: str | None = None
+    after: tuple[str, ...] = ()
+    error_prefix: str = ""
+    group: tuple[str, object] | None = None
+    cap_pt: float = 0.0
+    decimals: int = 3
+    step_pt: float = 9.0
+    minimum: int = 0
+    maximum: int = 0
+    choices: object = ()
+    by_key: bool = False
+    placeholder: str = ""
+    text: str = ""
+    word_wrap: bool = False
+    default: object = None
+
+    @property
+    def is_value(self) -> bool:
+        """Whether this row is a control the user sets, not a caption.
+
+        The guard test in ``tests/test_layout_panel_table.py`` compares
+        exactly these against the widget tree.
+        """
+        return self.kind not in ("action", "label")
+
+    def displayed(self, layout):
+        """What this control should show for ``layout``.
+
+        :param layout: the current ``LayoutSettings``.
+        :returns: the value, or ``None`` when the control shows nothing
+            the project holds -- the display unit, the ink composite.
+        """
+        if self.read is not None:
+            return self.read(layout)
+        if self.field is not None:
+            return getattr(layout, self.field)
+        return None
+
+
+def _crop_control(parity: str, edge: str, index: int) -> Control:
+    """One of the eight crop boxes.
+
+    Eight rather than four because a scan's gutter swaps sides every leaf,
+    so one rectangle cannot fit both parities. They differ only by which
+    inset they read and which parity they write, which is why they are
+    generated rather than written out.
+    """
+    field = f"crop_{parity}_pt"
+    return Control(
+        name=f"crop_{parity}_{edge}",
+        kind="length",
+        tab="crop",
+        label=f"Crop {parity} {edge}:",
+        group=("crop_spinboxes", (parity, edge)),
+        read=lambda layout, f=field, i=index: (
+            getattr(layout, f)[i] if getattr(layout, f) else 0.0
+        ),
+        cap_pt=720.0,
+        decimals=3,
+        handler="_on_crop_changed",
+        error_prefix="Crop",
+    )
+
+
+#: The three editable margins, with the label and tooltip each carries.
+#: The fourth page edge is the spine, whose margin is the gutter.
+_MARGIN_TOOLTIPS: tuple[tuple[str, str, str], ...] = (
+    (
+        "margin_top_pt",
+        "Head (top):",
+        "The blank strip along the top edge, called the head. Most "
+        "printers cannot print to the very edge of the paper, so a "
+        "head margin of zero usually means clipped content -- see "
+        "'Use printer margins'.",
+    ),
+    (
+        "margin_bottom_pt",
+        "Tail (bottom):",
+        "The blank strip along the bottom edge, called the tail. "
+        "Traditionally set larger than the head: it looks balanced "
+        "to the eye, and it is where a thumb rests when the book is "
+        "held open.",
+    ),
+    (
+        "margin_outer_pt",
+        "Fore-edge:",
+        "The blank strip on the edge opposite the spine -- the edge "
+        "you see when the book is closed and the one you turn pages "
+        "by.\n\nThis is the margin most worth keeping consistent, "
+        "which is why 'Spare width to' sends leftover space to the "
+        "gutter by default.",
+    ),
+)
+
+
+CONTROLS: tuple[Control, ...] = (
+    # -- Page setup > Paper -----------------------------------------------
+    Control(
+        name="unit_combo",
+        kind="choice",
+        tab="paper",
+        label="Units:",
+        # No `field`: the display unit is how the panel reads, not
+        # something the project holds, so a refresh must leave it alone.
+        choices=tuple((u, u) for u in ("pt", "in", "cm", "mm")),
+        default="in",
+        handler="_on_unit_changed",
+        tooltip=(
+            "The unit every length on this tab is typed in. Values are "
+            "stored in points regardless, so switching units re-displays "
+            "the same measurement -- it never changes your layout."
+        ),
+    ),
+    Control(
+        name="paper_combo",
+        kind="choice",
+        tab="paper",
+        label="Paper:",
+        choices=lambda: tuple((n, n) for n, _ in PAPER_PRESETS),
+        handler="_on_paper_changed",
+        refresh="_refresh_paper_combo",
+        tooltip=(
+            "The size of the paper you are printing on -- not the size of a "
+            "page in the book.\n\n"
+            "Under Signatures a sheet is folded in half, so each book page "
+            "ends up half the sheet."
+        ),
+    ),
+    Control(
+        name="orientation_combo",
+        kind="choice",
+        tab="paper",
+        label="Orientation:",
+        choices=tuple((o, o) for o in ORIENTATIONS),
+        handler="_on_orientation_changed",
+        refresh="_refresh_orientation_combo",
+        tooltip=(
+            "Which way round the sheet goes through the printer.\n\n"
+            "Signatures want LANDSCAPE: two portrait book pages sit side by "
+            "side on one sheet, and the fold runs down the middle. On "
+            "portrait stock they get squeezed, and Deckle warns rather than "
+            "silently rotating your paper for you."
+        ),
+    ),
+    Control(
+        name="grain_combo",
+        kind="choice",
+        tab="paper",
+        label="Paper grain:",
+        field="grain",
+        choices=GRAINS,
+        by_key=True,
+        apply=lambda project, key: set_grain(project, key),
+        tooltip=(
+            "Which way the paper's fibres run. Paper creases cleanly ALONG "
+            "the grain and cracks ACROSS it, so the grain should run "
+            "parallel to the spine.\n\n"
+            "Ordinary office letter and A4 are LONG grain -- fibres along "
+            "the longer edge. Turn a letter sheet landscape to fold a "
+            "booklet and the fold now runs across the grain, which is why "
+            "binders buy short-grain stock.\n\n"
+            "Leave Unknown and Deckle stays quiet. Set it and you get a "
+            "warning when a fold is going to fight the paper."
+        ),
+    ),
+    Control(
+        name="paper_stock_combo",
+        kind="choice",
+        tab="paper",
+        label="Paper stock:",
+        choices=lambda: ((CUSTOM_STOCK_LABEL, CUSTOM_STOCK_LABEL),) + tuple(
+            (stock.name, f"{stock.name}  ({stock.caliper_pt / PT_PER_MM:.3f} mm)")
+            for stock in PAPER_STOCKS
+        ),
+        by_key=True,
+        handler="_on_paper_stock_changed",
+        refresh="_refresh_stock_combo",
+        tooltip=(
+            "Pick the paper off the ream wrapper and Deckle works out the "
+            "caliper. The thickness below is an estimate -- bulk varies "
+            "about 10% between manufacturers -- and is used only to predict "
+            "fore-edge creep and spine width, never to place a page."
+        ),
+    ),
+    Control(
+        name="paper_thickness_spinbox",
+        kind="length",
+        tab="paper",
+        label="Paper thickness:",
+        field="paper_thickness_pt",
+        apply=lambda project, points: set_paper_thickness_pt(project, points),
+        # Four decimals in EVERY unit, `pt` included. A caliper is
+        # 0.2-0.5pt, and the blanket zero-decimals-in-`pt` rule this
+        # replaces showed that as `0` and wrote `0` back -- B29.
+        cap_pt=10.0,
+        decimals=4,
+        step_pt=0.072,  # a thousandth of an inch
+        # The other two halves of B29: a typed thickness changes what
+        # gathering size fits the trim, and it no longer describes the
+        # named stock it was picked from.
+        after=("suggestion", "readout", "stock_custom"),
+        tooltip=(
+            "The caliper of a single sheet. Ordinary 20lb office paper is "
+            "about 0.004in; card is several times that.\n\n"
+            "Deckle uses it for two things on the binding schedule: how far "
+            "the innermost leaf of a signature protrudes at the fore-edge, "
+            "and how thick the sewn block will be at the spine -- which is "
+            "the number you cut boards against.\n\n"
+            "Leave at 0 and neither is estimated."
+        ),
+    ),
+    # -- Page setup > Crop && trim ----------------------------------------
+    Control(
+        name="trim_spinbox",
+        kind="length",
+        tab="crop",
+        label="Trim depth:",
+        field="trim_pt",
+        apply=lambda project, points: set_trim(project, points),
+        cap_pt=144.0,
+        decimals=3,
+        # The trim is the tolerance the suggestion works to, so changing
+        # it can change the advice without the paper changing at all.
+        after=("suggestion", "readout"),
+        tooltip=(
+            "How deep the fore-edge, head and tail will be ploughed after "
+            "sewing. Draws the cut lines, and gives the gathering-size "
+            "suggestion room to work with -- creep is absorbed by trimming. "
+            "0 draws none."
+        ),
+    ),
+    *(
+        _crop_control(parity, edge, index)
+        for parity in ("odd", "even")
+        for index, edge in enumerate(("left", "bottom", "right", "top"))
+    ),
+    Control(
+        name="auto_crop_button",
+        kind="action",
+        tab="crop",
+        text="Measure crop from the ink",
+        handler="_on_auto_crop",
+        tooltip=(
+            "Rasterise every page, find where the ink actually is, and fill "
+            "the boxes above. Measures odd and even separately, which is "
+            "what a scan whose gutter alternates needs. Check the result "
+            "before printing -- a marginal note on one page in two hundred "
+            "is what a number cannot show you."
+        ),
+    ),
+    Control(
+        name="composite_check",
+        kind="flag",
+        tab="composite",
+        text="Show the ink composite",
+        default=True,
+        handler="_on_composite_toggled",
+        tooltip=(
+            "Superimpose every page's ink in one picture and draw the crop "
+            "on it. " + COMPOSITE_RECTANGLE_SENTENCE + "\n\n"
+            "This is the question a number cannot answer: not \"what does "
+            "page 1 look like\" but \"does this rectangle clip anything, on "
+            "any page\". A marginal note on one page in two hundred is "
+            "exactly what it catches.\n\n"
+            "Untick it on a very large scan -- it rasterises every page."
+        ),
+    ),
+    Control(
+        name="composite_parity_combo",
+        kind="choice",
+        tab="composite",
+        label="Composite:",
+        choices=COMPOSITE_PARITIES,
+        by_key=True,
+        handler="_on_composite_parity_changed",
+        tooltip=(
+            "A scan's margins alternate leaf by leaf, so odd and even pages "
+            "are different pictures and one rectangle rarely fits both. "
+            "Composite them separately to see it."
+        ),
+    ),
+    # -- Page setup > Margins ---------------------------------------------
+    Control(
+        name="gutter_spinbox",
+        kind="length",
+        tab="margins",
+        label="Gutter:",
+        field="gutter_pt",
+        apply=lambda project, points: set_gutter_pt(project, points),
+        cap_pt=288.0,
+        decimals=3,
+        tooltip=(
+            "The margin on the spine edge -- the strip swallowed by the "
+            "binding. It alternates side by side so it always falls on "
+            "the bound edge. This is a MINIMUM: if a page is narrower "
+            "than the others, the spare width lands here by default, so "
+            "the gutter you get can exceed the gutter you asked for. "
+            "Change that with 'Spare width to'."
+        ),
+    ),
+    Control(
+        name="slack_combo",
+        kind="choice",
+        tab="margins",
+        label="Spare width to:",
+        field="slack_to",
+        choices=SLACK_TARGETS,
+        by_key=True,
+        apply=lambda project, key: set_slack_to(project, key),
+        tooltip=(
+            "When source pages differ in width, the spare space has to go "
+            "somewhere. This chooses which margin absorbs it -- and therefore "
+            "which one stays identical on every page.\n\n"
+            "Gutter: the fore-edge is exact on every page, the gutter varies. "
+            "The default, because the fore-edge is the edge you see when the "
+            "book is closed.\n"
+            "Fore-edge: the gutter is exact on every page, the fore-edge "
+            "varies. Prefer this for a fixed punch or sewing template.\n"
+            "Split evenly: both vary by half, so the content sits centred "
+            "between them."
+        ),
+    ),
+    Control(
+        name="link_margins_check",
+        kind="flag",
+        tab="margins",
+        text="Link all three",
+        field="margins_linked",
+        handler="_on_link_margins_toggled",
+        tooltip=(
+            "Edit head, tail and fore-edge as a single value. Untick to "
+            "set them independently -- useful when the fore-edge needs "
+            "room for a thumb but the head does not."
+        ),
+    ),
+    *(
+        Control(
+            name=f"{field}_spinbox",
+            kind="length",
+            tab="margins",
+            label=label,
+            tooltip=tooltip,
+            field=field,
+            group=("margin_spinboxes", field),
+            cap_pt=216.0,
+            decimals=3,
+            handler="_on_margin_changed",
+        )
+        for field, label, tooltip in _MARGIN_TOOLTIPS
+    ),
+    Control(
+        name="use_printer_margins_button",
+        kind="action",
+        tab="margins",
+        text="Use printer margins",
+        handler="_on_use_printer_margins",
+        tooltip=(
+            "Set the margin to the printer's non-printable inset, so content "
+            "clears the dead border on every edge."
+        ),
+    ),
+    Control(
+        name="binding_edge_combo",
+        kind="choice",
+        tab="margins",
+        label="Binding edge:",
+        field="binding_edge",
+        choices=tuple((e, e) for e in BINDING_EDGES),
+        apply=lambda project, value: set_binding_edge(project, value),
+        tooltip=(
+            "Which edge the book is bound on. Left is conventional for "
+            "left-to-right languages; right suits Arabic, Hebrew, or "
+            "Japanese tate-gaki. This mirrors which side the gutter "
+            "falls on for every page."
+        ),
+    ),
+    Control(
+        name="start_on_recto_check",
+        kind="flag",
+        tab="margins",
+        text="Start on a right-hand page",
+        field="start_on_recto",
+        apply=lambda project, checked: set_start_on_recto(project, checked),
+        tooltip=(
+            "Where page 1 lands once the book is bound. Ticked, it falls on "
+            "a recto -- the right-hand page, which is where a title page "
+            "belongs.\n\n"
+            "Untick when the first page should face left, as it does when "
+            "your document already begins with its own title leaf. Deckle "
+            "adds one blank in front to shift everything over."
+        ),
+    ),
+    Control(
+        name="landscape_policy_combo",
+        kind="choice",
+        tab="margins",
+        label="Landscape policy:",
+        field="landscape_policy",
+        choices=tuple((p, p) for p in LANDSCAPE_POLICIES),
+        apply=lambda project, value: set_landscape_policy(project, value),
+        tooltip=(
+            "What to do with a landscape page in a portrait book.\n\n"
+            "rotate: turn it 90 degrees so it fills the page (the default "
+            "-- the reader turns the book).\n"
+            "scale: leave it upright, filling the width, with bands above "
+            "and below."
+        ),
+    ),
+    # -- How it folds > Flat sheets ---------------------------------------
+    Control(
+        name="single_hint_label",
+        kind="label",
+        tab="single",
+        word_wrap=True,
+        text=(
+            "Sheets are printed but never folded. Each one carries two pages, "
+            "one per side, and the gutter alternates so it always falls on "
+            "the bound edge.\n\n"
+            "Print all fronts, reload the stack, print all backs, then bind "
+            "the stack however you like -- glued, punched, or side-sewn.\n\n"
+            "This is the proven path, and it needs no settings beyond Page "
+            "setup above."
+        ),
+    ),
+    # -- How it folds > Signatures ----------------------------------------
+    Control(
+        name="signature_hint_label",
+        kind="label",
+        tab="signature",
+        word_wrap=True,
+        text=(
+            "Sheets are imposed two-up, folded in half, and nested inside "
+            "one another to make gatherings that get sewn through the "
+            "fold.\n\n"
+            "Page setup above still applies -- a folded signature has a "
+            "gutter and margins exactly as a flat sheet does. The settings "
+            "here control only how the sheets are grouped and folded.\n\n"
+            "Experimental: the page ordering is hand-written arithmetic. "
+            "Save the schedule, print onto scrap, fold it, and check it "
+            "reads correctly before committing a real book."
+        ),
+    ),
+    Control(
+        name="sheets_per_signature_spinbox",
+        kind="count",
+        tab="signature",
+        label="Sheets per signature:",
+        field="sheets_per_signature",
+        minimum=1,
+        maximum=100,
+        apply=lambda project, value: set_sheets_per_signature(project, value),
+        after=("readout",),
+        tooltip=(
+            "How many sheets are nested inside one another to make a single "
+            "folded gathering.\n\n"
+            "Each sheet becomes 4 pages once folded, so 4 sheets is a "
+            "16-page signature -- a common choice. More sheets means fewer "
+            "gatherings to sew, but a thicker fold that bulges at the "
+            "fore-edge and needs trimming."
+        ),
+    ),
+    # The suggestion sits directly under the control it is about, and says
+    # nothing at all when the setting already matches -- advice that
+    # repeats the current state back is what teaches people to stop
+    # reading advisories.
+    Control(name="suggestion_label", kind="label", tab="signature", word_wrap=True),
+    Control(
+        name="suggestion_button",
+        kind="action",
+        tab="signature",
+        text="Use it",
+        handler="_on_apply_suggestion",
+    ),
+    Control(
+        name="signature_lengths_edit",
+        kind="text",
+        tab="signature",
+        label="Gatherings:",
+        placeholder="e.g. 10,10,8",
+        read=lambda layout: (
+            ",".join(str(n) for n in layout.signature_lengths)
+            if layout.signature_lengths else ""
+        ),
+        apply=lambda project, text: set_signature_lengths(project, text),
+        after=("readout",),
+        error_prefix="Gatherings",
+        tooltip=(
+            "State each gathering's sheet count outright, instead of one "
+            "uniform size. For a page count that divides badly -- 7,7,6,6 "
+            "beats 4,4,4,4,4,4,2 and six blank leaves -- or to land a "
+            "chapter break on a signature boundary. Leave empty to use "
+            "Sheets per signature."
+        ),
+    ),
+    Control(
+        name="blank_mode_combo",
+        kind="choice",
+        tab="signature",
+        label="Blank mode:",
+        field="blank_mode",
+        choices=tuple((m, m) for m in BLANK_MODES),
+        apply=lambda project, value: set_blank_mode(project, value),
+        after=("readout",),
+        tooltip=(
+            "A folded book needs a page count that is a multiple of 4, so "
+            "blanks get added. This chooses where.\n\n"
+            "end: all blanks at the back of the book.\n"
+            "balanced: spread across signatures, so no single gathering is "
+            "noticeably emptier than its neighbours."
+        ),
+    ),
+    Control(
+        name="sewing_stations_spinbox",
+        kind="count",
+        tab="signature",
+        label="Sewing stations:",
+        field="sewing_stations",
+        minimum=0,
+        maximum=20,
+        apply=lambda project, value: set_sewing_stations(project, value),
+        after=("readout",),
+        tooltip=(
+            "Marks printed on the fold line showing where to pierce for "
+            "sewing. Three is the traditional pamphlet stitch; five suits a "
+            "taller book.\n\nSet to 0 to print no sewing marks -- useful if "
+            "you are stapling rather than sewing."
+        ),
+    ),
+    Control(
+        name="station_positions_edit",
+        kind="unit_text",
+        tab="signature",
+        label="Station positions:",
+        placeholder="evenly spaced",
+        apply=lambda project, text, unit: set_sewing_station_positions(
+            project, text, unit
+        ),
+        needs_unit=True,
+        after=("readout",),
+        error_prefix="Station positions",
+        tooltip=(
+            "Where the holes actually go, measured up from the TAIL, in "
+            "the unit above -- for example 0.5, 2, 2.25, 9.5.\n\n"
+            "Leave empty and Deckle spaces 'Sewing stations' evenly, which "
+            "is a pamphlet stitch. Fill it in when even spacing will not "
+            "do: sewing on tapes needs a pair either side of each tape, and "
+            "kettle stitches sit at a fixed inset from head and tail.\n\n"
+            "This wins over the count above."
+        ),
+    ),
+    # Live readout -- "17 signatures - 67 sheets - 2 blanks" -- derived
+    # from the recomputed SheetPlan, since that arithmetic is the thing a
+    # binder actually decides on.
+    Control(
+        name="binding_readout_label",
+        kind="label",
+        tab="signature",
+        label="Binding:",
+        tooltip=(
+            "What your current settings actually produce, recomputed live. "
+            "This is the arithmetic a binder decides on -- how many "
+            "gatherings to sew, how much paper to cut, and how many blank "
+            "pages the fold count forced."
+        ),
+    ),
+)
+
+
+#: Every control, by name. Built once, so a lookup is not a scan.
+CONTROLS_BY_NAME: dict[str, Control] = {spec.name: spec for spec in CONTROLS}
+
+
 # -- Qt wiring -----------------------------------------------------------
 # Imported lazily so this module -- and every pure function above -- stays
 # importable without PySide6/a display, matching arrange_view.py/import_view.py.
@@ -1148,8 +1803,6 @@ class LayoutPanel:
             QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
             QTabWidget, QVBoxLayout, QWidget,
         ) = _qt_widgets()
-        LengthSpinBox = length_spin_box_class()
-        UnitLineEdit = unit_line_edit_class()
 
         class _Signals(QObject):
             layout_changed = Signal(object)  # SheetPlan
@@ -1226,477 +1879,75 @@ class LayoutPanel:
         self.tabs.addTab(single_tab, "Flat sheets")
         self._single_tab_index = self.tabs.indexOf(single_tab)
 
-        self.single_hint_label = QLabel(
-            "Sheets are printed but never folded. Each one carries two pages, "
-            "one per side, and the gutter alternates so it always falls on "
-            "the bound edge.\n\n"
-            "Print all fronts, reload the stack, print all backs, then bind "
-            "the stack however you like -- glued, punched, or side-sewn.\n\n"
-            "This is the proven path, and it needs no settings beyond Page "
-            "setup above.",
-            single_tab,
-        )
-        self.single_hint_label.setWordWrap(True)
-        single_form.addRow(self.single_hint_label)
-
         signature_tab = QWidget(self.widget)
         signature_form = QFormLayout(signature_tab)
         signature_form.setFieldGrowthPolicy(_qt_fields_at_size_hint())
         self.tabs.addTab(signature_tab, "Signatures")
         self._signature_tab_index = self.tabs.indexOf(signature_tab)
 
-        # Lengths are stored in points but entered in whatever unit suits the
-        # job -- inches for a US letter binder, cm for metric stock.
-        self.unit_combo = QComboBox(self.widget)
-        self.unit_combo.addItems(["pt", "in", "cm", "mm"])
-        self.unit_combo.setCurrentText("in")
+        # The ink composite's own box. It is filled by the two `composite`
+        # rows of the table and added to the Crop tab after them, so the
+        # picture lands under the boxes it is a picture of. One spanning
+        # row, not four labelled ones: the tab is already at the dozen-row
+        # ceiling `test_no_settings_tab_is_taller_than_a_dozen_rows`
+        # enforces, and a picture wants the full width anyway.
+        composite_box = QWidget(self.widget)
+        composite_layout = QVBoxLayout(composite_box)
+        composite_layout.setContentsMargins(0, 0, 0, 0)
+
+        def _add_to_composite(*row) -> None:
+            if len(row) == 1:
+                composite_layout.addWidget(row[0])
+                return
+            label, widget = row
+            parity_row = QHBoxLayout()
+            parity_row.addWidget(QLabel(label, composite_box))
+            parity_row.addWidget(widget)
+            parity_row.addStretch(1)
+            composite_layout.addLayout(parity_row)
+
+        # -- every control, built from the one table ------------------------
+        #
+        # The constructor does not know what controls exist. It knows how to
+        # build each KIND, and reads the rest -- which form, which field,
+        # the cap, the precision, the handler, what to redo afterwards --
+        # off the row. That is the whole point of the table: this loop, the
+        # refresh, the unit change and the handlers are four readers of one
+        # declaration rather than four copies of one list.
         self._unit = "in"
-        paper_form.addRow("Units:", self.unit_combo)
-
-        # Paper size and orientation. Folio needs landscape stock -- two
-        # portrait pages side by side do not fit on a portrait sheet -- and
-        # until now the GUI offered no way to say so at all, only the CLI's
-        # --paper. The imposer could warn about it and nothing else.
-        self.paper_combo = QComboBox(self.widget)
-        for name, _dimensions in PAPER_PRESETS:
-            self.paper_combo.addItem(name)
-        self._paper_names = [name for name, _ in PAPER_PRESETS]
-        self._custom_paper_label = None
-        self.paper_combo.setCurrentIndex(
-            self._paper_names.index(
-                self._sync_paper_choices(state.project.layout.paper)
-            )
-        )
-        self.paper_combo.setToolTip(
-            "The size of the paper you are printing on -- not the size of a "
-            "page in the book.\n\n"
-            "Under Signatures a sheet is folded in half, so each book page "
-            "ends up half the sheet."
-        )
-        paper_form.addRow("Paper:", self.paper_combo)
-
-        self.orientation_combo = QComboBox(self.widget)
-        self.orientation_combo.addItems(list(ORIENTATIONS))
-        self.orientation_combo.setCurrentText(
-            "Landscape" if paper_is_landscape(state.project.layout.paper) else "Portrait"
-        )
-        self.orientation_combo.setToolTip(
-            "Which way round the sheet goes through the printer.\n\n"
-            "Signatures want LANDSCAPE: two portrait book pages sit side by "
-            "side on one sheet, and the fold runs down the middle. On "
-            "portrait stock they get squeezed, and Deckle warns rather than "
-            "silently rotating your paper for you."
-        )
-        paper_form.addRow("Orientation:", self.orientation_combo)
-
-        # Grain and thickness are properties of the STOCK, so they sit with
-        # the paper rather than in a mode tab. Neither changes any geometry:
-        # grain drives a warning, thickness drives the creep and spine
-        # estimates on the schedule.
-        self.grain_combo = QComboBox(self.widget)
-        for _key, label in GRAINS:
-            self.grain_combo.addItem(label)
-        self._grain_keys = [key for key, _ in GRAINS]
-        current_grain = getattr(state.project.layout, "grain", "unknown")
-        if current_grain in self._grain_keys:
-            self.grain_combo.setCurrentIndex(self._grain_keys.index(current_grain))
-        self.grain_combo.setToolTip(
-            "Which way the paper's fibres run. Paper creases cleanly ALONG "
-            "the grain and cracks ACROSS it, so the grain should run "
-            "parallel to the spine.\n\n"
-            "Ordinary office letter and A4 are LONG grain -- fibres along "
-            "the longer edge. Turn a letter sheet landscape to fold a "
-            "booklet and the fold now runs across the grain, which is why "
-            "binders buy short-grain stock.\n\n"
-            "Leave Unknown and Deckle stays quiet. Set it and you get a "
-            "warning when a fold is going to fight the paper."
-        )
-        paper_form.addRow("Paper grain:", self.grain_combo)
-
-        # Four decimals in every unit, including `pt`. A caliper is
-        # 0.2-0.5pt, and the blanket "zero decimals in pt" rule this
-        # replaces displayed that as `0` and wrote `0` back on the next
-        # nudge -- B29.
-        self.paper_thickness_spinbox = LengthSpinBox(
-            self.widget, cap_pt=10.0, decimals=4, step_pt=0.072, unit=self._unit
-        )
-        self.paper_thickness_spinbox.set_points(
-            state.project.layout.paper_thickness_pt
-        )
-        self.paper_thickness_spinbox.setToolTip(
-            "The caliper of a single sheet. Ordinary 20lb office paper is "
-            "about 0.004in; card is several times that.\n\n"
-            "Deckle uses it for two things on the binding schedule: how far "
-            "the innermost leaf of a signature protrudes at the fore-edge, "
-            "and how thick the sewn block will be at the spine -- which is "
-            "the number you cut boards against.\n\n"
-            "Leave at 0 and neither is estimated."
-        )
-        self.paper_stock_combo = QComboBox(self.widget)
-        self.paper_stock_combo.addItem(CUSTOM_STOCK_LABEL)
-        for stock in PAPER_STOCKS:
-            self.paper_stock_combo.addItem(
-                f"{stock.name}  ({stock.caliper_pt / PT_PER_MM:.3f} mm)"
-            )
-        self.paper_stock_combo.setToolTip(
-            "Pick the paper off the ream wrapper and Deckle works out the "
-            "caliper. The thickness below is an estimate -- bulk varies "
-            "about 10% between manufacturers -- and is used only to predict "
-            "fore-edge creep and spine width, never to place a page."
-        )
-        self.paper_stock_combo.currentTextChanged.connect(self._on_paper_stock_changed)
-        paper_form.addRow("Paper stock:", self.paper_stock_combo)
-
-        paper_form.addRow("Paper thickness:", self.paper_thickness_spinbox)
-
-        self.trim_spinbox = LengthSpinBox(
-            self.widget, cap_pt=144.0, decimals=3, unit=self._unit
-        )
-        self.trim_spinbox.set_points(state.project.layout.trim_pt)
-        self.trim_spinbox.setToolTip(
-            "How deep the fore-edge, head and tail will be ploughed after "
-            "sewing. Draws the cut lines, and gives the gathering-size "
-            "suggestion room to work with -- creep is absorbed by trimming. "
-            "0 draws none."
-        )
-        self.trim_spinbox.valueChanged.connect(self._on_trim_changed)
-        crop_form.addRow("Trim depth:", self.trim_spinbox)
-
-        # Eight boxes rather than four: a scan's gutter swaps sides every
-        # leaf, so one rectangle cannot fit both parities. Built in a loop
-        # because they differ only by which field they write.
+        self.controls: dict[str, object] = {}
+        self._choice_keys: dict[str, list] = {}
+        self.margin_spinboxes: dict[str, object] = {}
         self.crop_spinboxes: dict[tuple[str, str], object] = {}
-        for parity in ("odd", "even"):
-            for edge in ("left", "bottom", "right", "top"):
-                box = LengthSpinBox(
-                    self.widget, cap_pt=720.0, decimals=3, unit=self._unit
-                )
-                box.valueChanged.connect(
-                    lambda _value, p=parity: self._on_crop_changed(p)
-                )
-                self.crop_spinboxes[(parity, edge)] = box
-                crop_form.addRow(f"Crop {parity} {edge}:", box)
-
-        self.auto_crop_button = QPushButton("Measure crop from the ink", self.widget)
-        self.auto_crop_button.setToolTip(
-            "Rasterise every page, find where the ink actually is, and fill "
-            "the boxes above. Measures odd and even separately, which is "
-            "what a scan whose gutter alternates needs. Check the result "
-            "before printing -- a marginal note on one page in two hundred "
-            "is what a number cannot show you."
-        )
-        self.auto_crop_button.clicked.connect(self._on_auto_crop)
-        crop_form.addRow("", self.auto_crop_button)
-
-        # Eight numbers and no picture was the whole of the complaint. The
-        # question a cropper has is not "what does page 1 look like" but
-        # "does this rectangle clip anything, on ANY page" -- which is the
-        # question a composite of every page's ink answers and a number
-        # cannot.
-        self.composite_check = QCheckBox("Show the ink composite", self.widget)
-        self.composite_check.setChecked(True)
-        self.composite_check.setToolTip(
-            "Superimpose every page's ink in one picture and draw the crop "
-            "on it. " + COMPOSITE_RECTANGLE_SENTENCE + "\n\n"
-            "This is the question a number cannot answer: not \"what does "
-            "page 1 look like\" but \"does this rectangle clip anything, on "
-            "any page\". A marginal note on one page in two hundred is "
-            "exactly what it catches.\n\n"
-            "Untick it on a very large scan -- it rasterises every page."
-        )
-        self.composite_check.toggled.connect(self._on_composite_toggled)
-
-        self.composite_parity_combo = QComboBox(self.widget)
-        for _key, _label in COMPOSITE_PARITIES:
-            self.composite_parity_combo.addItem(_label)
-        self._composite_parity_keys = [key for key, _ in COMPOSITE_PARITIES]
-        self.composite_parity_combo.setToolTip(
-            "A scan's margins alternate leaf by leaf, so odd and even pages "
-            "are different pictures and one rectangle rarely fits both. "
-            "Composite them separately to see it."
-        )
-        self.composite_parity_combo.currentIndexChanged.connect(
-            lambda _index: self._schedule_composite()
-        )
+        forms = {
+            "paper": paper_form.addRow,
+            "margins": margins_form.addRow,
+            "crop": crop_form.addRow,
+            "single": single_form.addRow,
+            "signature": signature_form.addRow,
+            "composite": _add_to_composite,
+        }
+        for spec in CONTROLS:
+            self._build_control(spec, forms[spec.tab])
 
         self.composite_label = QLabel("", self.widget)
         self.composite_label.setAlignment(_qt_align_center())
         self.composite_label.setMinimumHeight(160)
-
         self.composite_caption = QLabel("", self.widget)
         self.composite_caption.setWordWrap(True)
-
-        # One spanning row, not four labelled ones. The tab is already at
-        # the dozen-row ceiling `test_no_settings_tab_is_taller_than_a_dozen_rows`
-        # enforces, and a picture wants the full width anyway rather than
-        # the narrow field column a QFormLayout row would give it.
-        composite_box = QWidget(self.widget)
-        composite_layout = QVBoxLayout(composite_box)
-        composite_layout.setContentsMargins(0, 0, 0, 0)
-        composite_layout.addWidget(self.composite_check)
-        parity_row = QHBoxLayout()
-        parity_row.addWidget(QLabel("Composite:", composite_box))
-        parity_row.addWidget(self.composite_parity_combo)
-        parity_row.addStretch(1)
-        composite_layout.addLayout(parity_row)
         composite_layout.addWidget(self.composite_label)
         composite_layout.addWidget(self.composite_caption)
         crop_form.addRow(composite_box)
-        self.unit_combo.setToolTip(
-            "The unit every length on this tab is typed in. Values are "
-            "stored in points regardless, so switching units re-displays "
-            "the same measurement -- it never changes your layout."
-        )
 
-        self.gutter_spinbox = LengthSpinBox(
-            self.widget, cap_pt=288.0, decimals=3, unit=self._unit
-        )
-        self.gutter_spinbox.set_points(state.project.layout.gutter_pt)
-        margins_form.addRow("Gutter:", self.gutter_spinbox)
-        self.gutter_spinbox.setToolTip(
-            "The margin on the spine edge -- the strip swallowed by the "
-            "binding. It alternates side by side so it always falls on "
-            "the bound edge. This is a MINIMUM: if a page is narrower "
-            "than the others, the spare width lands here by default, so "
-            "the gutter you get can exceed the gutter you asked for. "
-            "Change that with 'Spare width to'."
-        )
-
-        # Pages of differing widths produce differing slack; this picks
-        # which margin absorbs it -- i.e. which stays constant.
-        self.slack_combo = QComboBox(self.widget)
-        for _key, label in SLACK_TARGETS:
-            self.slack_combo.addItem(label)
-        self._slack_keys = [k for k, _ in SLACK_TARGETS]
-        current_slack = state.project.layout.slack_to
-        if current_slack in self._slack_keys:
-            self.slack_combo.setCurrentIndex(self._slack_keys.index(current_slack))
-        self.slack_combo.setToolTip(
-            "When source pages differ in width, the spare space has to go "
-            "somewhere. This chooses which margin absorbs it -- and therefore "
-            "which one stays identical on every page.\n\n"
-            "Gutter: the fore-edge is exact on every page, the gutter varies. "
-            "The default, because the fore-edge is the edge you see when the "
-            "book is closed.\n"
-            "Fore-edge: the gutter is exact on every page, the fore-edge "
-            "varies. Prefer this for a fixed punch or sewing template.\n"
-            "Split evenly: both vary by half, so the content sits centred "
-            "between them."
-        )
-        margins_form.addRow("Spare width to:", self.slack_combo)
-
-        self.link_margins_check = QCheckBox("Link all three", self.widget)
-        self.link_margins_check.setChecked(state.project.layout.margins_linked)
-        margins_form.addRow("", self.link_margins_check)
-        self.link_margins_check.setToolTip(
-            "Edit head, tail and fore-edge as a single value. Untick to "
-            "set them independently -- useful when the fore-edge needs "
-            "room for a thumb but the head does not."
-        )
-
-        # Three editable margins; the fourth edge is the spine, whose margin
-        # is the gutter above.
-        self.margin_spinboxes: dict[str, object] = {}
-        for field, label, tip in (
-            (
-                "margin_top_pt",
-                "Head (top):",
-                "The blank strip along the top edge, called the head. Most "
-                "printers cannot print to the very edge of the paper, so a "
-                "head margin of zero usually means clipped content -- see "
-                "'Use printer margins'.",
-            ),
-            (
-                "margin_bottom_pt",
-                "Tail (bottom):",
-                "The blank strip along the bottom edge, called the tail. "
-                "Traditionally set larger than the head: it looks balanced "
-                "to the eye, and it is where a thumb rests when the book is "
-                "held open.",
-            ),
-            (
-                "margin_outer_pt",
-                "Fore-edge:",
-                "The blank strip on the edge opposite the spine -- the edge "
-                "you see when the book is closed and the one you turn pages "
-                "by.\n\nThis is the margin most worth keeping consistent, "
-                "which is why 'Spare width to' sends leftover space to the "
-                "gutter by default.",
-            ),
-        ):
-            box = LengthSpinBox(
-                self.widget, cap_pt=216.0, decimals=3, unit=self._unit
-            )
-            box.set_points(getattr(state.project.layout, field))
-            box.setToolTip(tip)
-            margins_form.addRow(label, box)
-            self.margin_spinboxes[field] = box
-        self._sync_margin_enabled()
-
-        self.use_printer_margins_button = QPushButton("Use printer margins", self.widget)
-        self.use_printer_margins_button.setToolTip(
-            "Set the margin to the printer's non-printable inset, so content "
-            "clears the dead border on every edge."
-        )
-        margins_form.addRow("", self.use_printer_margins_button)
-
-        self.binding_edge_combo = QComboBox(self.widget)
-        self.binding_edge_combo.addItems(list(BINDING_EDGES))
-        self.binding_edge_combo.setCurrentText(state.project.layout.binding_edge)
-        self.binding_edge_combo.setToolTip(
-            "Which edge the book is bound on. Left is conventional for "
-            "left-to-right languages; right suits Arabic, Hebrew, or "
-            "Japanese tate-gaki. This mirrors which side the gutter "
-            "falls on for every page."
-        )
-        margins_form.addRow("Binding edge:", self.binding_edge_combo)
-
-        self.start_on_recto_check = QCheckBox("Start on a right-hand page", self.widget)
-        self.start_on_recto_check.setChecked(state.project.layout.start_on_recto)
-        self.start_on_recto_check.setToolTip(
-            "Where page 1 lands once the book is bound. Ticked, it falls on "
-            "a recto -- the right-hand page, which is where a title page "
-            "belongs.\n\n"
-            "Untick when the first page should face left, as it does when "
-            "your document already begins with its own title leaf. Deckle "
-            "adds one blank in front to shift everything over."
-        )
-        margins_form.addRow("", self.start_on_recto_check)
-
-        self.landscape_policy_combo = QComboBox(self.widget)
-        self.landscape_policy_combo.addItems(list(LANDSCAPE_POLICIES))
-        self.landscape_policy_combo.setCurrentText(state.project.layout.landscape_policy)
-        self.landscape_policy_combo.setToolTip(
-            "What to do with a landscape page in a portrait book.\n\n"
-            "rotate: turn it 90 degrees so it fills the page (the default "
-            "-- the reader turns the book).\n"
-            "scale: leave it upright, filling the width, with bands above "
-            "and below."
-        )
-        margins_form.addRow("Landscape policy:", self.landscape_policy_combo)
-
-        # -- signature/binding controls ---------------------------------
-        # Everything below lands on the Signatures tab, and is reachable
-        # only while that tab is selected -- which is also what sets
-        # fold_scheme="folio". The description mirrors the Flat sheets one:
-        # a mode should say what it does before it asks you to configure it.
-        self.signature_hint_label = QLabel(
-            "Sheets are imposed two-up, folded in half, and nested inside "
-            "one another to make gatherings that get sewn through the "
-            "fold.\n\n"
-            "Page setup above still applies -- a folded signature has a "
-            "gutter and margins exactly as a flat sheet does. The settings "
-            "here control only how the sheets are grouped and folded.\n\n"
-            "Experimental: the page ordering is hand-written arithmetic. "
-            "Save the schedule, print onto scrap, fold it, and check it "
-            "reads correctly before committing a real book.",
-            signature_tab,
-        )
-        self.signature_hint_label.setWordWrap(True)
-        signature_form.addRow(self.signature_hint_label)
-
-        self.sheets_per_signature_spinbox = QSpinBox(self.widget)
-        self.sheets_per_signature_spinbox.setRange(1, 100)
-        self.sheets_per_signature_spinbox.setValue(state.project.layout.sheets_per_signature)
-        self.sheets_per_signature_spinbox.setToolTip(
-            "How many sheets are nested inside one another to make a single "
-            "folded gathering.\n\n"
-            "Each sheet becomes 4 pages once folded, so 4 sheets is a "
-            "16-page signature -- a common choice. More sheets means fewer "
-            "gatherings to sew, but a thicker fold that bulges at the "
-            "fore-edge and needs trimming."
-        )
-        signature_form.addRow("Sheets per signature:", self.sheets_per_signature_spinbox)
-
-        # The suggestion sits directly under the control it is about, and
-        # says nothing at all when the setting already matches -- advice
-        # that repeats the current state back is what teaches people to
-        # stop reading advisories.
-        self.suggestion_label = QLabel("", self.widget)
-        self.suggestion_label.setWordWrap(True)
-        self.suggestion_button = QPushButton("Use it", self.widget)
-        self.suggestion_button.clicked.connect(self._on_apply_suggestion)
-        signature_form.addRow(self.suggestion_label)
-        signature_form.addRow("", self.suggestion_button)
-
-        self.signature_lengths_edit = QLineEdit(self.widget)
-        self.signature_lengths_edit.setPlaceholderText("e.g. 10,10,8")
-        lengths = state.project.layout.signature_lengths
-        self.signature_lengths_edit.setText(
-            ",".join(str(n) for n in lengths) if lengths else ""
-        )
-        self.signature_lengths_edit.setToolTip(
-            "State each gathering's sheet count outright, instead of one "
-            "uniform size. For a page count that divides badly -- 7,7,6,6 "
-            "beats 4,4,4,4,4,4,2 and six blank leaves -- or to land a "
-            "chapter break on a signature boundary. Leave empty to use "
-            "Sheets per signature."
-        )
-        self.signature_lengths_edit.editingFinished.connect(
-            self._on_signature_lengths_changed
-        )
-        signature_form.addRow("Gatherings:", self.signature_lengths_edit)
-
-        self.blank_mode_combo = QComboBox(self.widget)
-        self.blank_mode_combo.addItems(list(BLANK_MODES))
-        self.blank_mode_combo.setCurrentText(state.project.layout.blank_mode)
-        self.blank_mode_combo.setToolTip(
-            "A folded book needs a page count that is a multiple of 4, so "
-            "blanks get added. This chooses where.\n\n"
-            "end: all blanks at the back of the book.\n"
-            "balanced: spread across signatures, so no single gathering is "
-            "noticeably emptier than its neighbours."
-        )
-        signature_form.addRow("Blank mode:", self.blank_mode_combo)
-
-        self.sewing_stations_spinbox = QSpinBox(self.widget)
-        self.sewing_stations_spinbox.setRange(0, 20)
-        self.sewing_stations_spinbox.setValue(state.project.layout.sewing_stations)
-        self.sewing_stations_spinbox.setToolTip(
-            "Marks printed on the fold line showing where to pierce for "
-            "sewing. Three is the traditional pamphlet stitch; five suits a "
-            "taller book.\n\nSet to 0 to print no sewing marks -- useful if "
-            "you are stapling rather than sewing."
-        )
-        signature_form.addRow("Sewing stations:", self.sewing_stations_spinbox)
-
-        self.station_positions_edit = UnitLineEdit(
-            self.widget,
-            text_for_unit=lambda unit: station_positions_text(
-                self.state.project.layout, unit
-            ),
-        )
-        self.station_positions_edit.setPlaceholderText("evenly spaced")
-        self.station_positions_edit.setText(
-            station_positions_text(state.project.layout, self._unit)
-        )
-        self.station_positions_edit.setToolTip(
-            "Where the holes actually go, measured up from the TAIL, in "
-            "the unit above -- for example 0.5, 2, 2.25, 9.5.\n\n"
-            "Leave empty and Deckle spaces 'Sewing stations' evenly, which "
-            "is a pamphlet stitch. Fill it in when even spacing will not "
-            "do: sewing on tapes needs a pair either side of each tape, and "
-            "kettle stitches sit at a fixed inset from head and tail.\n\n"
-            "This wins over the count above."
-        )
-        self.station_positions_edit.editingFinished.connect(
-            self._on_station_positions_changed
-        )
-        signature_form.addRow("Station positions:", self.station_positions_edit)
-
-
-        # Live readout -- "17 signatures · 67 sheets · 2 blanks" -- derived
-        # from the recomputed SheetPlan, since that arithmetic is the thing
-        # a binder actually decides on.
-        self.binding_readout_label = QLabel("", self.widget)
-        self.binding_readout_label.setToolTip(
-            "What your current settings actually produce, recomputed live. "
-            "This is the arithmetic a binder decides on -- how many "
-            "gatherings to sew, how much paper to cut, and how many blank "
-            "pages the fold count forced."
-        )
-        signature_form.addRow("Binding:", self.binding_readout_label)
-        self.binding_readout_label.setText(binding_readout_str(recompute_plan(state.project)))
+        # Names a few callers reach for by hand. Derived from the table's
+        # choices rather than written out beside them, so a reordered or
+        # extended list cannot leave an index lookup pointing at the wrong
+        # entry.
+        self._paper_names = self._choice_keys["paper_combo"]
+        self._grain_keys = self._choice_keys["grain_combo"]
+        self._slack_keys = self._choice_keys["slack_combo"]
+        self._composite_parity_keys = self._choice_keys["composite_parity_combo"]
+        self._custom_paper_label = None
 
         # Below the mode tabs, not inside one. A schedule is not a
         # signature artefact: the flat-sheet schedule carries how the stack
@@ -1729,35 +1980,25 @@ class LayoutPanel:
         self.save_defaults_button.clicked.connect(self._on_save_defaults_clicked)
         self.forget_defaults_button.clicked.connect(self._on_forget_defaults_clicked)
 
+        # Every control now shows what the project holds. Done before a
+        # single signal is connected, so nothing written here can be read
+        # back as an edit the user made -- the same guarantee
+        # `refresh_from_project` gets from blocking the widget tree.
+        self._display_controls()
+        self._sync_margin_enabled()
         self.tabs.setCurrentIndex(
             self._signature_tab_index
             if state.project.layout.fold_scheme == "folio"
             else self._single_tab_index
         )
         self._sync_signature_tab()
-
-        self.gutter_spinbox.valueChanged.connect(self._on_gutter_changed)
-        for field, box in self.margin_spinboxes.items():
-            box.valueChanged.connect(
-                lambda value, f=field: self._on_margin_changed(f, value)
-            )
-        self.link_margins_check.toggled.connect(self._on_link_margins_toggled)
-        self.slack_combo.currentIndexChanged.connect(self._on_slack_to_changed)
-        self.unit_combo.currentTextChanged.connect(self._on_unit_changed)
-        self.use_printer_margins_button.clicked.connect(self._on_use_printer_margins)
-        self.binding_edge_combo.currentTextChanged.connect(self._on_binding_edge_changed)
-        self.start_on_recto_check.toggled.connect(self._on_start_on_recto_toggled)
-        self.landscape_policy_combo.currentTextChanged.connect(self._on_landscape_policy_changed)
-        self.grain_combo.currentIndexChanged.connect(self._on_grain_changed)
-        self.paper_combo.currentTextChanged.connect(self._on_paper_changed)
-        self.orientation_combo.currentTextChanged.connect(self._on_orientation_changed)
-        self.tabs.currentChanged.connect(self._on_mode_tab_changed)
-        self.sheets_per_signature_spinbox.valueChanged.connect(
-            self._on_sheets_per_signature_changed
+        self.binding_readout_label.setText(
+            binding_readout_str(recompute_plan(state.project))
         )
-        self.blank_mode_combo.currentTextChanged.connect(self._on_blank_mode_changed)
-        self.sewing_stations_spinbox.valueChanged.connect(self._on_sewing_stations_changed)
-        self.paper_thickness_spinbox.valueChanged.connect(self._on_paper_thickness_changed)
+
+        for spec in CONTROLS:
+            self._connect_control(spec)
+        self.tabs.currentChanged.connect(self._on_mode_tab_changed)
 
         # Cancel-and-reschedule, so holding a spinbox's arrow key produces
         # one rasterisation of the document rather than one per step.
@@ -1775,6 +2016,264 @@ class LayoutPanel:
         self._composite_worker: CompositeWorker | None = None
         self._composite_reason = ""
         self._schedule_composite()
+
+    # -- the table, read four ways --------------------------------------
+    #
+    # `_build_control` builds it, `_display_controls` shows the project in
+    # it, `_on_unit_changed` reconverts it (by asking the widget tree, not
+    # by name), and `_on_control_changed` applies an edit from it. Adding a
+    # control means adding a row to :data:`CONTROLS`; there is no second
+    # place that has to be remembered.
+
+    def _build_control(self, spec: Control, add) -> None:
+        """Build one control and put it on its form.
+
+        :param spec: the row describing it.
+        :param add: the form's ``addRow`` -- called with ``(label, widget)``
+            when the row has a label and ``(widget,)`` when it spans.
+        :returns: nothing. The widget lands on ``self`` under ``spec.name``,
+            in ``self.controls``, and in ``spec.group``'s dict if it has one.
+        """
+        from PySide6.QtWidgets import (
+            QCheckBox, QComboBox, QLabel, QLineEdit, QPushButton, QSpinBox,
+        )
+
+        if spec.kind == "length":
+            widget = length_spin_box_class()(
+                self.widget,
+                cap_pt=spec.cap_pt,
+                decimals=spec.decimals,
+                step_pt=spec.step_pt,
+                unit=self._unit,
+            )
+        elif spec.kind == "count":
+            widget = QSpinBox(self.widget)
+            widget.setRange(spec.minimum, spec.maximum)
+        elif spec.kind == "flag":
+            widget = QCheckBox(spec.text, self.widget)
+            if spec.default is not None:
+                widget.setChecked(bool(spec.default))
+        elif spec.kind == "choice":
+            widget = QComboBox(self.widget)
+            choices = spec.choices() if callable(spec.choices) else spec.choices
+            keys = []
+            for key, label in choices:
+                widget.addItem(label)
+                keys.append(key)
+            self._choice_keys[spec.name] = keys
+            if spec.default is not None and spec.default in keys:
+                widget.setCurrentIndex(keys.index(spec.default))
+        elif spec.kind == "unit_text":
+            widget = unit_line_edit_class()(
+                self.widget,
+                text_for_unit=lambda unit: station_positions_text(
+                    self.state.project.layout, unit
+                ),
+            )
+            widget.setPlaceholderText(spec.placeholder)
+        elif spec.kind == "text":
+            widget = QLineEdit(self.widget)
+            widget.setPlaceholderText(spec.placeholder)
+        elif spec.kind == "action":
+            widget = QPushButton(spec.text, self.widget)
+        elif spec.kind == "label":
+            widget = QLabel(spec.text, self.widget)
+            widget.setWordWrap(spec.word_wrap)
+        else:  # pragma: no cover -- a typo in the table, not a user path
+            raise ValueError(f"unknown control kind {spec.kind!r}")
+
+        if spec.tooltip:
+            widget.setToolTip(spec.tooltip)
+        setattr(self, spec.name, widget)
+        self.controls[spec.name] = widget
+        if spec.group is not None:
+            getattr(self, spec.group[0])[spec.group[1]] = widget
+        if spec.label:
+            add(spec.label, widget)
+        else:
+            add(widget)
+
+    def _connect_control(self, spec: Control) -> None:
+        """Wire one control's signal to whatever owns it.
+
+        :param spec: the row describing it.
+        :returns: nothing.
+
+        A row with no ``handler`` goes through :meth:`_on_control_changed`,
+        which is every regular control: twenty near-identical
+        ``_on_*_changed`` methods collapsed into one that reads ``apply``
+        and ``after`` off the row. A row that names a handler gets it,
+        called with the control's current value -- and with its group key
+        first, for the margin and crop families, since those are one
+        handler over several boxes.
+        """
+        widget = self.controls[spec.name]
+        if spec.kind == "label":
+            return
+        if spec.handler is not None:
+            method = getattr(self, spec.handler)
+            if spec.kind == "action":
+                widget.clicked.connect(method)
+                return
+            if spec.group is not None:
+                def slot(*_args, s=spec, m=method):
+                    m(s.group[1], self._control_value(s))
+            else:
+                def slot(*_args, s=spec, m=method):
+                    m(self._control_value(s))
+        elif spec.kind == "action":  # pragma: no cover -- table typo
+            return
+        else:
+            def slot(*_args, s=spec):
+                self._on_control_changed(s)
+
+        if spec.kind in ("length", "count"):
+            widget.valueChanged.connect(slot)
+        elif spec.kind == "flag":
+            widget.toggled.connect(slot)
+        elif spec.kind == "choice":
+            # By index when the combo shows labels and the model stores
+            # keys; by text when the two are the same string.
+            if spec.by_key:
+                widget.currentIndexChanged.connect(slot)
+            else:
+                widget.currentTextChanged.connect(slot)
+        else:  # text, unit_text
+            widget.editingFinished.connect(slot)
+
+    def _control_value(self, spec: Control):
+        """What ``spec``'s widget currently holds, in the model's terms.
+
+        :param spec: the row describing it.
+        :returns: the value to hand ``apply`` -- points for a length, the
+            key for a keyed combo -- or ``None`` when a keyed combo has no
+            valid selection, which is a combo mid-rebuild rather than an
+            edit.
+        """
+        widget = self.controls[spec.name]
+        if spec.kind == "length":
+            return widget.points()
+        if spec.kind == "count":
+            return widget.value()
+        if spec.kind == "flag":
+            return widget.isChecked()
+        if spec.kind == "choice":
+            if not spec.by_key:
+                return widget.currentText()
+            keys = self._choice_keys[spec.name]
+            index = widget.currentIndex()
+            return keys[index] if 0 <= index < len(keys) else None
+        return widget.text()
+
+    def _show_control_value(self, spec: Control, value) -> None:
+        """Display ``value`` in ``spec``'s widget.
+
+        :param spec: the row describing it.
+        :param value: the model's value.
+        :returns: nothing. Signals are the caller's problem -- the
+            constructor has not connected any yet, and
+            :meth:`refresh_from_project` has blocked them all.
+        """
+        widget = self.controls[spec.name]
+        if spec.kind == "length":
+            widget.set_points(value)
+        elif spec.kind == "count":
+            widget.setValue(value)
+        elif spec.kind == "flag":
+            widget.setChecked(bool(value))
+        elif spec.kind == "choice":
+            if spec.by_key:
+                keys = self._choice_keys[spec.name]
+                if value in keys:
+                    widget.setCurrentIndex(keys.index(value))
+            else:
+                widget.setCurrentText(value)
+        elif spec.kind == "text":
+            widget.setText(value)
+
+    def _display_controls(self) -> None:
+        """Show the current project in every control on the table.
+
+        :returns: nothing.
+
+        The list of what to set used to be written out here by hand, and
+        it had drifted from the one in the constructor and the one in the
+        unit change. It is now the table, so it cannot.
+        """
+        layout = self.state.project.layout
+        for spec in CONTROLS:
+            if spec.refresh is not None:
+                # The handful that need more than a field read: the paper
+                # combo has to be able to NAME a size the presets do not
+                # cover, and the orientation is derived from the paper.
+                getattr(self, spec.refresh)()
+                continue
+            if spec.kind == "unit_text":
+                # It renders itself from the model, in the current unit.
+                self.controls[spec.name].set_display_unit(self._unit)
+                continue
+            value = spec.displayed(layout)
+            if value is None:
+                continue
+            self._show_control_value(spec, value)
+
+    def _after_change(self, spec: Control, plan: SheetPlan) -> None:
+        """Redo whatever ``spec`` says a change to it invalidates.
+
+        :param spec: the row describing the control.
+        :param plan: the freshly recomputed plan.
+        :returns: nothing.
+        """
+        for effect in spec.after:
+            if effect == "readout":
+                self._refresh_binding_readout(plan)
+            elif effect == "suggestion":
+                self._refresh_suggestion()
+            elif effect == "composite":
+                self._schedule_composite()
+            elif effect == "stock_custom":
+                self._set_stock_combo_custom()
+
+    def _report_refusal(self, spec: Control, exc: Exception) -> None:
+        """Say why a value was refused, where the user is looking.
+
+        :param spec: the row describing the control.
+        :param exc: what the mutator or the imposer raised.
+        :returns: nothing. A mistyped gathering list is a typo, not a bug
+            report, and a crop that consumes the page is a number the user
+            can correct in the box they are already looking at.
+        """
+        if spec.kind in ("text", "unit_text"):
+            self.controls[spec.name].setToolTip(str(exc))
+        self.schedule_saved.emit(f"{spec.error_prefix}: {exc}")
+
+    def _on_control_changed(self, spec: Control) -> None:
+        """Apply an edit to a control the table describes completely.
+
+        :param spec: the row describing it.
+        :returns: nothing.
+
+        This is the twenty near-identical ``_on_*_changed`` handlers,
+        written once. What differed between them -- the mutator, whether
+        the binding readout or the gathering advice has to be recomputed,
+        how a refusal is announced -- is data on the row.
+        """
+        value = self._control_value(spec)
+        if value is None:
+            return
+        if spec.needs_unit:
+            def mutate(project, s=spec, v=value):
+                return s.apply(project, v, self._unit)
+        else:
+            def mutate(project, s=spec, v=value):
+                return s.apply(project, v)
+        try:
+            plan = apply_layout_change(self.state, mutate)
+        except ValueError as exc:
+            self._report_refusal(spec, exc)
+            return
+        self._after_change(spec, plan)
+        self.layout_changed.emit(plan)
 
     # -- the ink composite ----------------------------------------------
 
@@ -1895,67 +2394,31 @@ class LayoutPanel:
         unguarded refresh would overwrite the freshly loaded layout with
         whatever the widgets happened to hold, one control at a time.
 
-        Every child widget is blocked rather than a list of them named here.
-        That list existed and had drifted: trim, the eight crop boxes and the
-        paper-stock combo were all set below while none of them were blocked.
-        The drift is silent, which is what makes the hand-maintained version
-        the wrong shape -- an omitted widget's handler writes back the very
-        value the refresh was about to set, so the document still looks
-        correct, while the undo stack fills with up to nine entries the user
-        never made and each one clears the redo stack out from under them.
-        A list that has to be extended every time a control is added will be
-        forgotten again; asking the widget tree cannot be.
+        Every child widget is blocked rather than a list of them named
+        here. That list existed and had drifted: trim, the eight crop
+        boxes and the paper-stock combo were all set below while none of
+        them were blocked. The drift is silent, which is what makes the
+        hand-maintained version the wrong shape -- an omitted widget's
+        handler writes back the very value the refresh was about to set,
+        so the document still looks correct, while the undo stack fills
+        with up to nine entries the user never made and each one clears
+        the redo stack out from under them (B12). A list that has to be
+        extended every time a control is added will be forgotten again;
+        asking the widget tree cannot be.
+
+        What to *set* was a second such list, and it is now
+        :meth:`_display_controls` walking :data:`CONTROLS`.
         """
         from PySide6.QtWidgets import QWidget
 
-        layout = self.state.project.layout
         widgets = self.widget.findChildren(QWidget)
         for widget in widgets:
             widget.blockSignals(True)
         try:
-            self.paper_combo.setCurrentIndex(
-                self._paper_names.index(self._sync_paper_choices(layout.paper))
-            )
-            self.orientation_combo.setCurrentText(
-                "Landscape" if paper_is_landscape(layout.paper) else "Portrait"
-            )
-            grain = getattr(layout, "grain", "unknown")
-            if grain in self._grain_keys:
-                self.grain_combo.setCurrentIndex(self._grain_keys.index(grain))
-            self.paper_thickness_spinbox.set_points(layout.paper_thickness_pt)
-            self.gutter_spinbox.set_points(layout.gutter_pt)
-            if layout.slack_to in self._slack_keys:
-                self.slack_combo.setCurrentIndex(self._slack_keys.index(layout.slack_to))
-            self.link_margins_check.setChecked(layout.margins_linked)
-            for field, box in self.margin_spinboxes.items():
-                box.set_points(getattr(layout, field))
-            self.binding_edge_combo.setCurrentText(layout.binding_edge)
-            self.start_on_recto_check.setChecked(layout.start_on_recto)
-            self.landscape_policy_combo.setCurrentText(layout.landscape_policy)
-            self.sheets_per_signature_spinbox.setValue(layout.sheets_per_signature)
-            self.blank_mode_combo.setCurrentText(layout.blank_mode)
-            self.sewing_stations_spinbox.setValue(layout.sewing_stations)
-            self.trim_spinbox.set_points(layout.trim_pt)
-            for parity, insets in (("odd", layout.crop_odd_pt),
-                                   ("even", layout.crop_even_pt)):
-                for index, edge in enumerate(("left", "bottom", "right", "top")):
-                    self.crop_spinboxes[(parity, edge)].set_points(
-                        insets[index] if insets else 0.0
-                    )
-            self.signature_lengths_edit.setText(
-                ",".join(str(n) for n in layout.signature_lengths)
-                if layout.signature_lengths else ""
-            )
-            self.station_positions_edit.setText(
-                station_positions_text(layout, self._unit)
-            )
-            # A thickness that came from a saved project has no preset
-            # behind it, so the dropdown says Custom rather than naming a
-            # paper the binder may not be using.
-            self.paper_stock_combo.setCurrentText(CUSTOM_STOCK_LABEL)
+            self._display_controls()
             self.tabs.setCurrentIndex(
                 self._signature_tab_index
-                if layout.fold_scheme == "folio"
+                if self.state.project.layout.fold_scheme == "folio"
                 else self._single_tab_index
             )
         finally:
@@ -2092,16 +2555,6 @@ class LayoutPanel:
             SCHEDULE_TOOLTIP if loaded else "Import a document to build a schedule."
         )
 
-    def _on_gutter_changed(self, value: float) -> None:
-        points = to_points(value, self._unit)
-        plan = apply_layout_change(self.state, lambda project: set_gutter_pt(project, points))
-        self.layout_changed.emit(plan)
-
-    def _on_slack_to_changed(self, index: int) -> None:
-        key = self._slack_keys[index]
-        plan = apply_layout_change(self.state, lambda project: set_slack_to(project, key))
-        self.layout_changed.emit(plan)
-
     def _sync_margin_enabled(self) -> None:
         """When linked, only the head box is editable -- the other two mirror
         it. Disabling rather than hiding keeps the values visible, so you can
@@ -2118,13 +2571,18 @@ class LayoutPanel:
         if linked:
             # Adopt the head margin for all three, so linking is a visible,
             # predictable action rather than a silent mode change.
-            head = self.margin_spinboxes["margin_top_pt"].value()
+            head = self.margin_spinboxes["margin_top_pt"].points()
             self._on_margin_changed("margin_top_pt", head)
             return
         self.layout_changed.emit(plan)
 
-    def _on_margin_changed(self, field: str, value: float) -> None:
-        points = to_points(value, self._unit)
+    def _on_margin_changed(self, field: str, points: float) -> None:
+        """Apply one margin, or all three when they are linked.
+
+        :param field: which margin, the control's group key.
+        :param points: the new value, in points.
+        :returns: nothing.
+        """
         linked = self.link_margins_check.isChecked()
         plan = apply_layout_change(
             self.state, lambda project: set_margin(project, field, points, linked=linked)
@@ -2180,31 +2638,63 @@ class LayoutPanel:
             for field in ("margin_bottom_pt", "margin_outer_pt"):
                 self.margin_spinboxes[field].set_points(inset)
 
-    def _on_binding_edge_changed(self, value: str) -> None:
-        plan = apply_layout_change(self.state, lambda project: set_binding_edge(project, value))
-        self.layout_changed.emit(plan)
+    def _refresh_paper_combo(self) -> None:
+        """Select the entry that names the project's paper.
 
-    def _on_start_on_recto_toggled(self, checked: bool) -> None:
-        plan = apply_layout_change(
-            self.state, lambda project: set_start_on_recto(project, checked)
+        :returns: nothing. Worked out through :meth:`_sync_paper_choices`,
+            which adds an entry for a size the presets do not cover --
+            doing that only in the constructor is what once left the combo
+            saying "A4" over a 500x700 sheet.
+        """
+        self.paper_combo.setCurrentIndex(
+            self._paper_names.index(
+                self._sync_paper_choices(self.state.project.layout.paper)
+            )
         )
-        self.layout_changed.emit(plan)
 
-    def _on_landscape_policy_changed(self, value: str) -> None:
-        plan = apply_layout_change(self.state, lambda project: set_landscape_policy(project, value))
-        self.layout_changed.emit(plan)
+    def _refresh_orientation_combo(self) -> None:
+        """Say which way round the sheet is.
 
-    def _on_grain_changed(self, index: int) -> None:
-        """Record the stock's grain. Changes no geometry, only the warning.
+        :returns: nothing. Derived from the paper rather than stored, so
+            it needs its own read rather than a field on the table.
+        """
+        self.orientation_combo.setCurrentText(
+            "Landscape"
+            if paper_is_landscape(self.state.project.layout.paper)
+            else "Portrait"
+        )
 
+    def _refresh_stock_combo(self) -> None:
+        """Say Custom, because a saved project carries a caliper.
+
+        :returns: nothing. A thickness that came from a file has no preset
+            behind it, so naming a paper the binder may not be using would
+            be a confident guess.
+        """
+        self._set_stock_combo_custom()
+
+    def _set_stock_combo_custom(self) -> None:
+        """Point the stock combo at Custom without firing its handler.
+
+        :returns: nothing. Called on a refresh, and after a thickness is
+            typed by hand -- at which point the named stock no longer
+            describes the number in the box, which is the second half of
+            B29.
+        """
+        blocked = self.paper_stock_combo.blockSignals(True)
+        try:
+            self.paper_stock_combo.setCurrentText(CUSTOM_STOCK_LABEL)
+        finally:
+            self.paper_stock_combo.blockSignals(blocked)
+
+    def _on_composite_parity_changed(self, _parity: str) -> None:
+        """Redraw the composite for the newly chosen parity.
+
+        :param _parity: the parity key, read again by
+            :meth:`_start_composite` when the redraw actually runs.
         :returns: nothing.
         """
-        if not 0 <= index < len(self._grain_keys):
-            return
-        plan = apply_layout_change(
-            self.state, lambda project: set_grain(project, self._grain_keys[index])
-        )
-        self.layout_changed.emit(plan)
+        self._schedule_composite()
 
     def _sync_paper_choices(self, paper: tuple[float, float]) -> str:
         """Make sure the combo can name ``paper``, and say what to select.
@@ -2308,10 +2798,15 @@ class LayoutPanel:
         self._sync_signature_tab()
         self.layout_changed.emit(plan)
 
-    def _on_paper_stock_changed(self, label: str) -> None:
-        if label == CUSTOM_STOCK_LABEL:
+    def _on_paper_stock_changed(self, name: str) -> None:
+        """Adopt a named stock's caliper.
+
+        :param name: the stock's key -- its name, not the combo's label,
+            which also carries the caliper in millimetres.
+        :returns: nothing.
+        """
+        if name == CUSTOM_STOCK_LABEL:
             return
-        name = label.split("  (")[0]
         plan = apply_layout_change(
             self.state, lambda project: set_paper_stock(project, name)
         )
@@ -2326,12 +2821,22 @@ class LayoutPanel:
 
     def _crop_from_boxes(self, parity: str):
         values = tuple(
-            to_points(self.crop_spinboxes[(parity, edge)].value(), self._unit)
+            self.crop_spinboxes[(parity, edge)].points()
             for edge in ("left", "bottom", "right", "top")
         )
         return None if not any(values) else values
 
-    def _on_crop_changed(self, parity: str) -> None:
+    def _on_crop_changed(self, key: tuple[str, str], _points: float) -> None:
+        """One crop box moved, so re-read that parity's whole rectangle.
+
+        :param key: the control's group key, ``(parity, edge)``.
+        :param _points: the box's new value, unused -- all four edges are
+            read together, since the model stores one rectangle.
+        :returns: nothing.
+        """
+        self._commit_crop(key[0])
+
+    def _commit_crop(self, parity: str) -> None:
         insets = self._crop_from_boxes(parity)
         try:
             plan = apply_layout_change(
@@ -2365,62 +2870,11 @@ class LayoutPanel:
                 box.blockSignals(True)
                 box.set_points(value)
                 box.blockSignals(False)
-            self._on_crop_changed(parity)
+            self._commit_crop(parity)
         self._schedule_composite()
         self.schedule_saved.emit(
             "Crop measured from the ink -- check it before printing."
         )
-
-    def _on_trim_changed(self, value: float) -> None:
-        plan = apply_layout_change(
-            self.state, lambda project: set_trim(project, to_points(value, self._unit))
-        )
-        # The trim is the tolerance the suggestion works to, so changing it
-        # can change the advice without the paper changing at all.
-        self._refresh_suggestion()
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
-
-    def _on_signature_lengths_changed(self) -> None:
-        text = self.signature_lengths_edit.text()
-        try:
-            plan = apply_layout_change(
-                self.state, lambda project: set_signature_lengths(project, text)
-            )
-        except ValueError as exc:
-            # Reported where the user is looking rather than raised: a
-            # mistyped gathering list is a typo, not a bug report.
-            self.signature_lengths_edit.setToolTip(str(exc))
-            self.schedule_saved.emit(f"Gatherings: {exc}")
-            return
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
-
-    def _on_station_positions_changed(self) -> None:
-        """Apply stated station positions, or report why they cannot be.
-
-        Two different refusals arrive here as the same ``ValueError``, and
-        both belong on the field rather than in a traceback: a typo, which
-        :func:`set_sewing_station_positions` catches, and a position that
-        does not fit the sheet, which ``marks.sewing_stations`` raises from
-        inside ``recompute_plan``. The second has already been applied to
-        the project by ``AppState.mutate`` at that point -- pre-existing
-        behaviour shared with the crop boxes, and undoable.
-        """
-        text = self.station_positions_edit.text()
-        try:
-            plan = apply_layout_change(
-                self.state,
-                lambda project: set_sewing_station_positions(
-                    project, text, self._unit
-                ),
-            )
-        except ValueError as exc:
-            self.station_positions_edit.setToolTip(str(exc))
-            self.schedule_saved.emit(f"Station positions: {exc}")
-            return
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
 
     def _on_apply_suggestion(self) -> None:
         plan = apply_layout_change(self.state, apply_suggested_sheets)
@@ -2444,33 +2898,6 @@ class LayoutPanel:
         self.suggestion_label.setText(text or "")
         self.suggestion_label.setVisible(bool(text))
         self.suggestion_button.setVisible(bool(text))
-
-    def _on_sheets_per_signature_changed(self, value: int) -> None:
-        plan = apply_layout_change(
-            self.state, lambda project: set_sheets_per_signature(project, value)
-        )
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
-
-    def _on_blank_mode_changed(self, value: str) -> None:
-        plan = apply_layout_change(self.state, lambda project: set_blank_mode(project, value))
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
-
-    def _on_sewing_stations_changed(self, value: int) -> None:
-        plan = apply_layout_change(
-            self.state, lambda project: set_sewing_stations(project, value)
-        )
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
-
-    def _on_paper_thickness_changed(self, value: float) -> None:
-        points = to_points(value, self._unit)
-        plan = apply_layout_change(
-            self.state, lambda project: set_paper_thickness_pt(project, points)
-        )
-        self._refresh_binding_readout(plan)
-        self.layout_changed.emit(plan)
 
     def _refresh_binding_readout(self, plan: SheetPlan) -> None:
         self.binding_readout_label.setText(binding_readout_str(plan))
