@@ -102,3 +102,88 @@ def test_an_unknown_paper_type_is_refused_by_argparse():
 def test_no_paper_arguments_still_works():
     """Thickness stays optional -- most jobs never set it."""
     assert _cli("info", FIXTURE).returncode == 0
+
+
+# --- --stations: exact sewing positions ----------------------------------
+#
+# `--sewing-stations 4` is an evenly spaced pamphlet stitch. A tape pair at
+# 2in and 2.25in is not reachable from any integer, which is why the flag
+# takes positions instead of a count.
+
+
+def test_stations_parses_units_and_sorts():
+    from deckle.cli import _parse_station_positions
+
+    assert _parse_station_positions("2in,0.5in,2.25in") == (36.0, 144.0, 162.0)
+
+
+def test_stations_dedupes():
+    from deckle.cli import _parse_station_positions
+
+    assert _parse_station_positions("36,36pt,0.5in") == (36.0,)
+
+
+@pytest.mark.parametrize("value", ["0", "0pt", "0in"])
+def test_stations_rejects_a_position_on_the_tail_edge(value):
+    """A station at y=0 is a hole in the edge of the paper."""
+    import argparse
+
+    from deckle.cli import _parse_station_positions
+
+    with pytest.raises(argparse.ArgumentTypeError) as excinfo:
+        _parse_station_positions(value)
+
+    assert "above the tail" in str(excinfo.value)
+
+
+def test_stations_rejects_a_negative_position():
+    """Refused one layer down, by `_parse_length_pt`, which is unsigned for
+    the same reason a crop inset is: a length below zero describes nothing
+    on the sheet."""
+    import argparse
+
+    from deckle.cli import _parse_station_positions
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        _parse_station_positions("-1")
+
+
+@pytest.mark.parametrize("value", ["", "36,,72", "36,two"])
+def test_stations_rejects_a_malformed_list(value):
+    import argparse
+
+    from deckle.cli import _parse_station_positions
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        _parse_station_positions(value)
+
+
+def test_stations_reaches_the_project(tmp_path):
+    import json
+
+    from deckle.cli import main
+
+    out = tmp_path / "job.deckle"
+
+    rc = main([
+        "impose", FIXTURE, "-o", str(out),
+        "--fold-scheme", "folio", "--landscape",
+        "--stations", "0.5in,2in",
+    ])
+
+    assert rc == 0
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert data["layout"]["sewing_station_positions_pt"] == [36.0, 144.0]
+
+
+def test_stations_shows_up_in_the_schedule(capsys):
+    from deckle.cli import main
+
+    rc = main([
+        "schedule", FIXTURE,
+        "--fold-scheme", "folio", "--landscape",
+        "--stations", "0.5in,2in",
+    ])
+
+    assert rc == 0
+    assert "Measured up from the TAIL:" in capsys.readouterr().out

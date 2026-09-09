@@ -437,6 +437,35 @@ class LayoutSettings:
 
     paper_thickness_pt: float = 0.0
     sewing_stations: int = 3
+
+    sewing_station_positions_pt: tuple[float, ...] | None = None
+    """Exact station positions, measured up from the tail, or ``None``.
+
+    ``sewing_stations`` says "this many, evenly spaced", which describes a
+    pamphlet stitch and nothing else. It cannot say what the three
+    commonest structures need: sewing on tapes wants a *pair* of stations
+    either side of each tape at the tape's width, kettle stitches sit at a
+    fixed inset from head and tail with the rest spread between them, and a
+    long-stitch pattern is chosen for the cover. No integer produces any of
+    those, so the printed marks were wrong lines on the fold of every
+    signature and a binder pierced against a jig instead.
+
+    When set, this wins over ``sewing_stations`` entirely -- the same
+    relationship ``signature_lengths`` has with ``sheets_per_signature``:
+    both describe how to *derive* a layout, and the user has instead stated
+    one.
+
+    Positions are in points from the tail (``y = 0``), matching every other
+    coordinate in :mod:`deckle.core.marks`. Stored sorted and
+    de-duplicated by whoever accepts them, so the imposer never has to
+    decide what two identical stations mean. Whether they FIT the sheet is
+    checked at imposition, where the sheet height is finally known.
+
+    The ``int`` above stays, and stays the default, so this is not a
+    ``.deckle`` migration: ``_layout_from_dict`` defaults a missing key and
+    warns on an unknown one, so projects open in both directions unchanged.
+    """
+
     blank_mode: Literal["end","balanced"] = "end"
 
     signature_lengths: tuple[int, ...] | None = None

@@ -502,6 +502,47 @@ def test_sewing_stations_zero_yields_no_station_marks_but_keeps_fold_lines():
     assert any(m.kind == "fold_line" for m in all_marks)
 
 
+def test_stated_positions_reach_the_imposed_sheet():
+    """A tape pair and a kettle inset -- what the integer cannot say."""
+    plan = impose(
+        make_pages(8),
+        settings(
+            sheets_per_signature=2,
+            sewing_stations=3,
+            sewing_station_positions_pt=(36.0, 144.0, 162.0),
+        ),
+    )
+    for sig in plan.signatures:
+        sheet = plan.sheets[sig.sheet_indices[-1]]
+        stations = [m for m in sheet.back.marks if m.kind == "sewing_station"]
+        assert [m.y0 for m in stations] == [36.0, 144.0, 162.0]
+
+
+def test_stated_positions_win_over_the_count():
+    plan = impose(
+        make_pages(8),
+        settings(
+            sheets_per_signature=2,
+            sewing_stations=7,
+            sewing_station_positions_pt=(100.0,),
+        ),
+    )
+    sheet = plan.sheets[plan.signatures[0].sheet_indices[-1]]
+    stations = [m for m in sheet.back.marks if m.kind == "sewing_station"]
+    assert len(stations) == 1
+
+
+def test_positions_that_do_not_fit_refuse_the_imposition():
+    """The sheet height is not known until the paper is, so this is the
+    layer that can check it -- and refusing beats printing a mark off the
+    fold of every signature."""
+    with pytest.raises(ValueError):
+        impose(
+            make_pages(8),
+            settings(sheets_per_signature=2, sewing_station_positions_pt=(5000.0,)),
+        )
+
+
 # ------------------------------------------------------------- the round trip
 
 

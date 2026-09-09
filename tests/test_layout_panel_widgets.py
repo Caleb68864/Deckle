@@ -250,3 +250,80 @@ def test_every_control_survives_the_split(panel):
         assert widget.parent() is not None, widget
     for key, box in panel.crop_spinboxes.items():
         assert box.parent() is not None, key
+
+
+# -- the schedule under flat sheets ---------------------------------------
+
+
+@pytest.fixture
+def flat_panel(qt_app):
+    """A panel over a flat-sheet document with a measured stock."""
+    from deckle.app.views.layout_panel import LayoutPanel
+
+    pages = [
+        SourcePage(
+            ref=SourceRef(path="b.pdf", page_index=i, sha256="a" * 64,
+                          width_pt=400.0, height_pt=600.0),
+            rotate_deg=0, skipped=False,
+        )
+        for i in range(10)
+    ]
+    project = Project(
+        pages=pages,
+        layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=36.0,
+                              binding_edge="left", fold_scheme="none",
+                              paper_thickness_pt=0.3),
+        printer=None,
+    )
+    panel = LayoutPanel(AppState(project))
+    panel.set_document_loaded(True)
+    return panel
+
+
+def test_the_schedule_button_is_reachable_under_flat_sheets(flat_panel):
+    assert flat_panel.save_schedule_button.isEnabled() is True
+
+
+def test_the_schedule_button_lives_below_the_mode_tabs(flat_panel):
+    """On the Signatures tab it was not merely disabled under flat sheets:
+    selecting that tab IS selecting folio, so it was not on screen."""
+    assert flat_panel.save_schedule_button.parentWidget() is flat_panel.widget
+
+
+def test_the_schedule_button_still_needs_a_document(qt_app):
+    from deckle.app.views.layout_panel import LayoutPanel
+
+    panel = LayoutPanel(AppState(Project(
+        pages=[],
+        layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0,
+                              binding_edge="left"),
+        printer=None,
+    )))
+    panel.set_document_loaded(False)
+
+    assert panel.save_schedule_button.isEnabled() is False
+    assert panel.save_schedule_button.toolTip() == (
+        "Import a document to build a schedule."
+    )
+
+
+def test_saving_a_flat_sheet_schedule_writes_the_block_thickness(
+    flat_panel, tmp_path, monkeypatch
+):
+    from PySide6.QtWidgets import QFileDialog
+
+    out = tmp_path / "book-schedule.txt"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName",
+        staticmethod(lambda *a, **k: (str(out), "")),
+    )
+    messages = []
+    flat_panel.schedule_saved.connect(messages.append)
+
+    flat_panel.save_schedule_button.click()
+
+    text = out.read_text(encoding="utf-8")
+    assert "BINDING THE STACK" in text
+    assert "Block thickness: about 0.02in (2pt)" in text
+    assert "nothing to gather or sew" in text
+    assert any("Saved binding schedule to" in m for m in messages), messages

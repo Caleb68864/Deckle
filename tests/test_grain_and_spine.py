@@ -173,3 +173,31 @@ def test_the_schedule_says_so_when_thickness_is_unset():
 
     assert "not estimated" in text
     assert "set paper thickness" in text
+
+
+# -- the two thicknesses describe two different physical objects ---------
+
+
+def test_a_flat_sheet_plan_still_computes_a_spine_range():
+    """Pins the surprising fact this feature was built on: the number was
+    always computed for every plan, and the flat-sheet branch of the
+    formatter returned before printing it."""
+    settings = _settings(fold_scheme="none", paper_thickness_pt=0.3)
+    plan = GutterShiftStrategy().impose(_pages(10), settings)
+
+    assert build_schedule(plan, settings).spine_width_pt is not None
+
+
+def test_the_glued_block_is_thinner_than_the_sewn_range_for_the_same_stack():
+    """The arithmetic that makes this worth a separate function: the sewn
+    range starts 10% above the block and ends 25% above it, so reusing it
+    for a glued spine overstates by up to a quarter."""
+    from deckle.core.schedule import block_width_pt
+
+    block = block_width_pt(64, 0.288)
+    low, high = spine_width_pt(64, 0.288)
+
+    assert block == pytest.approx(18.432)
+    assert low == pytest.approx(block * (1 + SWELL_FRACTION_LOW))
+    assert high == pytest.approx(block * (1 + SWELL_FRACTION_HIGH))
+    assert high - block == pytest.approx(4.608)

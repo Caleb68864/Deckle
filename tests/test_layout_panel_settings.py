@@ -150,3 +150,63 @@ def test_lengths_that_do_not_add_up_are_left_to_the_imposer():
     with pytest.raises(ValueError) as caught:
         recompute_plan(project)
     assert "99" in str(caught.value)
+
+
+# -- sewing station positions --------------------------------------------
+#
+# `sewing_stations` is a count and spreads that many ticks evenly. That is
+# a pamphlet stitch and nothing else: a tape pair sits either side of the
+# tape at the tape's width, and no integer produces a pair.
+
+
+def test_typing_positions_sets_them_in_points():
+    from deckle.app.views.layout_panel import set_sewing_station_positions
+
+    project = set_sewing_station_positions(_project(), "0.5, 2", "in")
+
+    assert project.layout.sewing_station_positions_pt == (36.0, 144.0)
+
+
+def test_positions_are_sorted_and_deduplicated_once():
+    from deckle.app.views.layout_panel import set_sewing_station_positions
+
+    project = set_sewing_station_positions(_project(), "2, 0.5, 2", "in")
+
+    assert project.layout.sewing_station_positions_pt == (36.0, 144.0)
+
+
+def test_clearing_the_field_returns_to_even_spacing():
+    from deckle.app.views.layout_panel import set_sewing_station_positions
+
+    project = set_sewing_station_positions(_project(), "0.5, 2", "in")
+
+    back = set_sewing_station_positions(project, "  ", "in")
+
+    assert back.layout.sewing_station_positions_pt is None
+    assert back.layout.sewing_stations == 3
+
+
+def test_a_position_that_is_not_a_number_is_refused_with_the_remedy():
+    from deckle.app.views.layout_panel import set_sewing_station_positions
+
+    with pytest.raises(ValueError) as excinfo:
+        set_sewing_station_positions(_project(), "two", "in")
+
+    assert "0.5, 2, 2.25" in str(excinfo.value)
+
+
+def test_a_position_at_or_below_the_tail_is_refused():
+    from deckle.app.views.layout_panel import set_sewing_station_positions
+
+    with pytest.raises(ValueError, match="above the tail"):
+        set_sewing_station_positions(_project(), "0", "in")
+
+
+def test_the_field_text_reads_back_in_the_display_unit():
+    from deckle.app.views.layout_panel import station_positions_text
+
+    layout = _project(sewing_station_positions_pt=(36.0, 144.0)).layout
+
+    assert station_positions_text(layout, "in") == "0.5, 2"
+    assert station_positions_text(layout, "pt") == "36, 144"
+    assert station_positions_text(_project().layout, "in") == ""

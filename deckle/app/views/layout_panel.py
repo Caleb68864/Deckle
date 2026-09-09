@@ -55,11 +55,15 @@ GRAINS: tuple[tuple[str, str], ...] = (
 )
 
 SCHEDULE_TOOLTIP = (
-    "Write the binding schedule to a text file: which sheets gather into "
-    "each signature, which way round they nest, where the blanks fall, and "
-    "where to pierce for sewing.\n\n"
-    "Print it and keep it at the bench -- the imposed PDF says nothing "
-    "about what to do with the paper."
+    "Write the binding schedule to a text file, and keep it at the bench "
+    "-- the imposed PDF says nothing about what to do with the paper.\n\n"
+    "Under Signatures: which sheets gather into each signature, which way "
+    "round they nest, where the blanks fall, and where to pierce for "
+    "sewing.\n\n"
+    "Under Flat sheets: how the stack collates, how thick the block will "
+    "be so you can cut boards against it, and what to set at the printer "
+    "-- actual size, and which edge to turn the sheet about.\n\n"
+    "Both carry the print-sheet-0-first check."
 )
 
 # -- pure layout-settings mutators, each routed through AppState.mutate ----
@@ -452,6 +456,74 @@ def set_signature_lengths(project: Project, text: str) -> Project:
     return replace(
         project, layout=replace(project.layout, signature_lengths=tuple(lengths))
     )
+
+
+def set_sewing_station_positions(project: Project, text: str, unit: str) -> Project:
+    """State exactly where the sewing stations go, as ``0.5, 2, 2.25``.
+
+    Values are in ``unit`` -- the panel's display unit, like every other
+    length on it -- and stored in points. Sorted and de-duplicated here,
+    once, so the imposer never has to decide what two identical stations
+    mean.
+
+    Only the *shape* is checked. Whether the positions fit the sheet cannot
+    be known until the paper is, and
+    :func:`deckle.core.marks.sewing_stations` already refuses one that does
+    not with a message naming both numbers -- the same split
+    :func:`set_signature_lengths` makes.
+
+    :param project: the project to derive a new one from.
+    :param text: the field's contents. Empty clears the setting and returns
+        to evenly spaced ``sewing_stations``.
+    :param unit: a key of :data:`LENGTH_UNITS`.
+    :returns: a new project.
+    :raises ValueError: the text is not a comma-separated list of positive
+        numbers.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return replace(
+            project,
+            layout=replace(project.layout, sewing_station_positions_pt=None),
+        )
+    positions = []
+    for part in stripped.split(","):
+        part = part.strip()
+        try:
+            value = float(part)
+        except ValueError:
+            raise ValueError(
+                f"{part!r} is not a number: give each station's distance "
+                "from the tail, such as 0.5, 2, 2.25"
+            ) from None
+        if value <= 0:
+            raise ValueError(
+                f"every station must sit above the tail, got {value:g}"
+            )
+        positions.append(to_points(value, unit))
+    return replace(
+        project,
+        layout=replace(
+            project.layout,
+            sewing_station_positions_pt=tuple(sorted(set(positions))),
+        ),
+    )
+
+
+def station_positions_text(layout, unit: str) -> str:
+    """The Station positions field's contents for ``layout``.
+
+    Shared by the constructor, ``refresh_from_project`` and the unit
+    change, so all three cannot disagree about how the same tuple reads.
+
+    :param layout: the ``LayoutSettings`` to render.
+    :param unit: a key of :data:`LENGTH_UNITS`.
+    :returns: the field text, empty for evenly spaced stations.
+    """
+    positions = layout.sewing_station_positions_pt
+    if not positions:
+        return ""
+    return ", ".join(f"{from_points(p, unit):g}" for p in positions)
 
 
 def set_paper_stock(project: Project, stock_name: str) -> Project:
@@ -1151,6 +1223,25 @@ class LayoutPanel:
         )
         signature_form.addRow("Sewing stations:", self.sewing_stations_spinbox)
 
+        self.station_positions_edit = QLineEdit(self.widget)
+        self.station_positions_edit.setPlaceholderText("evenly spaced")
+        self.station_positions_edit.setText(
+            station_positions_text(state.project.layout, self._unit)
+        )
+        self.station_positions_edit.setToolTip(
+            "Where the holes actually go, measured up from the TAIL, in "
+            "the unit above -- for example 0.5, 2, 2.25, 9.5.\n\n"
+            "Leave empty and Deckle spaces 'Sewing stations' evenly, which "
+            "is a pamphlet stitch. Fill it in when even spacing will not "
+            "do: sewing on tapes needs a pair either side of each tape, and "
+            "kettle stitches sit at a fixed inset from head and tail.\n\n"
+            "This wins over the count above."
+        )
+        self.station_positions_edit.editingFinished.connect(
+            self._on_station_positions_changed
+        )
+        signature_form.addRow("Station positions:", self.station_positions_edit)
+
 
         # Live readout -- "17 signatures · 67 sheets · 2 blanks" -- derived
         # from the recomputed SheetPlan, since that arithmetic is the thing
@@ -1165,13 +1256,17 @@ class LayoutPanel:
         signature_form.addRow("Binding:", self.binding_readout_label)
         self.binding_readout_label.setText(binding_readout_str(recompute_plan(state.project)))
 
-        # The schedule lives here rather than beside Save PDF because it is
-        # a signature artifact: under gutter shift there is nothing to
-        # gather, so the button would be permanently inert next to the
-        # export actions.
-        self.save_schedule_button = QPushButton("Save schedule...", signature_tab)
+        # Below the mode tabs, not inside one. A schedule is not a
+        # signature artefact: the flat-sheet schedule carries how the stack
+        # collates, the block thickness a perfect binder cuts boards
+        # against, and the whole AT THE PRINTER block -- actual size and
+        # which edge to flip about -- which ruins a job either way when it
+        # is got wrong. On the Signatures tab it was not merely disabled
+        # under flat sheets, it was on a tab that is not on screen:
+        # selecting that tab IS selecting folio.
+        self.save_schedule_button = QPushButton("Save schedule...", self.widget)
         self.save_schedule_button.setToolTip(SCHEDULE_TOOLTIP)
-        signature_form.addRow("", self.save_schedule_button)
+        outer.addWidget(self.save_schedule_button)
         self.save_schedule_button.clicked.connect(self._on_save_schedule_clicked)
 
         self.tabs.setCurrentIndex(
@@ -1272,6 +1367,9 @@ class LayoutPanel:
                 ",".join(str(n) for n in layout.signature_lengths)
                 if layout.signature_lengths else ""
             )
+            self.station_positions_edit.setText(
+                station_positions_text(layout, self._unit)
+            )
             # A thickness that came from a saved project has no preset
             # behind it, so the dropdown says Custom rather than naming a
             # paper the binder may not be using.
@@ -1367,9 +1465,11 @@ class LayoutPanel:
             finally:
                 self._syncing_mode = False
 
-        # A schedule for nothing is an empty schedule, so the button needs
-        # both a fold scheme that gathers AND something to gather.
-        self.save_schedule_button.setEnabled(folio and loaded)
+        # A schedule needs a document; it does not need a fold scheme.
+        # Under flat sheets it says how to collate the stack, how thick the
+        # block will be, and what to set at the printer -- none of which is
+        # signature-specific, and all of which ruins a job when got wrong.
+        self.save_schedule_button.setEnabled(loaded)
         self.save_schedule_button.setToolTip(
             SCHEDULE_TOOLTIP if loaded else "Import a document to build a schedule."
         )
@@ -1467,6 +1567,15 @@ class LayoutPanel:
             box.setSingleStep(1.0 if unit in ("pt", "mm") else 0.125)
             box.setValue(from_points(points, unit))
             box.blockSignals(False)
+        # Not a spinbox, and therefore not on the list above -- but it is a
+        # length the model keeps in points, so leaving it out is the same
+        # defect: `0.5, 2` would keep its numbers under the new unit and
+        # the next edit would write them back as 0.5mm and 2mm.
+        self.station_positions_edit.blockSignals(True)
+        self.station_positions_edit.setText(
+            station_positions_text(self.state.project.layout, unit)
+        )
+        self.station_positions_edit.blockSignals(False)
 
     def _on_use_printer_margins(self) -> None:
         """Set the margin to the active printer's non-printable inset."""
@@ -1692,6 +1801,32 @@ class LayoutPanel:
             # mistyped gathering list is a typo, not a bug report.
             self.signature_lengths_edit.setToolTip(str(exc))
             self.schedule_saved.emit(f"Gatherings: {exc}")
+            return
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _on_station_positions_changed(self) -> None:
+        """Apply stated station positions, or report why they cannot be.
+
+        Two different refusals arrive here as the same ``ValueError``, and
+        both belong on the field rather than in a traceback: a typo, which
+        :func:`set_sewing_station_positions` catches, and a position that
+        does not fit the sheet, which ``marks.sewing_stations`` raises from
+        inside ``recompute_plan``. The second has already been applied to
+        the project by ``AppState.mutate`` at that point -- pre-existing
+        behaviour shared with the crop boxes, and undoable.
+        """
+        text = self.station_positions_edit.text()
+        try:
+            plan = apply_layout_change(
+                self.state,
+                lambda project: set_sewing_station_positions(
+                    project, text, self._unit
+                ),
+            )
+        except ValueError as exc:
+            self.station_positions_edit.setToolTip(str(exc))
+            self.schedule_saved.emit(f"Station positions: {exc}")
             return
         self._refresh_binding_readout(plan)
         self.layout_changed.emit(plan)

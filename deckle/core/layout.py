@@ -1150,7 +1150,12 @@ class SaddleStitchStrategy:
                 back_marks.extend(folio_cuts)
                 if is_innermost:
                     back_marks.extend(
-                        sewing_stations(paper_h, fold_x, settings.sewing_stations)
+                        sewing_stations(
+                            paper_h,
+                            fold_x,
+                            settings.sewing_stations,
+                            positions=settings.sewing_station_positions_pt,
+                        )
                     )
                 if is_outermost:
                     front_marks.append(

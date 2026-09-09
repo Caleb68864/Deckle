@@ -30,25 +30,59 @@ ORDER_BAR_PT = 24.0
 
 
 def sewing_stations(
-    sheet_h: float, fold_x: float, count: int
+    sheet_h: float,
+    fold_x: float,
+    count: int,
+    *,
+    positions: Sequence[float] | None = None,
 ) -> tuple[Mark, ...]:
-    """``count`` short ticks crossing the fold line, evenly spaced.
+    """Short ticks crossing the fold: ``count`` evenly spaced, or exactly
+    ``positions``.
 
-    Spacing runs from ``SEWING_MARGIN_PT`` above the tail to the same distance
-    below the head. ``count <= 0`` returns ``()`` -- how
-    ``settings.sewing_stations = 0`` disables stations without a new boolean.
-    A single station is centred on the sheet.
+    Even spacing runs from ``SEWING_MARGIN_PT`` above the tail to the same
+    distance below the head. ``count <= 0`` returns ``()`` -- how
+    ``settings.sewing_stations = 0`` disables stations without a new
+    boolean. A single station is centred on the sheet.
+
+    ``positions`` wins when given, and ``count`` is then ignored -- a binder
+    who has stated where the holes go has not also asked how many there
+    should be.
+
+    Nothing here sorts or de-duplicates. This is pure geometry that
+    reproduces what it is given; normalising in two places is how the CLI
+    and the GUI come to disagree about the same input.
 
     :param sheet_h: the sheet height in points.
     :param fold_x: the x coordinate of the fold, which the ticks straddle.
     :param count: how many stations. ``<= 0`` returns no marks.
+    :param positions: exact y coordinates in points, measured up from the
+        tail, already sorted and de-duplicated by whoever accepted them.
+        ``None`` falls back to even spacing; ``()`` returns no marks, the
+        same as ``count <= 0``.
     :returns: the station ticks, tail to head.
+    :raises ValueError: a position falls on or outside a sheet edge.
+        Refused rather than clamped: a station at the very edge of the fold
+        is a hole in nothing, and silently moving a stated position would
+        print a mark somewhere the binder did not ask for.
     """
-    if count <= 0:
-        return ()
-
     x0 = fold_x - STATION_TICK_PT
     x1 = fold_x + STATION_TICK_PT
+
+    if positions is not None:
+        for y in positions:
+            if not 0.0 < y < sheet_h:
+                raise ValueError(
+                    f"sewing station at {y:g}pt is not on a {sheet_h:g}pt "
+                    "sheet: positions are measured up from the tail, and "
+                    "must fall between the two edges"
+                )
+        return tuple(
+            Mark(kind="sewing_station", x0=x0, y0=y, x1=x1, y1=y)
+            for y in positions
+        )
+
+    if count <= 0:
+        return ()
 
     if count == 1:
         y = sheet_h / 2.0

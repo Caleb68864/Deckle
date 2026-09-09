@@ -309,3 +309,16 @@ def test_the_import_warnings_survive_a_page_selection(tmp_path, capsys):
 
     assert rc == 0
     assert "mixed_dpi" in capsys.readouterr().err
+
+
+def test_schedule_under_flat_sheets_reports_the_block(capsys):
+    """`Schedule.spine_width_pt` was computed for every plan and the flat
+    branch of the formatter returned before printing anything about
+    thickness. A perfect binder cuts boards against that number."""
+    rc = main(["schedule", FIXTURE, "--paper-thickness", "0.004in"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "BINDING THE STACK" in out
+    assert "Block thickness" in out
+    assert "swell from the sewing thread" not in out

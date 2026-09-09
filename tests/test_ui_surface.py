@@ -621,29 +621,58 @@ def test_the_preview_is_not_stacked_below_the_controls_in_one_column():
 # -- the binding schedule on the Signatures tab -------------------------
 
 
-def test_the_schedule_button_needs_both_folio_and_a_document(qapp):
-    """A schedule for nothing is an empty schedule.
+def test_the_schedule_button_needs_a_document_and_not_a_fold_scheme(qapp):
+    """A schedule for nothing is an empty schedule -- but a schedule for a
+    flat-sheet job is not.
 
-    It needs a fold scheme that actually gathers sheets AND pages to
-    gather, so the button is gated on both rather than on either.
+    This test used to assert the button was gated on folio as well, which
+    pinned a defect rather than a requirement: selecting the Signatures tab
+    IS selecting folio, so under Flat sheets the button was not merely
+    greyed, it was on a tab that is not on screen. The flat-sheet schedule
+    carries how the stack collates, the block thickness boards are cut
+    against, and the whole AT THE PRINTER block.
     """
     from deckle.app.state import AppState
 
-    # folio, but no document
+    # no document, either mode
     panel = layout_panel.LayoutPanel(AppState(_project(0, fold_scheme="folio")))
     panel.set_document_loaded(False)
     assert panel.save_schedule_button.isEnabled() is False
 
-    # a document, but gutter shift -- nothing to gather
+    # a document under flat sheets -- now reachable
     panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
     panel.set_document_loaded(True)
-    assert panel.save_schedule_button.isEnabled() is False
+    assert panel.save_schedule_button.isEnabled() is True
 
-    # both
+    # a document under folio, as before
     panel = layout_panel.LayoutPanel(
         AppState(_project(8, paper=LETTER_LANDSCAPE, gutter_pt=0.0, fold_scheme="folio"))
     )
     panel.set_document_loaded(True)
+    assert panel.save_schedule_button.isEnabled() is True
+
+
+def test_the_schedule_button_is_not_on_a_mode_tab(qapp):
+    """Selecting the Signatures tab sets `fold_scheme = "folio"`, so a
+    control placed on it is unreachable in the other mode rather than
+    merely disabled."""
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
+
+    assert panel.save_schedule_button.parentWidget() is panel.widget
+
+
+def test_switching_to_signatures_and_back_leaves_the_button_enabled(qapp):
+    from deckle.app.state import AppState
+
+    panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="none")))
+    panel.set_document_loaded(True)
+
+    panel.tabs.setCurrentIndex(panel._signature_tab_index)
+    assert panel.save_schedule_button.isEnabled() is True
+
+    panel.tabs.setCurrentIndex(panel._single_tab_index)
     assert panel.save_schedule_button.isEnabled() is True
 
 

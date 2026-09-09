@@ -273,6 +273,39 @@ def _parse_signature_lengths(value: str) -> tuple[int, ...]:
     return lengths
 
 
+def _parse_station_positions(value: str) -> tuple[float, ...]:
+    """A ``--stations`` value as exact positions in points, tail upward.
+
+    Comma-separated lengths, each with an optional unit --
+    ``0.5in,2in,2.25in,9.5in`` for a two-tape sewing. Sorted and
+    de-duplicated here, once, so nothing downstream has to decide what two
+    identical stations mean.
+
+    Whether the positions FIT the sheet is checked later, by
+    :func:`deckle.core.marks.sewing_stations`, because the sheet height is
+    not known until the paper is -- the same split ``--signatures`` makes
+    for its sum.
+
+    :param value: the raw flag text.
+    :returns: the positions in points, ascending, without repeats.
+    :raises argparse.ArgumentTypeError: empty, unparseable, or any value at
+        or below zero.
+    """
+    parts = value.split(",")
+    if not value.strip() or any(not part.strip() for part in parts):
+        raise argparse.ArgumentTypeError(
+            f"invalid stations {value!r}: expected positions separated by "
+            "commas, such as 0.5in,2in,2.25in -- measured up from the tail"
+        )
+    positions = [_parse_length_pt(part) for part in parts]
+    if any(position <= 0 for position in positions):
+        raise argparse.ArgumentTypeError(
+            f"invalid stations {value!r}: a station must sit above the tail "
+            "edge, so every position must be greater than zero"
+        )
+    return tuple(sorted(set(positions)))
+
+
 def _parse_crop(value: str) -> tuple[float, float, float, float]:
     """A ``--crop`` value as ``(left, bottom, right, top)`` insets in points.
 
@@ -820,6 +853,7 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         sheets_per_signature=args.sheets_per_signature,
         blank_mode=args.blank_mode,
         sewing_stations=args.sewing_stations,
+        sewing_station_positions_pt=args.sewing_station_positions_pt,
         paper_thickness_pt=thickness_pt,
         grain=args.grain,
         trim_pt=args.trim_pt,
@@ -914,6 +948,18 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--sewing-stations", type=int, default=3,
         help="number of sewing station marks per signature, under --fold-scheme folio (default: 3)",
+    )
+    parser.add_argument(
+        "--stations", dest="sewing_station_positions_pt",
+        type=_parse_station_positions, default=None, metavar="Y,Y,Y",
+        help=(
+            "exactly where the sewing stations go, measured up from the "
+            "tail -- e.g. 0.5in,2in,2.25in,9.5in. Use this instead of "
+            "--sewing-stations when even spacing will not do: tapes need a "
+            "pair either side of each tape, and kettle stitches sit at a "
+            "fixed inset from head and tail. Wins over --sewing-stations "
+            "when both are given"
+        ),
     )
     parser.add_argument(
         "--crop", type=_parse_crop, default=None, metavar="L,B,R,T",
