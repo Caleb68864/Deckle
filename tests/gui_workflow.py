@@ -47,7 +47,9 @@ def main(source_pdf: str, out_pdf: str) -> int:
     # No printer may be touched: enumeration reaches the OS spooler, which
     # on a bad day blocks for minutes. The app's own timeout covers that in
     # production; a test must not depend on it.
-    app_main.available_printer_names = lambda: []
+    from deckle.app import printer_query
+
+    printer_query.available_printer_names = lambda: []
     app_main.MainWindow.refresh_printers = (
         lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
     )

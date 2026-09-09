@@ -52,7 +52,8 @@ from PySide6.QtWidgets import QApplication
 app = QApplication([])
 
 import deckle.app.main as am
-am.available_printer_names = lambda: []
+import deckle.app.printer_query as pq
+pq.available_printer_names = lambda: []
 am.MainWindow.refresh_printers = (
     lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
 )
