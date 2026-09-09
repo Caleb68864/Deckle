@@ -924,6 +924,150 @@ def _qt_align_center():
     return Qt.AlignmentFlag.AlignCenter
 
 
+#: Built on first use and cached, so this module stays importable without
+#: PySide6 -- the same reason every other Qt name here is fetched lazily.
+_LENGTH_SPIN_BOX = None
+_UNIT_LINE_EDIT = None
+
+
+def length_spin_box_class():
+    """The ``QDoubleSpinBox`` subclass every length control on this panel uses.
+
+    :returns: the class. Built on first call, cached thereafter.
+
+    A length control is one whose value the model stores in points and the
+    panel displays in the user's chosen unit. Three numbers describe it --
+    the range cap, how many decimals it shows, and how far one nudge moves
+    it -- and before this class they were written once in the constructor
+    and again in ``_on_unit_changed``, from a hand-maintained list of
+    boxes. The two copies disagreed: paper thickness opened with four
+    decimals and a 0.001 step, and after any unit change had three (zero,
+    in ``pt``) and a step of one whole unit. That is B29.
+
+    Here the three numbers are declared once, at the box, and the panel
+    finds its length boxes **by type** rather than from a list -- so a
+    control added tomorrow is reconverted on a unit change because it is a
+    length, not because somebody remembered to write it down a second
+    time.
+
+    :attr:`points` is the value the *model* holds, not the rounded number
+    on screen. Converting a display value would compound its rounding at
+    every unit change; a 17.77pt margin shown as ``0.247in`` would come
+    back as 17.784pt.
+    """
+    global _LENGTH_SPIN_BOX
+    if _LENGTH_SPIN_BOX is not None:
+        return _LENGTH_SPIN_BOX
+    from PySide6.QtWidgets import QDoubleSpinBox
+
+    class LengthSpinBox(QDoubleSpinBox):
+        """A spinbox over a length the model keeps in points.
+
+        :param parent: the parent widget.
+        :param cap_pt: the largest value it will accept, in points.
+        :param decimals: how many decimals it shows, in **every** unit.
+            One number rather than one per unit: the old blanket rule
+            ("zero in ``pt``, three otherwise") is what displayed a
+            0.3pt caliper as ``0`` and wrote ``0`` back on the next nudge.
+        :param step_pt: how far one nudge moves it, in points, converted
+            into whatever unit is on screen.
+        :param unit: the unit it opens in.
+        """
+
+        def __init__(self, parent, *, cap_pt, decimals=3, step_pt=9.0, unit="in"):
+            super().__init__(parent)
+            self.cap_pt = cap_pt
+            self.step_pt = step_pt
+            self._unit = unit
+            self._points = 0.0
+            self.setDecimals(decimals)
+            self._apply_unit(unit)
+            self.valueChanged.connect(self._note_typed_value)
+
+        def _apply_unit(self, unit: str) -> None:
+            self.setRange(0.0, from_points(self.cap_pt, unit))
+            self.setSingleStep(from_points(self.step_pt, unit))
+
+        def _note_typed_value(self, value: float) -> None:
+            # What the user typed IS the exact value, rounding included.
+            self._points = to_points(value, self._unit)
+
+        @property
+        def unit(self) -> str:
+            """The unit currently on screen."""
+            return self._unit
+
+        def points(self) -> float:
+            """The length in points -- the model's value, not the display's."""
+            return self._points
+
+        def set_points(self, points: float) -> None:
+            """Display ``points``, remembering the exact value behind it."""
+            self.setValue(from_points(points, self._unit))
+            self._points = points
+
+        def set_display_unit(self, unit: str) -> None:
+            """Re-display the same physical length in ``unit``.
+
+            Signals are blocked: the spinbox would otherwise emit its
+            pre-conversion number as though the user had typed it, which
+            is how a 0.25in trim became a 0.25mm one.
+            """
+            points = self._points
+            self._unit = unit
+            blocked = self.blockSignals(True)
+            try:
+                self._apply_unit(unit)
+                self.setValue(from_points(points, unit))
+            finally:
+                self.blockSignals(blocked)
+            self._points = points
+
+    _LENGTH_SPIN_BOX = LengthSpinBox
+    return _LENGTH_SPIN_BOX
+
+
+def unit_line_edit_class():
+    """A ``QLineEdit`` holding lengths, which a unit change must re-render.
+
+    :returns: the class. Built on first call, cached thereafter.
+
+    Station positions are lengths typed as text -- ``0.5, 2, 9.5`` -- so
+    they are exactly as wrong under a stale unit as a spinbox would be,
+    and exactly as easy to leave off a list. Giving them the same
+    ``set_display_unit`` method the length boxes have means the panel's
+    unit change asks the widget tree a question instead of consulting a
+    list of names.
+    """
+    global _UNIT_LINE_EDIT
+    if _UNIT_LINE_EDIT is not None:
+        return _UNIT_LINE_EDIT
+    from PySide6.QtWidgets import QLineEdit
+
+    class UnitLineEdit(QLineEdit):
+        """A line edit whose text is re-rendered when the unit changes.
+
+        :param parent: the parent widget.
+        :param text_for_unit: called with the new unit; returns the text
+            to show. It reads the *model*, so the displayed text never
+            drifts from what the project holds.
+        """
+
+        def __init__(self, parent, *, text_for_unit):
+            super().__init__(parent)
+            self._text_for_unit = text_for_unit
+
+        def set_display_unit(self, unit: str) -> None:
+            blocked = self.blockSignals(True)
+            try:
+                self.setText(self._text_for_unit(unit))
+            finally:
+                self.blockSignals(blocked)
+
+    _UNIT_LINE_EDIT = UnitLineEdit
+    return _UNIT_LINE_EDIT
+
+
 def _qt_scaled_pixmap(rendered, width: int):
     """A ``QPixmap`` of ``rendered``, scaled to ``width``.
 
@@ -1004,6 +1148,8 @@ class LayoutPanel:
             QHBoxLayout, QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox,
             QTabWidget, QVBoxLayout, QWidget,
         ) = _qt_widgets()
+        LengthSpinBox = length_spin_box_class()
+        UnitLineEdit = unit_line_edit_class()
 
         class _Signals(QObject):
             layout_changed = Signal(object)  # SheetPlan
@@ -1167,12 +1313,15 @@ class LayoutPanel:
         )
         paper_form.addRow("Paper grain:", self.grain_combo)
 
-        self.paper_thickness_spinbox = QDoubleSpinBox(self.widget)
-        self.paper_thickness_spinbox.setDecimals(4)
-        self.paper_thickness_spinbox.setSingleStep(0.001)
-        self.paper_thickness_spinbox.setRange(0.0, from_points(10.0, self._unit))
-        self.paper_thickness_spinbox.setValue(
-            from_points(state.project.layout.paper_thickness_pt, self._unit)
+        # Four decimals in every unit, including `pt`. A caliper is
+        # 0.2-0.5pt, and the blanket "zero decimals in pt" rule this
+        # replaces displayed that as `0` and wrote `0` back on the next
+        # nudge -- B29.
+        self.paper_thickness_spinbox = LengthSpinBox(
+            self.widget, cap_pt=10.0, decimals=4, step_pt=0.072, unit=self._unit
+        )
+        self.paper_thickness_spinbox.set_points(
+            state.project.layout.paper_thickness_pt
         )
         self.paper_thickness_spinbox.setToolTip(
             "The caliper of a single sheet. Ordinary 20lb office paper is "
@@ -1200,12 +1349,10 @@ class LayoutPanel:
 
         paper_form.addRow("Paper thickness:", self.paper_thickness_spinbox)
 
-        self.trim_spinbox = QDoubleSpinBox(self.widget)
-        self.trim_spinbox.setDecimals(3)
-        self.trim_spinbox.setRange(0.0, from_points(144.0, self._unit))
-        self.trim_spinbox.setValue(
-            from_points(state.project.layout.trim_pt, self._unit)
+        self.trim_spinbox = LengthSpinBox(
+            self.widget, cap_pt=144.0, decimals=3, unit=self._unit
         )
+        self.trim_spinbox.set_points(state.project.layout.trim_pt)
         self.trim_spinbox.setToolTip(
             "How deep the fore-edge, head and tail will be ploughed after "
             "sewing. Draws the cut lines, and gives the gathering-size "
@@ -1221,9 +1368,9 @@ class LayoutPanel:
         self.crop_spinboxes: dict[tuple[str, str], object] = {}
         for parity in ("odd", "even"):
             for edge in ("left", "bottom", "right", "top"):
-                box = QDoubleSpinBox(self.widget)
-                box.setDecimals(3)
-                box.setRange(0.0, from_points(720.0, self._unit))
+                box = LengthSpinBox(
+                    self.widget, cap_pt=720.0, decimals=3, unit=self._unit
+                )
                 box.valueChanged.connect(
                     lambda _value, p=parity: self._on_crop_changed(p)
                 )
@@ -1301,11 +1448,10 @@ class LayoutPanel:
             "the same measurement -- it never changes your layout."
         )
 
-        self.gutter_spinbox = QDoubleSpinBox(self.widget)
-        self.gutter_spinbox.setDecimals(3)
-        self.gutter_spinbox.setSingleStep(0.125)
-        self.gutter_spinbox.setRange(0.0, from_points(288.0, self._unit))
-        self.gutter_spinbox.setValue(from_points(state.project.layout.gutter_pt, self._unit))
+        self.gutter_spinbox = LengthSpinBox(
+            self.widget, cap_pt=288.0, decimals=3, unit=self._unit
+        )
+        self.gutter_spinbox.set_points(state.project.layout.gutter_pt)
         margins_form.addRow("Gutter:", self.gutter_spinbox)
         self.gutter_spinbox.setToolTip(
             "The margin on the spine edge -- the strip swallowed by the "
@@ -1378,11 +1524,10 @@ class LayoutPanel:
                 "gutter by default.",
             ),
         ):
-            box = QDoubleSpinBox(self.widget)
-            box.setDecimals(3)
-            box.setSingleStep(0.125)
-            box.setRange(0.0, from_points(216.0, self._unit))
-            box.setValue(from_points(getattr(state.project.layout, field), self._unit))
+            box = LengthSpinBox(
+                self.widget, cap_pt=216.0, decimals=3, unit=self._unit
+            )
+            box.set_points(getattr(state.project.layout, field))
             box.setToolTip(tip)
             margins_form.addRow(label, box)
             self.margin_spinboxes[field] = box
@@ -1515,7 +1660,12 @@ class LayoutPanel:
         )
         signature_form.addRow("Sewing stations:", self.sewing_stations_spinbox)
 
-        self.station_positions_edit = QLineEdit(self.widget)
+        self.station_positions_edit = UnitLineEdit(
+            self.widget,
+            text_for_unit=lambda unit: station_positions_text(
+                self.state.project.layout, unit
+            ),
+        )
         self.station_positions_edit.setPlaceholderText("evenly spaced")
         self.station_positions_edit.setText(
             station_positions_text(state.project.layout, self._unit)
@@ -1772,27 +1922,25 @@ class LayoutPanel:
             grain = getattr(layout, "grain", "unknown")
             if grain in self._grain_keys:
                 self.grain_combo.setCurrentIndex(self._grain_keys.index(grain))
-            self.paper_thickness_spinbox.setValue(
-                from_points(layout.paper_thickness_pt, self._unit)
-            )
-            self.gutter_spinbox.setValue(from_points(layout.gutter_pt, self._unit))
+            self.paper_thickness_spinbox.set_points(layout.paper_thickness_pt)
+            self.gutter_spinbox.set_points(layout.gutter_pt)
             if layout.slack_to in self._slack_keys:
                 self.slack_combo.setCurrentIndex(self._slack_keys.index(layout.slack_to))
             self.link_margins_check.setChecked(layout.margins_linked)
             for field, box in self.margin_spinboxes.items():
-                box.setValue(from_points(getattr(layout, field), self._unit))
+                box.set_points(getattr(layout, field))
             self.binding_edge_combo.setCurrentText(layout.binding_edge)
             self.start_on_recto_check.setChecked(layout.start_on_recto)
             self.landscape_policy_combo.setCurrentText(layout.landscape_policy)
             self.sheets_per_signature_spinbox.setValue(layout.sheets_per_signature)
             self.blank_mode_combo.setCurrentText(layout.blank_mode)
             self.sewing_stations_spinbox.setValue(layout.sewing_stations)
-            self.trim_spinbox.setValue(from_points(layout.trim_pt, self._unit))
+            self.trim_spinbox.set_points(layout.trim_pt)
             for parity, insets in (("odd", layout.crop_odd_pt),
                                    ("even", layout.crop_even_pt)):
                 for index, edge in enumerate(("left", "bottom", "right", "top")):
-                    self.crop_spinboxes[(parity, edge)].setValue(
-                        from_points(insets[index], self._unit) if insets else 0.0
+                    self.crop_spinboxes[(parity, edge)].set_points(
+                        insets[index] if insets else 0.0
                     )
             self.signature_lengths_edit.setText(
                 ",".join(str(n) for n in layout.signature_lengths)
@@ -1989,63 +2137,34 @@ class LayoutPanel:
         """Re-display all three margins from the model without re-emitting."""
         for field, box in self.margin_spinboxes.items():
             box.blockSignals(True)
-            box.setValue(from_points(getattr(self.state.project.layout, field), self._unit))
+            box.set_points(getattr(self.state.project.layout, field))
             box.blockSignals(False)
 
     def _on_unit_changed(self, unit: str) -> None:
         """Re-display the same physical lengths in a new unit.
 
         The stored model is always points, so switching units must not
-        change the layout -- only how it reads. Signals are blocked while
-        the displayed numbers are rewritten, otherwise the spinboxes would
-        emit and re-apply their pre-conversion values as if the user had
-        typed them.
+        change the layout -- only how it reads. Each widget blocks its own
+        signals while its number is rewritten, otherwise it would emit and
+        re-apply the pre-conversion value as if the user had typed it.
+
+        **This asks the widget tree, it does not consult a list.** The list
+        was the bug: it carried the gutter, the margins and the thickness
+        but not the trim or the eight crop boxes, so switching in->mm left
+        a 0.25in trim reading ``0.25`` and the next nudge wrote it back as
+        0.25mm (B11). Every widget that holds a length declares itself by
+        having ``set_display_unit`` -- see :func:`length_spin_box_class`
+        and :func:`unit_line_edit_class` -- so a length control added
+        tomorrow is converted because of what it *is*, and cannot be
+        forgotten.
         """
-        layout = self.state.project.layout
-        # (box, the model's value in points, the range cap in points, how
-        # many decimals the box shows in `pt`). Every length the model keeps
-        # in points belongs on this list: one left off keeps its old number
-        # under the new unit, and the next nudge writes that number back as
-        # though the user had typed it -- a 0.25in trim silently becoming a
-        # 0.25mm one.
-        boxes = [(self.gutter_spinbox, layout.gutter_pt, 288.0, 0)]
-        boxes += [
-            (self.margin_spinboxes[f], getattr(layout, f), 216.0, 0)
-            for f in MARGIN_FIELDS
-        ]
-        boxes.append((self.paper_thickness_spinbox, layout.paper_thickness_pt, 10.0, 0))
-        boxes.append((self.trim_spinbox, layout.trim_pt, 144.0, 3))
-        # Trim and crop keep three decimals in `pt` rather than the zero the
-        # older boxes use, which is deliberate and not an inconsistency to
-        # tidy away: a crop inset is routinely a fraction of a point, and
-        # rounding it to a whole one on a unit change would destroy it. That
-        # the other boxes round to zero is B29, and is not this change.
-        for parity, insets in (("odd", layout.crop_odd_pt),
-                               ("even", layout.crop_even_pt)):
-            for index, edge in enumerate(("left", "bottom", "right", "top")):
-                boxes.append((
-                    self.crop_spinboxes[(parity, edge)],
-                    insets[index] if insets else 0.0,
-                    720.0,
-                    3,
-                ))
+        from PySide6.QtWidgets import QWidget
+
         self._unit = unit
-        for box, points, cap_pt, pt_decimals in boxes:
-            box.blockSignals(True)
-            box.setRange(0.0, from_points(cap_pt, unit))
-            box.setDecimals(pt_decimals if unit == "pt" else 3)
-            box.setSingleStep(1.0 if unit in ("pt", "mm") else 0.125)
-            box.setValue(from_points(points, unit))
-            box.blockSignals(False)
-        # Not a spinbox, and therefore not on the list above -- but it is a
-        # length the model keeps in points, so leaving it out is the same
-        # defect: `0.5, 2` would keep its numbers under the new unit and
-        # the next edit would write them back as 0.5mm and 2mm.
-        self.station_positions_edit.blockSignals(True)
-        self.station_positions_edit.setText(
-            station_positions_text(self.state.project.layout, unit)
-        )
-        self.station_positions_edit.blockSignals(False)
+        for widget in self.widget.findChildren(QWidget):
+            convert = getattr(widget, "set_display_unit", None)
+            if convert is not None:
+                convert(unit)
 
     def _on_use_printer_margins(self) -> None:
         """Set the margin to the active printer's non-printable inset."""
@@ -2056,10 +2175,10 @@ class LayoutPanel:
         # Set every margin, regardless of link state -- the printer's dead
         # border applies to all four edges, so a partial application would
         # leave some edge still unprintable.
-        self.margin_spinboxes["margin_top_pt"].setValue(from_points(inset, self._unit))
+        self.margin_spinboxes["margin_top_pt"].set_points(inset)
         if not self.link_margins_check.isChecked():
             for field in ("margin_bottom_pt", "margin_outer_pt"):
-                self.margin_spinboxes[field].setValue(from_points(inset, self._unit))
+                self.margin_spinboxes[field].set_points(inset)
 
     def _on_binding_edge_changed(self, value: str) -> None:
         plan = apply_layout_change(self.state, lambda project: set_binding_edge(project, value))
@@ -2197,8 +2316,8 @@ class LayoutPanel:
             self.state, lambda project: set_paper_stock(project, name)
         )
         self.paper_thickness_spinbox.blockSignals(True)
-        self.paper_thickness_spinbox.setValue(
-            from_points(self.state.project.layout.paper_thickness_pt, self._unit)
+        self.paper_thickness_spinbox.set_points(
+            self.state.project.layout.paper_thickness_pt
         )
         self.paper_thickness_spinbox.blockSignals(False)
         self._refresh_suggestion()
@@ -2244,7 +2363,7 @@ class LayoutPanel:
             for edge, value in zip(("left", "bottom", "right", "top"), insets):
                 box = self.crop_spinboxes[(parity, edge)]
                 box.blockSignals(True)
-                box.setValue(from_points(value, self._unit))
+                box.set_points(value)
                 box.blockSignals(False)
             self._on_crop_changed(parity)
         self._schedule_composite()
