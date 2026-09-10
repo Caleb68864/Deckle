@@ -580,7 +580,8 @@ class PrintDialog:
 
         :returns: nothing. A printer that is offline or unreachable is
             surfaced through ``show_offline_error`` and leaves a resumable
-            session on disk, rather than raising.
+            session on disk, rather than raising. A plan with no sheets is
+            refused before a session exists.
         """
         printer_name = self.printer_combo.currentText()
         profile = self._selected_profile(printer_name)
@@ -589,6 +590,16 @@ class PrintDialog:
         sheets = self.signature_combo.currentData()
         if self.proof_checkbox.isChecked():
             self.print_proof(backend, printer_name, sheets)
+            return
+        if not self.plan.sheets:
+            # After the proof branch, which has always refused an empty
+            # plan in its own words and says the more specific thing.
+            # `start_print` said nothing: a session over an empty plan
+            # walks both passes, finishes, and reports "Print job
+            # complete." for a run that submitted nothing. Refused here as
+            # well as at the button, because the dialog is reachable from
+            # more than the button.
+            self.status_label.setText("Nothing to print -- this plan has no sheets.")
             return
         kwargs = {} if sheets is None else {"sheets": sheets}
         session = self._session_cls(

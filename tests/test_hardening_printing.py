@@ -341,6 +341,11 @@ class _FakeWindow:
         self.preview_view = _FakeProfileConsumer()
 
     _apply_printers = app_main.MainWindow._apply_printers
+    # Print needs a printer AND a document, and the two answers arrive at
+    # different moments -- so `_apply_printers` no longer writes the
+    # button itself, it asks. Bound here for the same reason
+    # `_refresh_status_message` is: the double drives the real method.
+    _sync_print_action = app_main.MainWindow._sync_print_action
     _refresh_status_message = app_main.MainWindow._refresh_status_message
     set_printer_profile = app_main.MainWindow.set_printer_profile
     _profile_with_driver_answer = app_main.MainWindow._profile_with_driver_answer
