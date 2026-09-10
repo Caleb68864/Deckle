@@ -319,6 +319,14 @@ class _FakeWindow:
         #: status bar has one writer so that a later import cannot leave a
         #: stale "import something" instruction on screen.
         self._printer_message = ""
+        #: The rung above it. `ImportView.failed` was emitted and connected
+        #: to nothing, so a refused import updated the import row's own
+        #: label and the status bar went on telling the user to import
+        #: something. `_refresh_status_message` now reads this first, so
+        #: the double has to carry it -- an omission here is an
+        #: AttributeError in eleven tests, which is the honest cost of a
+        #: hand-built stand-in for a window with no declared surface.
+        self._import_message = ""
         # Enumeration is also the moment the window learns which printer
         # it is drawing for (B15): `_apply_printers` resolves a profile
         # and pushes it into the preview and the layout panel, which for
