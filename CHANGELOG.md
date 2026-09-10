@@ -140,9 +140,11 @@ Defects found during development, each with a full write-up in
   it.** `binding_edge: "middle"` is outside its declared `Literal` and
   nothing enforced it, so it imposed a book bound on the *right* — the
   opposite of the default — while `deckle info` reported no warnings.
-  `flip_axis: "diagonal"` planned the back pass unturned, printing every
-  back side upside down on a long-edge printer. `page_index: -2` is a
-  valid Python index and printed the second-from-last page instead.
+  `flip_axis: "diagonal"` planned the back pass as though the operator
+  flipped about the sheet's horizontal edge, printing every back side
+  upside down on any printer that flips about the vertical one.
+  `page_index: -2` is a valid Python index and printed the
+  second-from-last page instead.
 - Every JSON store — project files, printer profiles, the recent list, the
   print session — was written by truncating the target first, so a write
   that died partway destroyed the previous copy. Worst for autosave, whose
@@ -184,6 +186,19 @@ Defects found during development, each with a full write-up in
   message that already said exactly what was wrong.
 - Resuming a print run with a negative sheet count silently reprinted one
   sheet and treated the rest of the pass as finished.
+- **Every back side printed upside down on the default preset's most
+  common job.** The half turn a manual-duplex back pass needs was decided
+  by `profile.flip_axis == "long"` — the printer's *measured* flip
+  behaviour, read as though it were the job's geometry. What the sheet
+  actually needs is to turn about its **vertical** edge, which is the long
+  edge on portrait paper and the short edge on landscape; `flip_axis`
+  names an edge but says nothing about which one that is. The rule was
+  therefore correct for landscape (folio) and exactly inverted for
+  portrait (gutter shift), including for `generic_face_down_reversed`, the
+  preset `resolve_profile` falls back to. `plan_passes` now compares the
+  two — `flip_axis != duplex_flip_edge(paper)` — and all four combinations
+  are pinned by test, in unit form and end-to-end through `deckle export
+  --pass back`.
 
 ### Removed
 

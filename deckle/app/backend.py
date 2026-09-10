@@ -379,7 +379,9 @@ class QtPrintBackend:
         :param dpi: rasterization resolution.
         :param side: which physical face to paint.
         :param rotate_backs: whether back sides need a 180-degree turn to
-            land right side up, per the profile's flip axis.
+            land right side up. Decided by ``plan_passes`` from the flip
+            axis *and* the paper -- never re-derived here from either one
+            alone.
         :param pass_index: recorded in the session log and diagnostics.
         :returns: a :class:`~deckle.core.printing.PrintResult`. **Never
             raises for a print failure** -- offline, out of paper, driver

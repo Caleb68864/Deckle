@@ -10,7 +10,10 @@ front and back and so only worked on a printer that already had a duplexer.
 The two axes, from ``PrinterProfile``:
 
 - ``reverse_stack`` decides the SHEET ORDER of the back pass.
-- ``flip_axis == "long"`` decides whether the backs need a HALF TURN.
+- ``flip_axis``, compared against the paper's own vertical edge, decides
+  whether the backs need a HALF TURN. Not ``flip_axis`` alone: the same
+  long-edge flip lands the backs upright on a portrait sheet and upside
+  down on a landscape one, so both orientations are exercised below.
 
 ``generic_face_down_reversed`` is long-edge and reversing;
 ``generic_face_up_in_order`` is short-edge and order-preserving. Between
@@ -122,28 +125,44 @@ def test_an_order_preserving_printer_gets_its_backs_in_plan_order(tmp_path):
     assert _page_labels(out) == ["PAGE2", "PAGE4", "PAGE6"]
 
 
-def test_a_long_edge_flip_turns_the_backs_a_half_turn(tmp_path):
+@pytest.mark.parametrize(
+    "orientation, profile, expected, why",
+    [
+        # Portrait: the sheet's vertical edge is its LONG one.
+        ([], "generic_face_down_reversed", [0, 0],
+         "portrait + long-edge flip turns about the vertical edge"),
+        ([], "generic_face_up_in_order", [180, 180],
+         "portrait + short-edge flip turns about the horizontal edge"),
+        # Landscape: the sheet's vertical edge is its SHORT one.
+        (["--landscape"], "generic_face_up_in_order", [0, 0],
+         "landscape + short-edge flip turns about the vertical edge"),
+        (["--landscape"], "generic_face_down_reversed", [180, 180],
+         "landscape + long-edge flip turns about the horizontal edge"),
+    ],
+)
+def test_the_half_turn_compares_the_flip_axis_against_the_paper(
+    tmp_path, orientation, profile, expected, why
+):
+    """All four combinations, through the real CLI onto real pages.
+
+    ``generic_face_down_reversed`` is ``flip_axis="long"`` and
+    ``generic_face_up_in_order`` is ``flip_axis="short"``, so the two
+    presets and the two orientations span the table. The same preset gets
+    opposite answers on the two papers -- which is the whole point, and
+    what a rule reading ``flip_axis`` alone cannot produce.
+    """
     src = _numbered_source(tmp_path, 4)
     out = os.path.join(str(tmp_path), "backs.pdf")
 
     main(
-        ["export", src, "-o", out, "--pass", "back",
-         "--profile", "generic_face_down_reversed"]  # flip_axis="long"
+        ["export", src, "-o", out, "--pass", "back", "--profile", profile]
+        + orientation
     )
 
-    assert _rotations(out) == [180, 180]
-
-
-def test_a_short_edge_flip_leaves_the_backs_alone(tmp_path):
-    src = _numbered_source(tmp_path, 4)
-    out = os.path.join(str(tmp_path), "backs.pdf")
-
-    main(
-        ["export", src, "-o", out, "--pass", "back",
-         "--profile", "generic_face_up_in_order"]  # flip_axis="short"
+    assert _rotations(out) == expected, (
+        f"{why}: expected {expected}, got {_rotations(out)}. A back pass "
+        "turned the wrong way prints every back side upside down."
     )
-
-    assert _rotations(out) == [0, 0]
 
 
 def test_a_front_pass_is_never_turned(tmp_path):

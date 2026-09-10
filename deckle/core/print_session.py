@@ -148,7 +148,8 @@ def _hash_profile(profile: PrinterProfile) -> str:
     correctly. It cannot answer "is this the same printer behaviour?", and
     the profile decides two things that put ink on specific paper:
     ``reverse_stack`` picks the back pass's sheet order, and ``flip_axis``
-    picks whether every back is turned a half turn. Resuming a back pass
+    -- against the paper's vertical edge -- picks whether every back is
+    turned a half turn. Resuming a back pass
     under a different profile prints backs onto the wrong fronts, with the
     plan hash matching perfectly -- the exact failure
     ``StaleSessionError(reason="plan")`` exists to prevent, arriving by the
