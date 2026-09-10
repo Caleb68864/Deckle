@@ -31,6 +31,23 @@ dependencies = [
     "PySide6",
 ]
 
+[project.scripts]
+# Named after the two executables `packaging/deckle.spec` freezes, and
+# meaning the same two things, so one word does not mean the GUI on a
+# packaged machine and the CLI on a pip-installed one. Until this table
+# existed, `pip install -e .` -- the only install command any human-facing
+# document gives -- installed neither, and every command line in the
+# README and the GUIDE named something that was not there. That is why a
+# reader reaches for `python -m deckle`, which is how S9 was found.
+#
+# `deckle.__main__:run`, not `deckle.app.main:main`: `run` answers
+# `--help` and `--version` before `QApplication` exists (S9), and the
+# console script must not be the one path that skips that.
+#
+# `tests/test_console_scripts.py` holds both halves of this.
+deckle = "deckle.__main__:run"
+deckle-cli = "deckle.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest",

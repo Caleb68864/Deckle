@@ -20,8 +20,7 @@ inside a ``QPageLayout`` and only one of them is a hardware fact:
     This is the number this module wants. With no printer attached it is
     ``(0, 0, 0, 0)``.
 
-``margins()``, and equivalently the gap between ``fullRectPixels()`` and
-``paintRectPixels()``
+``margins()`` -- equivalently, the gap between ``fullRectPixels()`` and ``paintRectPixels()``
     The layout's *current* margins -- Qt's own default, clamped up to the
     minimum. Measured on this tree with no printer installed it is a flat
     ``10pt`` on every edge, for A4, Letter and a custom 200x300pt page

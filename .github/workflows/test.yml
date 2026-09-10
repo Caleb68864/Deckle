@@ -95,6 +95,59 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q --no-header -p no:cacheprovider
 
+  docs:
+    # The `-W` gate, given a runner.
+    #
+    # `run.bat docs` builds the API reference with `-W --keep-going`, and
+    # README.md, docs/GUIDE.md and docs/api/conf.py all state that a
+    # docstring which drifts from the code fails that build rather than
+    # quietly rotting. Nothing ran it. It had been exiting 1 for a while --
+    # a definition-list term wrapped across two lines in
+    # `app/printer_capabilities.py`, and a `:doc:` link in `core/loader.py`
+    # pointing at a narrative document that conf.py says can never be part
+    # of this build -- and nobody could see that, because Sphinx was not
+    # installed in the developer's venv either, so the batch file took its
+    # "Sphinx not installed" branch instead.
+    #
+    # Its own job rather than a step in `pytest`: the suite installs
+    # `.[dev]`, and Sphinx is in `.[docs]` because Deckle is MIT and must
+    # install and run without it. Adding it to the test environment to get
+    # this one check would put a documentation tool in every matrix leg.
+    #
+    # `tests/test_docs_build.py` runs the same build wherever Sphinx *is*
+    # installed, and asserts this job exists so that its own skip cannot
+    # become the permanent answer.
+    name: API reference (-W)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: docs-${{ github.ref }}
+      cancel-in-progress: true
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # autodoc documents live objects, so the build imports every module
+      # under `deckle/`. No module touches Qt at import time, which is what
+      # lets this run with no display and no Qt system libraries -- and if
+      # one ever starts to, failing here is the correct outcome.
+      - name: Install Deckle and the docs extra
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[docs]"
+
+      # The same command run.bat docs runs, `-W` included.
+      - name: Build the API reference
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m sphinx -b html -W --keep-going docs/api docs/api/_build/html
+
   package-audit:
     # The other half of the licence defence, and the half that had never run.
     #

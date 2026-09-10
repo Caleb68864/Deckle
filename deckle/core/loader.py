@@ -646,8 +646,10 @@ def load_image_dir(path: str) -> list[SourcePage]:
 
     That file is the only PDF those pages will ever have, so it is kept
     rather than cached -- see :func:`import_store_dir` for what went wrong
-    while it was a cache, and :doc:`the decisions log </decisions>` for
-    what that costs.
+    while it was a cache, and ``docs/decisions.md`` for what that costs.
+    (Not a ``:doc:`` link: ``docs/api/conf.py`` says the narrative
+    documents are deliberately not part of this build, so the target could
+    never resolve and ``-W`` turned it into a failure.)
 
     :param path: the directory of images to import.
     :returns: an :class:`ImportedPages` -- a ``list[SourcePage]`` that also

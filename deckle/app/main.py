@@ -76,6 +76,18 @@ LETTER_PT = (612.0, 792.0)
 
 NO_PRINTERS_MESSAGE = "No printers installed -- connect a printer to enable printing."
 
+NOTHING_TO_PRINT_MESSAGE = "Import a document before printing -- there are no pages."
+"""Why Print is unavailable when the printers are fine and the document is
+empty.
+
+Print was gated on printers alone. With nothing imported it stayed live,
+opened the dialog against a plan of zero sheets, walked both empty passes
+and reported *"Print job complete."* for a job that submitted nothing --
+which is the app telling the operator that paper came out. Save PDF and
+Save project were gated on pages from the start; Print needs both, and
+this is the half that was missing.
+"""
+
 NO_DOCUMENT_MESSAGE = "Import a PDF or a folder of images to begin."
 """The first thing Deckle says when it opens with nothing loaded.
 
@@ -478,6 +490,11 @@ class MainWindow:
         self.window.setStatusBar(self.status_bar)
 
         self.import_view.imported.connect(self._on_imported)
+        # `failed` was emitted and connected to nothing, so the one thing a
+        # refused import updated was the import row's own small label --
+        # while the status bar went on telling the user to import
+        # something. Every other failure in the app reaches the bar.
+        self.import_view.failed.connect(self._on_import_failed)
         self.arrange_view.pages_changed.connect(self._on_pages_changed)
         self.arrange_view.page_selected.connect(self._on_page_selected)
         self.layout_panel.layout_changed.connect(self._on_layout_changed)
@@ -507,6 +524,13 @@ class MainWindow:
         #: bar has ONE writer and a later import cannot leave a stale
         #: instruction up.
         self._printer_message = ""
+        #: Why the last import was refused, or "" when the last one was
+        #: not. Held for the same reason `_printer_message` is: printer
+        #: enumeration finishes on a background thread and ends in a
+        #: `_refresh_status_message()`, so a failure written straight to
+        #: the bar could be wiped a moment later by an unrelated message,
+        #: with nothing left to say it ever appeared.
+        self._import_message = ""
         #: Asked, before a document is thrown away, what to do with the
         #: unsaved work. Injected the way `confirm_recovery` is, so the
         #: whole close/open flow is drivable without a modal.
@@ -548,9 +572,10 @@ class MainWindow:
 
         Save PDF is gated here rather than checking inside its own click
         handler, so an unavailable action looks unavailable instead of
-        accepting the click and then explaining itself. Print is gated
-        separately by :meth:`_apply_printers`, since it additionally needs
-        a printer.
+        accepting the click and then explaining itself. Print needs *both*
+        a document and a printer, so it is decided by
+        :meth:`_sync_print_action`, which this method and
+        :meth:`_apply_printers` both call.
         """
         has_pages = bool(self.state.project.pages)
         self.save_pdf_button.setEnabled(has_pages)
@@ -569,6 +594,45 @@ class MainWindow:
         )
         self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
         self.layout_panel.set_document_loaded(has_pages)
+        self._sync_print_action()
+
+    def _sync_print_action(self) -> None:
+        """Print needs a printer **and** a document.
+
+        It was gated on printers alone, by :meth:`_apply_printers`, whose
+        docstring is explicit that zero printers deliberately leaves Save
+        PDF alone -- *"leave Deckle fully usable as an imposition tool that
+        writes a file"*. The converse was never considered: with zero
+        pages Print stayed live, opened the dialog against a plan of no
+        sheets, and reported a completed job that submitted nothing.
+
+        One method rather than a condition in each caller, because the two
+        halves of the answer arrive at different moments -- a document
+        after an import, a printer after enumeration -- and either of them
+        writing the button on its own is how they came to disagree.
+
+        :returns: nothing. The tooltip names whichever half is missing,
+            printers first: a machine with no printer cannot print
+            whatever is imported.
+        """
+        has_printers = bool(self._printers)
+        has_pages = bool(self.state.project.pages)
+        enabled = has_printers and has_pages
+        self.print_button.setEnabled(enabled)
+        print_action = self.menu_actions.get("print_document")
+        if print_action is not None:
+            print_action.setEnabled(enabled)
+        if enabled:
+            self.print_button.setToolTip("")
+        elif not has_printers:
+            # Whatever `_apply_printers` last explained -- it may be a
+            # timeout rather than "none installed", and that distinction
+            # is worth more than a generic message.
+            self.print_button.setToolTip(
+                self._printer_message or NO_PRINTERS_MESSAGE
+            )
+        else:
+            self.print_button.setToolTip(NOTHING_TO_PRINT_MESSAGE)
 
     def _on_layout_changed(self, plan) -> None:
         # Hand the preview the settings too, so its content-box guide
@@ -578,7 +642,29 @@ class MainWindow:
         # closing without saving loses it just as completely.
         self._sync_title()
 
+    def _on_import_failed(self, message: str) -> None:
+        """Put a refused import where the user is already looking.
+
+        ``ImportView`` sets its own row label too, but that label is one
+        line inside a toolbar and the status bar is where every other
+        failure in this app reports: a schedule that could not be saved, a
+        project whose source is missing or changed, a drop of something
+        Deckle does not take. Import was the exception, and it is the
+        first thing anyone does.
+
+        :param message: ``ImportView.failed``'s text, which already names
+            the file and what was wrong with it.
+        :returns: nothing.
+        """
+        self._import_message = message
+        log_event("import_failed", detail=message)
+        self._refresh_status_message()
+
     def _on_imported(self, pages, warnings) -> None:
+        # The failure this replaces is no longer the newest true thing,
+        # and an error about a file the user has since replaced is worse
+        # than silence.
+        self._import_message = ""
         self.arrange_view.refresh()
         self._sync_document_actions()
         # An import is a project mutation like any other, so it lands on
@@ -632,13 +718,22 @@ class MainWindow:
     def _refresh_status_message(self) -> None:
         """Say the most useful true thing about the current state.
 
-        There are three, in order of precedence: a printer fault the user
-        cannot otherwise see, then the next step when nothing is loaded,
-        then nothing at all. Silence is the right answer for a document
-        that is ready to print -- the status bar is not a place to announce
-        that everything is fine.
+        There are four, in order of precedence: a refused import, then a
+        printer fault the user cannot otherwise see, then the next step
+        when nothing is loaded, then nothing at all. Silence is the right
+        answer for a document that is ready to print -- the status bar is
+        not a place to announce that everything is fine.
+
+        The refused import outranks the printer fault while it lasts. A
+        printer fault is a standing condition; a refused import is the
+        answer to something the user did a second ago, and it is the only
+        one of the two they can act on with no document loaded. It is
+        cleared by the next successful import, at which point the printer
+        fault comes back.
         """
-        if self._printer_message:
+        if self._import_message:
+            self.status_bar.showMessage(self._import_message)
+        elif self._printer_message:
             self.status_bar.showMessage(self._printer_message)
         elif not self.state.project.pages:
             self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
@@ -721,16 +816,10 @@ class MainWindow:
         self._printers = list(printers)
         self._imageable_areas = dict(imageable_areas or {})
         has_printers = bool(printers)
-        self.print_button.setEnabled(has_printers)
-        print_action = self.menu_actions.get("print_document")
-        if print_action is not None:
-            print_action.setEnabled(has_printers)
         if has_printers:
-            self.print_button.setToolTip("")
             self._printer_message = ""
         else:
             message = no_printers_message or NO_PRINTERS_MESSAGE
-            self.print_button.setToolTip(message)
             # An explanation of something that WENT WRONG outranks a
             # next-step hint. `no_printers_message` is only ever passed when
             # enumeration actually failed (it carries
@@ -741,6 +830,8 @@ class MainWindow:
             self._printer_message = (
                 message if (no_printers_message or self.state.project.pages) else ""
             )
+        # After `_printer_message`, which the tooltip reads.
+        self._sync_print_action()
         self._refresh_status_message()
         # Enumeration is the first moment the window knows which printer
         # it is drawing for. Until this call existed, it never found out.
@@ -812,6 +903,13 @@ class MainWindow:
             # open a print dialog against zero printers even if this
             # slot is reached some other way.
             self.status_bar.showMessage(NO_PRINTERS_MESSAGE)
+            return
+        if not self.state.project.pages:
+            # Defensive in the same way, and for a defect that was real
+            # rather than hypothetical: the button used not to be disabled
+            # here at all, and a plan of zero sheets reached a dialog that
+            # ran both empty passes and said "Print job complete."
+            self.status_bar.showMessage(NOTHING_TO_PRINT_MESSAGE)
             return
         plan = self.preview_view.plan
         self.print_dialog = PrintDialog(
