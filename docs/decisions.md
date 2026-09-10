@@ -1,5 +1,13 @@
 # Decision Log
 
+## 2026-09-10 — The duplex ordering table rests on a note that is not in this repository
+- Not a fix. A label on something that cannot be settled here, so that it stops looking settled.
+- `core/printing.py`'s back-pass ordering table cites `[[pikepdf - Manual Duplex Reordering]]` and called itself **"Verified"**. That note lives in an external vault (`Caleb's Vault/Software/pikepdf/`, per `docs/specs/deckle-mvp/sub-spec-6-…`). It is cited in four files in this tree and present in none of them. Nobody working in this repository has read it.
+- What the table underwrites is not small: `reverse_stack` decides the order sheets are fed on the back pass, and `flip_axis` compared against `duplex_flip_edge` decides whether every back is turned 180°. Both are claims about how a *physical* printer hands paper back, and both were re-derived independently on 2026-09-10 (P2) and agree with the geometry argument in the 2026-08-06 entry. **Two agreeing derivations from an unverified premise are still one unverified premise.**
+- So the word "Verified" is gone from that docstring and a paragraph says what is actually true: the authority is external, it has not been checked here, and it wants either one proof sheet on a real printer or the note brought into the repository. The paragraph deliberately **does not describe what the note says** — inventing the content of a source nobody has read would be worse than the missing citation, and it is the exact failure this project recorded on 2026-08-05 about a docs agent stating plausible things from memory.
+- This needs the owner. It cannot be closed by another round of argument, and it should not be closed by a third derivation.
+- Commit: (this commit)
+
 ## 2026-09-10 — H2: a refused import was the one failure nobody was told about
 - Symptom: `ImportView` declares two outcomes and emits both — `imported` carries the pages, `failed` carries an error message. `MainWindow.__init__` connected the first and not the second. So a failing import updated the import row's own small label and nothing else, while the status bar went on saying *"Import a PDF or a folder of images to begin."* — an instruction the user had just tried to carry out and been refused for. Every other failure in the app reaches the status bar: a schedule that could not be saved, a project whose source is missing or has changed, a drop of something Deckle does not take. Import was the gap, and it is the first thing anyone does.
 - Fix: `failed` connects to `_on_import_failed`, which stores the message and logs an `import_failed` event, and `_refresh_status_message` grows a fourth rung.

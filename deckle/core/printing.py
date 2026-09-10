@@ -7,9 +7,24 @@ Qt, no I/O beyond the profile persistence in ``deckle/core/profiles.py``.
 ``PrintBackend`` is a ``Protocol`` so this module never imports Qt or a
 concrete print API; SS-08 supplies the real backend.
 
-Verified back-pass ordering table (see
-``[[pikepdf - Manual Duplex Reordering]]``) -- this is the physical
-behavior ``plan_passes`` implements:
+Back-pass ordering table (see ``[[pikepdf - Manual Duplex Reordering]]``)
+-- this is the physical behavior ``plan_passes`` implements.
+
+**The source of this table is outside the repository and has not been
+verified here.** ``[[pikepdf - Manual Duplex Reordering]]`` is a note in
+an external vault (``Caleb's Vault/Software/pikepdf/``, per
+``docs/specs/deckle-mvp/sub-spec-6-printerprofile-passplanner.md``); it is
+cited in four files in this tree and present in none of them. Everything
+below, and the ``rotate_backs`` rule that follows from it, has been
+derived twice independently and agrees with the geometry argument in the
+2026-08-06 decision-log entry -- but two agreeing derivations from an
+unverified premise are still one unverified premise, and the premise is a
+claim about how a *physical* printer hands paper back. It wants one proof
+sheet on a real printer, or the note brought into this repository. This
+paragraph does not say what the note contains, because nobody here has
+read it; it says only that the table's authority is external. Do not
+delete this until one of those two things has happened.
+
 
 | Reload behavior                                    | Back-pass order |
 |------------------------------------------------------|-----------------|
