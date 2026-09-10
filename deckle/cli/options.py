@@ -265,7 +265,12 @@ def build_parser() -> argparse.ArgumentParser:
     :returns: the parser. Each subparser sets a ``func`` default, which is
         what :func:`main` dispatches on.
     """
-    parser = argparse.ArgumentParser(prog="deckle", description="Impose and print booklets.")
+    # `deckle-cli`, not `deckle`: `deckle` is the desktop app, both as the
+    # console script in pyproject.toml and as the frozen executable
+    # packaging/deckle.spec builds. `prog` is what every usage and error
+    # line tells the reader to type, so naming the other program here is
+    # how a `usage:` line sends someone to a window that will not answer.
+    parser = argparse.ArgumentParser(prog="deckle-cli", description="Impose and print booklets.")
     # Derived once, here, rather than by each `.deckle` load building a
     # throwaway parser to read it back off. `_layout_flags_given` needs it
     # and has no other way to tell a layout flag from `--sheets`.

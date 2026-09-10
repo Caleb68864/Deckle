@@ -171,7 +171,7 @@ that has not been done.
 
 So print folio onto scrap, fold it, read it, and only then commit a real book.
 
-`deckle schedule` makes the check faster than folding. It prints the ordering
+`deckle-cli schedule` makes the check faster than folding. It prints the ordering
 in plain page numbers. Here is the real output for a 16-page signature —
 this is verified output, not an illustration:
 
@@ -378,7 +378,7 @@ Organised the way the work happens.
 
 ### 6 · Take the schedule to the bench
 
-`deckle schedule`, or **Save schedule** on the Signatures tab. A printable
+`deckle-cli schedule`, or **Save schedule** on the Signatures tab. A printable
 work order derived from the imposed plan: gathering order per signature, which
 pages land on each face, where padding blanks fall, sewing-station guidance,
 a fore-edge creep advisory, and a spine-thickness range to cut boards against.
@@ -411,12 +411,12 @@ Not released. Expect breaking changes.
 | **Front/back registration offset** | **Works, measured by hand.** Two numbers on the printer profile shift every back face so it lands behind its front — `--back-offset`, or `back_offset_x_pt`/`back_offset_y_pt` in the profile. Applied by both the CLI and the desktop print path. No other tool has this, because every other tool ends at a PDF and cannot know what your printer does to the second side. Corrects a **constant** offset only, not skew or scale. Finding your two numbers is currently trial-and-error against a printed proof; the calibration wizard is what will measure them in one pass. |
 | **Cut lines** | **Works.** `--trim 0.25in` draws the trim depth on head, tail and fore-edge — where the plough goes after sewing, and whether any text is inside it. The spine is never cut, and the fore-edge alternates with the gutter. |
 | **Source cropping** | **Works, in the app and on the command line.** `--crop L,B,R,T` removes space the source already has, with `--crop-even` for a scan whose gutter alternates, and `--auto-crop` to measure it from where the ink actually is. The insets are measured against the page **as displayed**, so a scan a viewer has straightened — one carrying a `/Rotate` flag — crops on the edges you can see rather than the ones the file stores. Every other setting adds space; this is the only one that takes it away, and it is what keeps type readable at a small trim size. |
-| **Crop overlay** | **Works, as a picture rather than in the app.** `deckle crop-preview` superimposes every page and draws the proposed crop on it, so an outlier that would be clipped is visible before you commit. No interactive in-app editor. |
+| **Crop overlay** | **Works, as a picture rather than in the app.** `deckle-cli crop-preview` superimposes every page and draws the proposed crop on it, so an outlier that would be clipped is visible before you commit. No interactive in-app editor. |
 | **Custom signature lengths** | **Works, in the app and on the command line.** `--signatures 10,10,8` states each gathering's sheet count outright, for a page count that divides badly or to land a chapter break on a signature boundary. |
 | **Paper by weight** | **Works.** Pick the stock off the ream wrapper -- `80gsm copier`, or `--paper-weight 24lb --paper-grade bond` -- and Deckle derives the caliper, so nobody needs calipers. Bulk varies about 10% between manufacturers, so it is an estimate, and it is used only to predict creep and spine width. |
 | **Signature size suggestion** | **Works.** From the paper and the planned trim, Deckle suggests how many sheets a gathering should hold and says which constraint decided it -- fore-edge creep, or a fold too thick to lie flat. 80gsm with a quarter-inch trim gives 8 sheets, the standard 32-page signature. |
 | **Crash recovery** | **Works.** Autosave has always been written on every edit; it is now offered back when Deckle reopens a project it did not close cleanly. |
-| **Numbered dummy** | **Works.** `deckle dummy --pages 8` writes a document whose only content is its own page order, for checking how an imposition folds on scrap paper. |
+| **Numbered dummy** | **Works.** `deckle-cli dummy --pages 8` writes a document whose only content is its own page order, for checking how an imposition folds on scrap paper. |
 | **Quarto, octavo, French fold** | Not built. See [the gap analysis](docs/research/2026-08-05-competitive-gaps.md) for what is worth building and in what order. |
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |

@@ -79,6 +79,15 @@ def test_the_help_points_at_the_entry_point_that_takes_arguments(flag):
     assert "python -m deckle.cli" in result.stdout, result.stdout
 
 
+def test_the_usage_line_names_the_way_it_was_invoked():
+    """The same module is reached three ways -- ``python -m deckle``, the
+    ``deckle`` console script and the frozen ``deckle`` executable -- and a
+    usage line naming a different one is a line the reader cannot type."""
+    result = _run("--help")
+
+    assert result.stdout.startswith("usage: python -m deckle "), result.stdout
+
+
 def test_version_is_answerable_without_a_display():
     """``--version`` is the other thing typed at an unfamiliar command,
     and the answer must not require an event loop -- a version is what a

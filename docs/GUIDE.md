@@ -331,7 +331,7 @@ Ink bounds come off a low-resolution raster, so the answer runs a point or two
 shy of the true edge — it errs toward keeping content. Use `--auto-crop-margin
 6pt` to keep more back for descenders and hairline rules.
 
-**Check it before you commit to it.** `deckle crop-preview` superimposes every
+**Check it before you commit to it.** `deckle-cli crop-preview` superimposes every
 page into one picture and draws the proposed crop on it in red:
 
 ```bash
@@ -876,7 +876,7 @@ are embedded losslessly.
 
 A `.deckle` carries its own layout, and **that layout wins**: it is the one
 you set up, previewed and saved, and silently overriding it from flag defaults
-would make `deckle export project.deckle` produce a different book from the
+would make `deckle-cli export project.deckle` produce a different book from the
 one the project describes. Layout flags typed beside a project are reported as
 ignored on stderr rather than quietly dropped — and rather than applied, which
 would be worse. `--sheets`, `--pass`, `--profile` and `--printer` are not
@@ -995,7 +995,7 @@ it to today would claim one that never happened.
 
 ### `print` — plan a manual-duplex run
 
-`deckle print SOURCE --profile NAME` gives you the whole manual-duplex
+`deckle-cli print SOURCE --profile NAME` gives you the whole manual-duplex
 workflow in one command: pass order, the half turn, the reload instruction,
 and with `-o` one PDF per pass — instead of two invocations of
 `export --pass` and working out the order yourself.
@@ -1122,7 +1122,7 @@ Page setup.
 
 Deckle proceeds rather than refusing, and does **not** silently rotate your
 paper — advise, do not rearrange. Note that this warning was invisible for a
-while: only `deckle info` printed layout warnings, so `export --fold-scheme
+while: only `deckle-cli info` printed layout warnings, so `export --fold-scheme
 folio` onto portrait paper squeezed every sheet and said nothing at all.
 `export` and `impose` print them now.
 

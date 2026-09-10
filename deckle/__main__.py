@@ -1,8 +1,10 @@
 """GUI entry point: ``python -m deckle`` launches ``MainWindow``.
 
 ``deckle/cli/`` remains the headless entry point (``python -m deckle.cli``
-/ the ``deckle`` console script) -- two entry points, one Qt-free core. This
-module is the only place that starts the Qt event loop for the desktop app.
+/ the ``deckle-cli`` console script) -- two entry points, one Qt-free core.
+This module is the only place that starts the Qt event loop for the
+desktop app, and it is what the ``deckle`` console script and the frozen
+``deckle`` executable both run.
 
 ``--help``, ``-h`` and ``--version`` are answered **here**, before
 ``QApplication`` is constructed. They used to reach Qt, which silently
@@ -22,6 +24,7 @@ the event loop.
 
 from __future__ import annotations
 
+import os
 import sys
 
 #: The flags answered without starting Qt. Deliberately a small, closed
@@ -29,14 +32,14 @@ import sys
 HELP_FLAGS = ("-h", "--help")
 VERSION_FLAGS = ("--version",)
 
-USAGE = """usage: python -m deckle [--help] [--version]
+USAGE = """usage: {prog} [--help] [--version]
 
 Deckle's desktop app. Launches the imposition and printing window; there
 is nothing else to pass it, and it runs until you close the window.
 
 The headless entry point is the one that takes arguments:
 
-    python -m deckle.cli --help
+    deckle-cli --help          (or: python -m deckle.cli --help)
 
 It imposes, exports, schedules and plans print passes from a terminal,
 with no display server, and it is what to use from a script or from CI.
@@ -44,6 +47,23 @@ with no display server, and it is what to use from a script or from CI.
   -h, --help     show this message and exit
   --version      show Deckle's version and its dependencies', and exit
 """
+
+
+def _program_name(argv: list[str]) -> str:
+    """What to call this program in its own usage line.
+
+    The same module is reached three ways -- ``python -m deckle``, the
+    ``deckle`` console script, and the frozen ``deckle`` executable -- and
+    a usage line naming the wrong one is a line the reader cannot type.
+
+    :param argv: the process arguments, ``argv[0]`` included.
+    :returns: the name to print.
+    """
+    name = os.path.basename(argv[0]) if argv else ""
+    # `runpy` sets argv[0] to this file's path; nobody types that.
+    if not name or name.endswith(".py"):
+        return "python -m deckle"
+    return name
 
 
 def _early_answer(argv: list[str]) -> str | None:
@@ -54,7 +74,7 @@ def _early_answer(argv: list[str]) -> str | None:
     """
     flags = argv[1:]
     if any(flag in HELP_FLAGS for flag in flags):
-        return USAGE
+        return USAGE.format(prog=_program_name(argv))
     if any(flag in VERSION_FLAGS for flag in flags):
         # Imported here, not at module scope: `about` reads versions from
         # installed-distribution metadata rather than by importing the
