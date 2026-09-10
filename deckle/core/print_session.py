@@ -633,8 +633,8 @@ class PrintSession:
     def list_resumable() -> list[SessionSummary]:
         """Enumerate every interrupted session with a state file on disk.
 
-        :returns: one summary per readable state file, in filename order.
-            Empty when the state directory does not exist.
+        :returns: one summary per readable state file, **most recently
+            started first**. Empty when the state directory does not exist.
 
         Never raises. A state file that cannot be read or parsed is skipped
         and logged rather than failing the whole listing -- one corrupt
@@ -682,6 +682,16 @@ class PrintSession:
                 log_exception("session_state_unreadable", exc, path=str(path))
                 continue
             summaries.append(summary)
+        # Newest first, not filename order. The filename is a SHA-256 of
+        # `plan_hash:printer:started_at:uuid4`, so sorting by it is sorting
+        # by a hash -- and the dialog's picker used to take element zero of
+        # this list. "An arbitrary one of your interrupted jobs" is not an
+        # answer to "which job shall I resume", and resuming the wrong one
+        # prints backs against fronts from a different run.
+        #
+        # `started_at` was serialised, round-tripped and read nowhere in
+        # `deckle/`. This is the read.
+        summaries.sort(key=lambda summary: summary.started_at, reverse=True)
         return summaries
 
     # -- submission -----------------------------------------------------------

@@ -19,6 +19,7 @@ and the person at the printer can. The wording is shared on purpose.
 
 from __future__ import annotations
 
+import time
 from typing import Callable, Sequence
 
 from deckle.core.diagnostics import log_event, log_exception
@@ -152,6 +153,41 @@ def resume_count_prompt(summary: SessionSummary) -> str:
         "Look at the tray. How many sheets came out?\n\n"
         "Cancel to leave the job as it is: it stays resumable and you will "
         "be asked again."
+    )
+
+
+def resumable_label(summary: SessionSummary) -> str:
+    """One line that tells two interrupted print jobs apart.
+
+    The picker used to say *"An interrupted print job to 'Laser' was
+    found."* and nothing else. With two interrupted runs -- the ordinary
+    case on a printer that jams -- that sentence is true of both, and the
+    operator has no way to know which one they are about to feed paper
+    into. Resuming the wrong one prints backs against fronts from a
+    different run, onto a stack they have already reloaded, and they find
+    out when the stack is ruined.
+
+    Everything here comes off :class:`SessionSummary`, which has carried
+    it since it was written under a docstring saying it exists "for a
+    picker UI". ``started_at`` in particular was serialised,
+    round-tripped and read nowhere in ``deckle/`` -- and it is the only
+    field that separates two runs of the same document on the same
+    printer.
+
+    The pass is numbered the way the operator counts, from one, matching
+    :func:`resume_count_prompt`.
+
+    Pure and Qt-free so the wording is directly testable.
+
+    :param summary: the interrupted session to describe.
+    :returns: the label.
+    """
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(summary.started_at))
+    n = summary.sheet_cursor
+    sheets = "sheet" if n == 1 else "sheets"
+    return (
+        f"{summary.printer_name} -- pass {summary.pass_index + 1}, "
+        f"{n} {sheets} recorded -- started {when}"
     )
 
 
@@ -726,15 +762,61 @@ class PrintDialog:
     # -- default (real Qt) confirmation implementations ----------------------
 
     def _default_confirm_resume(self, resumable: list[SessionSummary]) -> SessionSummary | None:
+        """Which interrupted job to resume, if any.
+
+        This took ``resumable[0]`` and showed a Yes/No box naming the
+        printer. ``list_resumable`` returned the state files in *filename*
+        order and the filename is a SHA-256, so "the first one" was
+        effectively random: with two interrupted runs the operator was
+        offered an arbitrary one, could not reach the other, and was told
+        nothing that would let them tell the two apart. Resuming the wrong
+        one prints backs against fronts from a different run.
+
+        One job stays a yes-or-no question -- a list box with one row in
+        it is a worse way to ask -- but it now carries the same
+        description the list would have shown. More than one gets a
+        picker, newest first, which is the order ``list_resumable`` now
+        returns.
+
+        :param resumable: the interrupted sessions, newest first.
+        :returns: the one to resume, or ``None`` to decline.
+        """
         if not resumable:
             return None
-        summary = resumable[0]
-        box = self._QMessageBox(self.widget)
-        box.setWindowTitle("Resume print job?")
-        box.setText(f"An interrupted print job to {summary.printer_name!r} was found. Resume it?")
-        box.setStandardButtons(self._QMessageBox.StandardButton.Yes | self._QMessageBox.StandardButton.No)
-        answer = box.exec()
-        return summary if answer == self._QMessageBox.StandardButton.Yes else None
+        if len(resumable) == 1:
+            summary = resumable[0]
+            box = self._QMessageBox(self.widget)
+            box.setWindowTitle("Resume print job?")
+            box.setText(
+                "An interrupted print job was found. Resume it?\n\n"
+                f"{resumable_label(summary)}"
+            )
+            box.setStandardButtons(
+                self._QMessageBox.StandardButton.Yes
+                | self._QMessageBox.StandardButton.No
+            )
+            answer = box.exec()
+            return summary if answer == self._QMessageBox.StandardButton.Yes else None
+
+        from PySide6.QtWidgets import QInputDialog
+
+        labels = [resumable_label(summary) for summary in resumable]
+        chosen, ok = QInputDialog.getItem(
+            self.widget,
+            "Resume print job?",
+            f"{len(resumable)} interrupted print jobs were found.\n"
+            "Which one do you want to finish?\n\n"
+            "Cancel to start a fresh run; the others stay resumable.",
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        # By position, not by label: two runs a minute apart on the same
+        # printer at the same cursor produce the same text, and picking by
+        # string would silently resume whichever came first.
+        return resumable[labels.index(chosen)]
 
     def _default_ask_resume_count(self, summary: SessionSummary) -> int | None:
         """How many sheets emerged, or ``None`` if the question was cancelled.
