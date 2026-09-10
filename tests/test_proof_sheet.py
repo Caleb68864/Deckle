@@ -302,6 +302,11 @@ class _StubPrinter:
     def setFullPage(self, on):  # noqa: N802 - Qt naming
         pass
 
+    def setPageLayout(self, layout):  # noqa: N802 - Qt naming
+        # The proof goes on the plan's paper like any other job; what it
+        # is set to is pinned in tests/test_print_paper_size.py.
+        return True
+
     def newPage(self):  # noqa: N802 - Qt naming
         pass
 

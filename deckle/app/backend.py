@@ -16,6 +16,11 @@ here can defeat that physical border (see
 ``docs/spikes/qprinter-capability-report.md``) -- it can only decline to
 disguise it as a smaller book.
 
+The device page is set from ``plan.paper_pt`` on every job
+(``_apply_paper``). Deckle draws its own print dialog, so nothing else
+would ever tell the driver what paper this is for, and at actual size a
+mismatch is clipped rather than scaled.
+
 Tray selection is deliberately never touched -- it is effectively
 Windows-only and manual duplex does not need it.
 
@@ -124,6 +129,90 @@ def printer_is_available(printer_name: str) -> bool:
     except Exception as exc:  # noqa: BLE001 -- inconclusive, not fatal
         log_exception("printer_availability_check_failed", exc, printer=printer_name)
         return True
+
+
+def _page_layout(paper_pt: tuple[float, float]):
+    """A ``QPageLayout`` describing ``paper_pt``, full-bleed.
+
+    Qt stores standard page sizes portrait-side-up and carries the turn in
+    the layout's orientation, so a landscape plan is described as its own
+    portrait size *plus* ``Landscape`` rather than as a custom size with
+    the numbers swapped. Doing it the other way works but throws away the
+    match: ``QPageSize(QSizeF(792, 612))`` is "Letter", and a driver that
+    is handed a page named Letter and told to turn it does something much
+    more predictable than one handed 792x612 points of nothing in
+    particular.
+
+    ``FuzzyOrientationMatch`` is what performs that naming, within Qt's
+    3-point tolerance -- Deckle's A4 is 595.276x841.89pt and Qt's is
+    595x842, and the two must not become a "custom" size over 0.28pt.
+
+    Margins are zero because ``setFullPage(True)`` is always set (see the
+    module docstring): the imposer's own margins are inside the rasterised
+    sheet already, and Qt adding more would move the paper corner away
+    from ``(0, 0)``.
+
+    :param paper_pt: the plan's paper as ``(width, height)`` in points.
+    :returns: the layout to hand to ``QPrinter.setPageLayout``.
+    """
+    from PySide6.QtCore import QMarginsF, QSizeF
+    from PySide6.QtGui import QPageLayout, QPageSize
+
+    width_pt, height_pt = float(paper_pt[0]), float(paper_pt[1])
+    landscape = width_pt > height_pt
+    upright = QSizeF(height_pt, width_pt) if landscape else QSizeF(width_pt, height_pt)
+    size = QPageSize(
+        upright,
+        QPageSize.Unit.Point,
+        "",
+        QPageSize.SizeMatchPolicy.FuzzyOrientationMatch,
+    )
+    orientation = (
+        QPageLayout.Orientation.Landscape
+        if landscape
+        else QPageLayout.Orientation.Portrait
+    )
+    return QPageLayout(
+        size, orientation, QMarginsF(0.0, 0.0, 0.0, 0.0), QPageLayout.Unit.Point
+    )
+
+
+def _apply_paper(printer, paper_pt: tuple[float, float], printer_name: str) -> None:
+    """Tell ``printer`` what paper the plan is for.
+
+    Deckle draws its own print dialog, so no ``QPrintDialog`` ever asks the
+    user for a page size and nothing else in the program would set one.
+    Without this the job goes to whatever page the driver defaults to --
+    portrait A4 or portrait Letter -- and since B6 that is not a cosmetic
+    difference. The painter draws the sheet at actual size from ``(0, 0)``
+    and never reads ``printer.width()``, so paper the device page is too
+    small for is **clipped**, not scaled: a folio (letter-landscape) plan
+    on a default portrait page loses 180pt, two and a half inches, off its
+    width. Deckle's own clip warnings cannot see it either, because
+    ``clipped_by_imageable_area`` and ``clipped_by_page`` are both computed
+    in ``plan.paper_pt`` and assume the device page *is* the plan's paper.
+    This is the call that makes that assumption true.
+
+    A printer with a fixed paper list can refuse, and Qt reports the
+    refusal only through a return value. The job still goes -- declining to
+    print is worse than printing on the paper the operator loaded -- but
+    the refusal is logged rather than dropped, because it is the one
+    warning that the sheet about to come out will not measure what the
+    schedule says it does.
+
+    :param printer: the ``QPrinter`` about to be painted on.
+    :param paper_pt: the plan's paper as ``(width, height)`` in points.
+    :param printer_name: for the log line only.
+    :returns: nothing.
+    """
+    layout = _page_layout(paper_pt)
+    if not printer.setPageLayout(layout):
+        log_event(
+            "print_paper_size_refused",
+            level=logging.WARNING,
+            printer=printer_name,
+            paper_pt=[float(paper_pt[0]), float(paper_pt[1])],
+        )
 
 
 def _duplex_none_mode():
@@ -613,6 +702,10 @@ class QtPrintBackend:
         # Margins come from the profile's imageable_area_pt, never Qt's
         # own defaults -- setFullPage(True) is what makes that true.
         printer.setFullPage(True)
+        # ...and this is what makes the page the plan's paper rather than
+        # the driver's default. Since B6 a mismatch clips instead of
+        # scaling; see _apply_paper.
+        _apply_paper(printer, plan.paper_pt, printer_name)
 
         painter = _new_qpainter()
         if not painter.begin(printer):
@@ -787,6 +880,7 @@ class QtPrintBackend:
             printer.setPrinterName(printer_name)
         printer.setCopyCount(max(1, copies))
         printer.setFullPage(True)
+        _apply_paper(printer, plan.paper_pt, printer_name)
         printer.setDuplex(_duplex_auto_mode())
 
         chunks = chunks_all

@@ -72,6 +72,7 @@ def recorded(monkeypatch):
         def setPrinterName(self, name): self.name = name
         def setCopyCount(self, n): self.copies = n
         def setFullPage(self, on): pass
+        def setPageLayout(self, layout): return True
         def setDuplex(self, mode): pass
         def newPage(self): pass
 
@@ -95,9 +96,21 @@ def recorded(monkeypatch):
     return calls
 
 
+class _Plan:
+    """The one thing ``submit_duplex`` reads off the plan directly.
+
+    Everything else about the plan reaches this path through
+    ``_render_sheet_side``, which is stubbed above; the paper size does
+    not, because it is what the *printer* is configured with (see
+    ``tests/test_print_paper_size.py``).
+    """
+
+    paper_pt = (612.0, 792.0)
+
+
 def _submit(backend, sheets=(0, 1)):
     return backend.submit_duplex(
-        plan=None, sheets=list(sheets), printer_name="Test Printer",
+        plan=_Plan(), sheets=list(sheets), printer_name="Test Printer",
         copies=1, dpi=300,
     )
 
