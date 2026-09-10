@@ -15,8 +15,8 @@ behavior ``plan_passes`` implements:
 |------------------------------------------------------|-----------------|
 | Outputs face-down, stack reversed on reload           | backs as-is     |
 | Outputs face-up, stack retains order                  | backs reversed  |
-| User flips on the long edge                           | back sides may also need 180deg rotation |
-| User flips on the short edge                          | usually no rotation |
+| User flips about the sheet's vertical edge             | no rotation |
+| User flips about the sheet's horizontal edge          | back sides need 180deg rotation |
 
 Mapping from ``PrinterProfile`` to the two behavioral axes ``plan_passes``
 consumes:
@@ -25,9 +25,28 @@ consumes:
   ``output_face`` + ``feed_edge``) drives **sheet order** on the back
   pass: ``True`` reverses it, ``False`` keeps it identical to the front
   pass.
-- ``profile.flip_axis == "long"`` drives **``rotate_backs``**: a long-edge
-  flip needs the back sides rotated 180 degrees to land right-side up;
-  a short-edge flip does not.
+- ``profile.flip_axis`` compared against :func:`duplex_flip_edge` drives
+  **``rotate_backs``**. Neither one decides it alone, and this is the
+  correction to a rule that stood here for months as
+  ``flip_axis == "long"``. ``flip_axis`` is a *measured* fact about the
+  printer -- which named edge the operator physically turns the stack
+  about. ``duplex_flip_edge(plan.paper_pt)`` is a *geometric* fact about
+  the job -- which named edge is the sheet's vertical one, and so the one
+  it must turn about for the backs to land upright (see that function,
+  and the 2026-08-06 decision-log entry). They are different quantities
+  that happen to share a vocabulary. The backs need a half turn exactly
+  when they disagree::
+
+      portrait  (vertical edge = long)
+        flip_axis "long"  -> turns about vertical   -> upright  -> no rotate
+        flip_axis "short" -> turns about horizontal -> inverted -> rotate
+      landscape (vertical edge = short)
+        flip_axis "short" -> turns about vertical   -> upright  -> no rotate
+        flip_axis "long"  -> turns about horizontal -> inverted -> rotate
+
+  A rule reading ``flip_axis`` alone is right for exactly one orientation
+  and silently upside down for the other, which is a whole run of ruined
+  paper that nothing on screen reports.
 
 Rotation, when a caller applies ``rotate_backs``, must be done with
 ``page.rotate(180, relative=True)`` or by assigning ``page.rotation`` --
@@ -163,6 +182,12 @@ def plan_passes(
     Passing a narrower ``sheets`` sequence (e.g. a single reprinted sheet)
     is the normal path with a smaller input -- there is no separate
     reprint branch.
+
+    ``rotate_backs`` needs the paper as well as the profile: see this
+    module's docstring for why ``profile.flip_axis`` alone cannot answer
+    it. ``plan.paper_pt`` is the only thing read off ``plan`` besides
+    ``Sheet.index``, and it is a property of the plan, not of a sheet --
+    the SS-04 zero-diff seam is about ``Sheet``.
     """
     indices = [s.index for s in plan.sheets] if sheets is None else list(sheets)
 
@@ -182,7 +207,7 @@ def plan_passes(
             sheet_order=back_order,
             side="back",
             reload_instruction=_back_instruction(profile),
-            rotate_backs=profile.flip_axis == "long",
+            rotate_backs=profile.flip_axis != duplex_flip_edge(plan.paper_pt),
         ),
     ]
 
@@ -199,8 +224,10 @@ class PassExport:
 
     :ivar side: which face this pass carries.
     :ivar sheets: the sheet indices in the order they are fed.
-    :ivar rotate_180: whether every page needs the half turn a long-edge
-        flip demands.
+    :ivar rotate_180: whether every page needs the half turn a flip about
+        the sheet's *horizontal* edge demands -- which named edge that is
+        depends on the paper, so it is taken from :func:`plan_passes` and
+        never re-derived from ``flip_axis``.
     :ivar back_offset_pt: the profile's measured back-side correction, which
         applies to the back pass and is inert on the front.
     :ivar reload_instruction: what the person at the printer has to do

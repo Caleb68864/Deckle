@@ -15,9 +15,10 @@ Each one produced a confidently wrong result rather than an error:
   imposed a book bound on the *right* while ``deckle info`` reported no
   warnings.
 - ``flip_axis: "diagonal"`` is outside ``Literal["long", "short"]``, and
-  planned the back pass as though the operator flips on the short edge --
-  so on a printer that flips long-edge, every back side prints upside
-  down. A whole stack of paper, silently.
+  planned the back pass as though the operator flips about the sheet's
+  horizontal edge -- so on any printer that actually flips about the
+  vertical one, every back side prints upside down. A whole stack of
+  paper, silently.
 - ``page_index: -2`` is a valid Python index, and printed the
   second-from-last page of the document instead of failing.
 

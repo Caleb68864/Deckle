@@ -181,10 +181,14 @@ def test_export_dry_run_reports_the_registration_it_would_apply(tmp_path, capsys
 
 
 def test_export_dry_run_names_the_single_pass_and_the_half_turn(tmp_path, capsys):
+    """``generic_face_up_in_order`` is ``flip_axis="short"``, and the
+    fixture is portrait, whose vertical edge is its long one -- so this
+    printer turns the sheet about the horizontal edge and the backs need
+    the half turn. The dry run has to say so before any paper is used."""
     assert main(
         [
             "export", FIXTURE, "-o", str(tmp_path / "o.pdf"),
-            "--profile", "generic_face_down_reversed",
+            "--profile", "generic_face_up_in_order",
             "--pass", "back", "--dry-run",
         ]
     ) == 0
@@ -193,6 +197,23 @@ def test_export_dry_run_names_the_single_pass_and_the_half_turn(tmp_path, capsys
     assert "backs only" in printed
     assert "turned 180 degrees" in printed
     assert "reload:" in printed
+
+
+def test_export_dry_run_is_silent_about_a_turn_it_would_not_make(tmp_path, capsys):
+    """The other half of the pair. A dry run that named the half turn
+    unconditionally would be no evidence at all -- and the turn is the
+    thing whose sign nobody can check until the paper is printed."""
+    assert main(
+        [
+            "export", FIXTURE, "-o", str(tmp_path / "o.pdf"),
+            "--profile", "generic_face_down_reversed",  # long, on portrait
+            "--pass", "back", "--dry-run",
+        ]
+    ) == 0
+
+    printed = capsys.readouterr().out
+    assert "backs only" in printed
+    assert "turned 180 degrees" not in printed
 
 
 def test_impose_dry_run_reports_the_layout_it_would_record(tmp_path, capsys):

@@ -12,6 +12,7 @@ from deckle.core.printing import (
     PrintPass,
     PrintResult,
     duplex_flip_edge,
+    pass_export,
     plan_passes,
 )
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
@@ -25,7 +26,7 @@ def _blank_output_page() -> OutputPage:
     )
 
 
-def _make_plan(n_sheets: int) -> SheetPlan:
+def _make_plan(n_sheets: int, paper_pt: tuple[float, float] = (612.0, 792.0)) -> SheetPlan:
     sheets = [
         Sheet(
             index=i,
@@ -34,7 +35,7 @@ def _make_plan(n_sheets: int) -> SheetPlan:
         )
         for i in range(n_sheets)
     ]
-    return SheetPlan(sheets=sheets, paper_pt=(612.0, 792.0), warnings=[])
+    return SheetPlan(sheets=sheets, paper_pt=paper_pt, warnings=[])
 
 
 def _profile(**overrides) -> PrinterProfile:
@@ -52,18 +53,117 @@ def _profile(**overrides) -> PrinterProfile:
     return PrinterProfile(**base)
 
 
-def test_flip_axis_long_yields_rotate_backs_true():
+# --- rotate_backs: the flip axis against the paper ---------------------
+#
+# `flip_axis` is a MEASURED fact about the printer -- which named edge the
+# operator physically turns the stack about. `duplex_flip_edge(paper)` is a
+# GEOMETRIC fact about the job -- which named edge is the sheet's vertical
+# one, and so the one it must turn about for the backs to land upright
+# (docs/decisions.md, 2026-08-06: "the sheet must turn about its VERTICAL
+# edge ... so either constant is wrong for half of Deckle's own output").
+#
+# The backs need a half turn exactly when those two disagree. All four
+# combinations are pinned below, and they must stay four: for months the
+# rule was `flip_axis == "long"`, which is right for landscape and exactly
+# inverted for portrait, and no test noticed because every test used one
+# orientation. A rule derived from either quantity alone passes half of
+# this table and ruins a whole run of paper on the other half, with
+# nothing on screen to say so.
+
+A4_PORTRAIT = (595.0, 842.0)
+A4_LANDSCAPE = (842.0, 595.0)
+
+
+@pytest.mark.parametrize(
+    "paper_pt, flip_axis, expected, why",
+    [
+        (A4_PORTRAIT, "long", False, "portrait: long IS vertical, lands upright"),
+        (A4_PORTRAIT, "short", True, "portrait: short is horizontal, lands inverted"),
+        (A4_LANDSCAPE, "short", False, "landscape: short IS vertical, lands upright"),
+        (A4_LANDSCAPE, "long", True, "landscape: long is horizontal, lands inverted"),
+    ],
+)
+def test_rotate_backs_compares_flip_axis_against_the_paper(
+    paper_pt, flip_axis, expected, why
+):
+    """The half turn is needed exactly when the axes disagree.
+
+    Not ``flip_axis == "long"`` (right only for landscape) and not
+    ``duplex_flip_edge(paper)`` alone (which knows nothing about the
+    printer). Each is a special case of this comparison, correct for
+    exactly one orientation.
+    """
+    profile = _profile(flip_axis=flip_axis)
+    passes = plan_passes(_make_plan(3, paper_pt=paper_pt), profile)
+    back = next(p for p in passes if p.side == "back")
+
+    assert back.rotate_backs is expected, (
+        f"{why}: flip_axis={flip_axis!r} on a "
+        f"{'portrait' if paper_pt[1] >= paper_pt[0] else 'landscape'} sheet "
+        f"whose vertical edge is {duplex_flip_edge(paper_pt)!r} -- expected "
+        f"rotate_backs={expected}, got {back.rotate_backs}. Getting this "
+        "backwards prints every back side upside down for the whole run."
+    )
+
+
+def test_rotate_backs_is_not_derived_from_the_flip_axis_alone():
+    """The same printer, two papers, two different answers.
+
+    This is the shape of the bug that stood for months: a rule reading
+    only ``flip_axis`` cannot produce two answers here, so it must be
+    wrong for one of them.
+    """
     profile = _profile(flip_axis="long")
-    passes = plan_passes(_make_plan(3), profile)
-    back = next(p for p in passes if p.side == "back")
-    assert back.rotate_backs is True
+
+    portrait = next(
+        p
+        for p in plan_passes(_make_plan(2, paper_pt=A4_PORTRAIT), profile)
+        if p.side == "back"
+    )
+    landscape = next(
+        p
+        for p in plan_passes(_make_plan(2, paper_pt=A4_LANDSCAPE), profile)
+        if p.side == "back"
+    )
+
+    assert portrait.rotate_backs != landscape.rotate_backs
 
 
-def test_flip_axis_short_yields_rotate_backs_false():
-    profile = _profile(flip_axis="short")
-    passes = plan_passes(_make_plan(3), profile)
-    back = next(p for p in passes if p.side == "back")
-    assert back.rotate_backs is False
+def test_rotate_backs_is_not_derived_from_the_paper_alone():
+    """The same paper, two printers, two different answers."""
+    plan = _make_plan(2, paper_pt=A4_PORTRAIT)
+
+    long_edge = next(
+        p for p in plan_passes(plan, _profile(flip_axis="long")) if p.side == "back"
+    )
+    short_edge = next(
+        p for p in plan_passes(plan, _profile(flip_axis="short")) if p.side == "back"
+    )
+
+    assert long_edge.rotate_backs != short_edge.rotate_backs
+
+
+def test_front_pass_never_rotates_whatever_the_paper():
+    """Only the back pass is turned; the fronts print as imposed."""
+    for paper_pt in (A4_PORTRAIT, A4_LANDSCAPE):
+        for flip_axis in ("long", "short"):
+            passes = plan_passes(
+                _make_plan(2, paper_pt=paper_pt), _profile(flip_axis=flip_axis)
+            )
+            front = next(p for p in passes if p.side == "front")
+            assert front.rotate_backs is False
+
+
+def test_pass_export_carries_the_same_half_turn_as_plan_passes():
+    """``pass_export`` recomputes nothing -- including on landscape paper."""
+    for paper_pt in (A4_PORTRAIT, A4_LANDSCAPE):
+        for flip_axis in ("long", "short"):
+            plan = _make_plan(2, paper_pt=paper_pt)
+            profile = _profile(flip_axis=flip_axis)
+            back = next(p for p in plan_passes(plan, profile) if p.side == "back")
+
+            assert pass_export(plan, profile, "back").rotate_180 is back.rotate_backs
+            assert pass_export(plan, profile, "front").rotate_180 is False
 
 
 def test_reverse_stack_true_reverses_back_pass_order():
@@ -268,22 +368,27 @@ def test_pass_export_carries_the_sheet_order_the_pass_would_feed():
 
 def test_the_half_turn_belongs_to_the_back_pass_only():
     """`rotate_180` on a front pass would turn every front upside down.
-    The flag is the profile's answer about the *back*, and the front pass
-    must not inherit it."""
+    The flag is the answer about the *back*, and the front pass must not
+    inherit it. Stated on portrait paper with a short-edge flip, which is
+    the combination that needs the turn there."""
     from deckle.core.printing import pass_export
 
-    plan = _make_plan(2)
-    long_edge = _profile(flip_axis="long")
+    plan = _make_plan(2, paper_pt=A4_PORTRAIT)
+    turns_about_the_horizontal_edge = _profile(flip_axis="short")
 
-    assert pass_export(plan, long_edge, "back").rotate_180 is True
-    assert pass_export(plan, long_edge, "front").rotate_180 is False
+    assert pass_export(plan, turns_about_the_horizontal_edge, "back").rotate_180 is True
+    assert pass_export(plan, turns_about_the_horizontal_edge, "front").rotate_180 is False
 
 
-def test_a_short_edge_flip_needs_no_turn_at_all():
+def test_a_flip_about_the_sheets_vertical_edge_needs_no_turn_at_all():
+    """On portrait paper that is the long edge; on landscape, the short."""
     from deckle.core.printing import pass_export
 
-    plan = _make_plan(2)
-    assert pass_export(plan, _profile(flip_axis="short"), "back").rotate_180 is False
+    portrait = _make_plan(2, paper_pt=A4_PORTRAIT)
+    landscape = _make_plan(2, paper_pt=A4_LANDSCAPE)
+
+    assert pass_export(portrait, _profile(flip_axis="long"), "back").rotate_180 is False
+    assert pass_export(landscape, _profile(flip_axis="short"), "back").rotate_180 is False
 
 
 def test_the_measured_back_offset_travels_with_the_pass():

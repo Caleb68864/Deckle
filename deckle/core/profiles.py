@@ -38,8 +38,13 @@ class PrinterProfile:
     ``feed_edge`` -- a face-down output on a printer that does not
     re-invert the stack needs its back pass reversed to restore sheet
     order; a face-up output that preserves order does not) drives sheet
-    order on the back pass, while ``flip_axis`` drives whether back sides
-    need a 180-degree rotation.
+    order on the back pass, while ``flip_axis`` -- **compared against the
+    paper's own vertical edge**, never read alone -- drives whether back
+    sides need a 180-degree rotation. ``flip_axis`` is a measured fact
+    about the machine, not a geometric one about the job: the same
+    long-edge flip lands the backs upright on a portrait sheet and upside
+    down on a landscape one. See ``plan_passes`` and
+    ``deckle.core.printing.duplex_flip_edge``.
     """
 
     version: int
@@ -131,9 +136,10 @@ class PrinterProfile:
         and guessing wastes paper: ``flip_axis`` is
         ``Literal["long", "short"]`` and nothing enforced it, so
         ``"diagonal"`` loaded happily and planned the back pass as though
-        the operator flips on the short edge -- meaning on a printer that
-        flips long-edge, **every back side prints upside down**, for a
-        whole stack, with nothing on screen to suggest it.
+        the operator flips about the sheet's horizontal edge -- so on any
+        printer that actually flips about the vertical one, **every back
+        side prints upside down**, for a whole stack, with nothing on
+        screen to suggest it.
 
         :param name: the printer whose profile to read.
         :returns: the profile.

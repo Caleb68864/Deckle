@@ -841,22 +841,24 @@ def test_the_back_pass_asks_for_the_back_side():
     assert sides == ["front", "back"], sides
 
 
-def test_a_long_edge_flip_turns_its_backs():
-    """A printer that flips about the long edge needs the back turned.
+def test_the_session_carries_the_half_turn_plan_passes_decided():
+    """A printer that turns the sheet about its HORIZONTAL edge needs the
+    back turned, and the session's job is only to carry the answer.
 
-    ``plan_passes`` decides this -- ``rotate_backs = flip_axis == "long"``
-    -- and the session's job is only to carry the answer through. Both
-    axes are asserted, because a fix that hard-codes ``True`` would be as
-    wrong as the ``False`` it replaced, and only the pair can tell the two
-    apart.
+    ``plan_passes`` decides it as ``flip_axis != duplex_flip_edge(paper)``
+    -- see ``deckle/core/printing.py``. The plan here is portrait, so the
+    sheet's vertical edge is its long one: a long-edge flip lands upright
+    and a short-edge flip lands inverted. Both axes are asserted, because
+    a fix that hard-codes ``True`` would be as wrong as the ``False`` it
+    replaced, and only the pair can tell the two apart.
     """
-    long_edge = [call[5] for call in _run_both_passes(_profile()).calls]
-    assert long_edge == [False, True], long_edge
+    upright = [call[5] for call in _run_both_passes(_profile()).calls]
+    assert upright == [False, False], upright
 
-    short_edge = [
+    inverted = [
         call[5] for call in _run_both_passes(_profile(flip_axis="short")).calls
     ]
-    assert short_edge == [False, False], short_edge
+    assert inverted == [False, True], inverted
 
 
 def test_each_pass_submits_under_its_own_index():

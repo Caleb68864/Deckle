@@ -229,9 +229,9 @@ def test_a_bad_flip_axis_no_longer_plans_the_back_pass_unturned(tmp_path):
 
     ``flip_axis`` is ``Literal["long", "short"]`` and nothing enforced it,
     so ``"diagonal"`` loaded happily and planned the back pass as though
-    the operator flips on the short edge -- ``rotate_backs=False``. On a
-    printer that flips long-edge that turns every back side upside down,
-    for the whole run, with nothing on screen to suggest it.
+    the operator flips about the sheet's horizontal edge. On any printer
+    that actually flips about the vertical one, that turns every back side
+    upside down, for the whole run, with nothing on screen to suggest it.
     """
     _store(tmp_path, flip_axis="diagonal")
 

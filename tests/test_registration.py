@@ -232,10 +232,11 @@ def test_no_correction_leaves_the_page_byte_for_byte_unchanged(tmp_path):
 
 
 def test_a_half_turned_back_pass_negates_the_correction(tmp_path):
-    """A long-edge flip rotates the back 180, and a point reflection maps
-    a translation to its negation -- so a correction expressed on the
-    PAPER has to be inverted in page space to survive the turn. Applying
-    it unchanged would move the back exactly twice as far wrong."""
+    """A flip about the sheet's horizontal edge rotates the back 180, and
+    a point reflection maps a translation to its negation -- so a
+    correction expressed on the PAPER has to be inverted in page space to
+    survive the turn. Applying it unchanged would move the back exactly
+    twice as far wrong."""
     out = os.path.join(str(tmp_path), "backs.pdf")
 
     export_fn(
@@ -321,8 +322,13 @@ def test_the_flag_shifts_the_back_of_an_ordinary_export(tmp_path):
 def test_a_calibrated_profile_supplies_the_correction(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+    # ``flip_axis="long"`` on the default PORTRAIT paper turns the sheet
+    # about its vertical edge, so the back pass is not half-turned and the
+    # correction survives unnegated. This test is about the correction
+    # reaching the export, not about the turn -- which is tested on its
+    # own below.
     _profile(
-        flip_axis="short", reverse_stack=False, back_offset_x_pt=4.0,
+        flip_axis="long", reverse_stack=False, back_offset_x_pt=4.0,
         back_offset_y_pt=1.5,
     ).save("Measured")
     src = _numbered_source(tmp_path)
@@ -341,8 +347,10 @@ def test_the_flag_overrides_the_profile(tmp_path, monkeypatch):
     the OS config directory between every attempt."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     monkeypatch.setattr("deckle.core.paths.sys.platform", "linux")
+    # Portrait paper plus a long-edge flip: no half turn, so the flag's
+    # value reaches the page unnegated and the override is readable.
     _profile(
-        flip_axis="short", reverse_stack=False, back_offset_x_pt=4.0,
+        flip_axis="long", reverse_stack=False, back_offset_x_pt=4.0,
         back_offset_y_pt=1.5,
     ).save("Measured")
     src = _numbered_source(tmp_path)
@@ -427,9 +435,11 @@ def test_the_print_path_is_unchanged_when_uncalibrated(tmp_path):
 #
 # Every test above this line leaves `rotate_backs` False, so none of them
 # ever exercises the one combination that bites: a half turn AND a
-# non-zero correction. That combination is what the first builtin preset
-# -- `generic_face_down_reversed`, the one `resolve_profile` falls back
-# to -- produces on a calibrated printer.
+# non-zero correction. Either builtin preset produces that combination on
+# a calibrated printer -- `generic_face_down_reversed` (long-edge) on a
+# LANDSCAPE sheet, `generic_face_up_in_order` (short-edge) on a PORTRAIT
+# one -- because the turn is the flip axis compared against the paper's
+# vertical edge, not a property of the preset alone.
 
 
 def _rasterized(path: str, page_index: int, dpi: int = 72):

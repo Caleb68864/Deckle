@@ -622,7 +622,9 @@ def export(
         ``None`` writes both faces interleaved, which is what a real
         duplexer wants, and there omits a face that does not exist.
     :param rotate_180: turn every written page a half turn. What a back
-        pass needs when the operator flips the stack on its long edge.
+        pass needs when the operator flips the stack about the sheet's
+        horizontal edge -- which named edge that is depends on the paper,
+        so this comes from ``plan_passes`` rather than from the flip axis.
         Applied to the scratch file before it is renamed into place, so the
         output is never briefly present in the wrong orientation.
     :param back_offset_pt: the front/back registration correction, applied
@@ -710,8 +712,9 @@ def _apply_back_offset(
     fold line and sewing stations have to move with the content or they
     would no longer mark where the content actually is.
 
-    **The rotation interaction is the subtle part.** A long-edge back pass
-    is turned a half turn, and a point reflection maps a translation to
+    **The rotation interaction is the subtle part.** A back pass that gets
+    turned a half turn is a point reflection, and a point reflection maps a
+    translation to
     its negation -- so a correction measured on the paper has to be
     inverted in page space to survive the turn. Applied unchanged it would
     move the back exactly twice as far wrong as leaving it alone.
@@ -800,8 +803,10 @@ def rotate_pages_180(pdf_path: str, flatten: bool = False) -> None:
     """Turn every page in ``pdf_path`` a half turn, in place.
 
     What a manual-duplex back pass needs when the operator flips the stack
-    on its long edge: the sheet comes back through the printer upside down
-    relative to its front, so the back sides have to be turned to match.
+    about the sheet's horizontal edge: the sheet comes back through the
+    printer upside down relative to its front, so the back sides have to be
+    turned to match. Whether that is the named "long" or "short" edge
+    depends on the paper, which is why the decision is not made here.
     :func:`deckle.core.printing.plan_passes` decides *whether*; this does it.
 
     Uses ``page.rotate(180, relative=True)`` rather than assigning the
