@@ -63,7 +63,15 @@ EXEMPT: dict[str, str] = {
     # panel, and are covered by tests/test_print_dialog.py.
     "--pass": "chosen in the Print dialog, which plans both passes",
     "--profile": "the Print dialog's printer picker resolves the profile",
-    "--printer": "the app records the printer it is actually driving",
+    # Corrected 2026-09-11. This row used to read "the app records the
+    # printer it is actually driving", and that was false: nothing in
+    # `deckle/app/` ever writes `Project.printer`, and for the whole life of
+    # the flag nothing read it either -- `deckle-cli impose --printer` stored
+    # a name in the `.deckle` that no code path consumed. It is read now, by
+    # the Print dialog's and the preview's preselection, so the flag has a
+    # consumer in the app even though the app still has no *control* that
+    # sets it. An exemption's stated reason is a claim like any other.
+    "--printer": "recorded by the CLI; the app preselects it rather than sets it",
     # Calibration. The whole PrinterProfile -- flip_axis, output_face,
     # feed_edge, reverse_stack, imageable_area_pt and the two back-offset
     # numbers -- is editable only by `deckle-cli profile set` or by hand.

@@ -37,20 +37,42 @@ from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 def select_preselected_printer(
     printer_names: Sequence[str],
     profile_loader: Callable[[str], PrinterProfile],
+    recorded: str | None = None,
 ) -> str | None:
-    """The printer name to preselect: the first with a saved profile.
+    """The printer name to preselect: the one the project names, then the
+    first with a saved profile.
 
     Falls back to the first available printer (if any) when none of them
     has a saved ``PrinterProfile`` yet. Pure and Qt-free so it is directly
     unit-testable.
 
+    ``recorded`` outranks a calibration because it is the more specific
+    answer to the same question. A saved profile says *this printer has
+    been measured*; the project says *this book is for that printer*, which
+    the user typed, about this document. ``deckle-cli impose --printer`` has
+    stored it since the beginning -- "printer name to record in the
+    project", written into the ``.deckle`` and read back by
+    ``load_project`` -- and **nothing read it**. Opening such a project and
+    pressing Print preselected a different machine, and with it a different
+    calibration: a different reload instruction and a different measured
+    back offset, for a printer the user did not choose.
+
+    A recorded name that is not currently installed is ignored rather than
+    reported here: this function chooses among what exists, and a project
+    made on another machine naming a printer this one does not have is
+    ordinary rather than an error.
+
     :param printer_names: the printers to choose among, in the order Qt
         reported them.
     :param profile_loader: called with a printer name; raising means "no
         saved profile".
+    :param recorded: the printer the project was made for
+        (``Project.printer``), or ``None``.
     :returns: the printer to preselect, or ``None`` when there are no
         printers at all.
     """
+    if recorded and recorded in printer_names:
+        return recorded
     for name in printer_names:
         try:
             profile_loader(name)
@@ -429,6 +451,7 @@ class PrintDialog:
         parent=None,
         *,
         printer_names: Sequence[str] | None = None,
+        recorded_printer: str | None = None,
         profile_loader: Callable[[str], PrinterProfile] = PrinterProfile.load,
         builtin_presets: dict[str, PrinterProfile] | None = None,
         session_cls: type = PrintSession,
@@ -484,7 +507,9 @@ class PrintDialog:
         self.printer_combo = QComboBox(self.widget)
         names = list(printer_names) if printer_names is not None else _available_printer_names()
         self.printer_combo.addItems(names)
-        preselected = select_preselected_printer(names, self._profile_loader)
+        preselected = select_preselected_printer(
+            names, self._profile_loader, recorded_printer
+        )
         if preselected is not None:
             self.printer_combo.setCurrentIndex(names.index(preselected))
         printer_row.addWidget(self.printer_combo)

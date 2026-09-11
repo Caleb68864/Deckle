@@ -139,6 +139,7 @@ def profile_for_printers(
     printer_names,
     profile_loader=PrinterProfile.load,
     fallback: PrinterProfile = DEFAULT_PROFILE,
+    recorded_printer: str | None = None,
 ) -> PrinterProfile:
     """The profile the preview should be drawing, given what is installed.
 
@@ -151,10 +152,11 @@ def profile_for_printers(
     the first builtin preset's stand-in for one.
 
     Deliberately the *same* answer :class:`PrintDialog` opens with, reached
-    through the same two functions: the first printer with a saved
-    calibration, then that calibration. A preview drawing one printer's
-    border while the print dialog is about to preselect another's would be
-    a worse lie than the constant it replaces.
+    through the same two functions and given the same three inputs. A
+    preview drawing one printer's border while the print dialog is about to
+    preselect another's would be a worse lie than the constant it replaces
+    -- which is why ``recorded_printer`` is threaded here as well as into
+    the dialog, rather than into the dialog alone.
 
     Pure and Qt-free, so the choosing is testable without a display.
 
@@ -164,9 +166,13 @@ def profile_for_printers(
     :param fallback: what to answer when no printer is installed. Nothing
         has been chosen, so nothing better than the generic preset is
         available -- and Print is disabled in that state anyway.
+    :param recorded_printer: the printer the open project names
+        (``Project.printer``), or ``None``.
     :returns: the profile to draw against.
     """
-    chosen = select_preselected_printer(list(printer_names), profile_loader)
+    chosen = select_preselected_printer(
+        list(printer_names), profile_loader, recorded_printer
+    )
     if chosen is None:
         return fallback
     return resolve_profile(chosen, profile_loader)
@@ -892,7 +898,11 @@ class MainWindow:
         # it is drawing for. Until this call existed, it never found out.
         self.set_printer_profile(
             self._profile_with_driver_answer(
-                profile_for_printers(self._printers, self.profile_loader)
+                profile_for_printers(
+                    self._printers,
+                    self.profile_loader,
+                    recorded_printer=self.state.project.printer,
+                )
             )
         )
 
@@ -910,7 +920,9 @@ class MainWindow:
         :param profile: the resolved profile.
         :returns: it, or a copy carrying the driver's border.
         """
-        name = select_preselected_printer(self._printers, self.profile_loader)
+        name = select_preselected_printer(
+            self._printers, self.profile_loader, self.state.project.printer
+        )
         if name is None:
             return profile
         try:
@@ -969,6 +981,12 @@ class MainWindow:
         plan = self.preview_view.plan
         self.print_dialog = PrintDialog(
             plan, self.window, printer_names=printers,
+            # `deckle-cli impose --printer` has written this into the
+            # `.deckle` since the beginning -- "printer name to record in
+            # the project" -- and nothing read it. Opening such a project
+            # and pressing Print preselected a different machine, and with
+            # it a different calibration.
+            recorded_printer=self.state.project.printer,
             profile_loader=self.profile_loader,
         )
         self.print_dialog.widget.exec()
