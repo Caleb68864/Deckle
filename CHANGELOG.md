@@ -33,20 +33,36 @@ see the README. The calibration wizard is not built.
 - **Print** — manual-duplex pass splitting, per-printer profiles, reload
   instructions, test-one-sheet, chunked submission, sheet-granular resume,
   and a session log.
-- **CLI** — `impose`, `export`, `info`, `schedule`, `crop-preview` and
-  `dummy`, plus `--version`. Imports only `deckle.core`, so it runs
-  headlessly. `export` additionally takes `--sheets` (a subset, for proofs),
+- **CLI** — installed as `deckle-cli` (`deckle` is the desktop app), or
+  `python -m deckle.cli`. Eight subcommands: `impose`, `export`, `info`,
+  `schedule`, `crop-preview`, `dummy`, `print` and `profile`, plus
+  `--version`. Imports only `deckle.core`, so it runs headlessly.
+  `export` additionally takes `--sheets` (a subset, for proofs),
   `--rule` (a printed ruler to check the printer's scaling), and
   `--pass`/`--profile`/`--back-offset` for manual duplex. Every command
   accepts a saved `.deckle` as its source, whose stored layout wins over any
   layout flag typed beside it.
+- **`print`** — plans a manual-duplex run without submitting anything: the
+  pass order, the reload instruction between them, and optionally one PDF
+  per pass. `--profile` is required, because neither the sheet order nor
+  the half turn has a safe default.
+- **`profile`** — `list`, `show` and `set` for the calibrated printer
+  profiles on this machine. `set` will not overwrite a hand-measured
+  calibration without `--force`.
+- **`--json`** on `info`, `schedule`, `print` and the `profile`
+  subcommands — one JSON document with stable key names instead of prose,
+  with everything else moved to stderr, so a script can read the answer.
+- **`--dry-run`** on `impose` and `export` — says what would be written
+  (destination, paper, sheets, faces, registration) and writes nothing.
+  Every check still runs, so a plan that would fail fails here rather than
+  after the paper has gone through.
 - `run.bat` dev launcher with a `doctor` subcommand.
 - **Signature imposition (experimental)** — `--fold-scheme folio` imposes
   two-up saddle-stitch signatures with fold lines, sewing-station marks and
   per-signature printing. Marked experimental because the page *ordering* is
   hand-written arithmetic whose only real check is folding a physical dummy,
   which has not been done. The default gutter-shift path is unaffected.
-- **Binding schedules** — `deckle schedule`, and Save schedule on the
+- **Binding schedules** — `deckle-cli schedule`, and Save schedule on the
   Signatures tab. A printable work order derived from the imposed plan:
   gathering order per signature, which pages land on each sheet side, where
   padding blanks fall, sewing-station guidance, and a fore-edge creep
@@ -139,7 +155,7 @@ Defects found during development, each with a full write-up in
 - **A saved layout could ask for something this build cannot do, and get
   it.** `binding_edge: "middle"` is outside its declared `Literal` and
   nothing enforced it, so it imposed a book bound on the *right* — the
-  opposite of the default — while `deckle info` reported no warnings.
+  opposite of the default — while `deckle-cli info` reported no warnings.
   `flip_axis: "diagonal"` planned the back pass as though the operator
   flipped about the sheet's horizontal edge, printing every back side
   upside down on any printer that flips about the vertical one.
@@ -182,7 +198,7 @@ Defects found during development, each with a full write-up in
   in-memory bound governs what it hands back, not what a killed process
   leaves behind, and the cleanup function its own docstring told callers
   to use had no callers.
-- `deckle dummy --pages 0` answered a typo with a traceback, wrapping a
+- `deckle-cli dummy --pages 0` answered a typo with a traceback, wrapping a
   message that already said exactly what was wrong.
 - Resuming a print run with a negative sheet count silently reprinted one
   sheet and treated the rest of the pass as finished.
@@ -197,7 +213,7 @@ Defects found during development, each with a full write-up in
   portrait (gutter shift), including for `generic_face_down_reversed`, the
   preset `resolve_profile` falls back to. `plan_passes` now compares the
   two — `flip_axis != duplex_flip_edge(paper)` — and all four combinations
-  are pinned by test, in unit form and end-to-end through `deckle export
+  are pinned by test, in unit form and end-to-end through `deckle-cli export
   --pass back`.
 
 ### Removed

@@ -25,6 +25,7 @@ CORE = os.path.join(ROOT, "deckle", "core")
 GUIDE = os.path.join(ROOT, "docs", "GUIDE.md")
 README = os.path.join(ROOT, "README.md")
 CONTRIBUTING = os.path.join(ROOT, "docs", "CONTRIBUTING.md")
+CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 RUN_BAT = os.path.join(ROOT, "run.bat")
 
 
@@ -110,6 +111,89 @@ def test_the_guide_documents_every_cli_option():
     missing = sorted(flag for flag in options if flag not in section)
 
     assert not missing, f"CLI options absent from GUIDE section 8: {missing}"
+
+
+# -- the changelog is a list of things the code owns too ------------------
+#
+# A third countable inventory, and the one nobody re-reads. The CHANGELOG's
+# CLI entry named six subcommands while the parser had eight -- `print` and
+# `profile` shipped without reaching it -- and spelled the six it did name
+# as `deckle <command>`. `deckle` is the GUI console script; the CLI one is
+# `deckle-cli`. Every such line in the README and the GUIDE was corrected
+# when `[project.scripts]` was added; the CHANGELOG was not, so the file
+# that is supposed to be the record of what changed disagreed with the
+# packaging about what the program is called.
+#
+# Subcommands only, not flags. The GUIDE's section 8 is the reference and
+# is already checked flag by flag; demanding the same of a changelog would
+# turn it into a second reference manual, which is the thing that makes
+# both of them go stale.
+
+
+def _cli_commands() -> set[str]:
+    from deckle.cli import build_parser
+
+    parser = build_parser()
+    commands: set[str] = set()
+    for action in parser._subparsers._group_actions:  # noqa: SLF001
+        commands.update(getattr(action, "choices", {}) or {})
+    assert commands, "build_parser() exposed no subcommands to check against"
+    return commands
+
+
+def test_the_changelog_names_every_cli_command():
+    """A command that shipped without reaching the changelog never shipped,
+    as far as the only file that claims to record what shipped knows."""
+    text = _read(CHANGELOG)
+    missing = sorted(name for name in _cli_commands() if f"`{name}`" not in text)
+
+    assert not missing, f"CLI commands absent from CHANGELOG.md: {missing}"
+
+
+def test_the_changelog_spells_a_command_the_way_it_is_installed():
+    """`deckle info` is not a command anybody can run.
+
+    ``[project.scripts]`` installs ``deckle`` (the GUI, which answers
+    ``--help`` and then opens a window) and ``deckle-cli`` (the headless
+    one). A changelog line reading ``deckle info`` sends the reader to the
+    GUI entry point with a subcommand it has never parsed.
+    """
+    commands = _cli_commands()
+    text = _read(CHANGELOG)
+
+    pattern = r"(?<![\w.\-])deckle\s+(" + "|".join(sorted(commands)) + r")\b"
+    wrong = [
+        f"line {text[: m.start()].count(chr(10)) + 1}: {m.group(0)!r}"
+        for m in re.finditer(pattern, text)
+    ]
+
+    assert not wrong, (
+        "CHANGELOG.md gives the GUI console script a CLI subcommand; the "
+        f"headless one is `deckle-cli`: {wrong}"
+    )
+
+
+def test_the_right_spelling_is_not_flagged_by_that_check():
+    """The control the refusing check needs.
+
+    A pattern that also matched ``deckle-cli export`` or
+    ``python -m deckle.cli export`` would be unsatisfiable -- there would
+    be no way to write the line correctly -- and the test above would be
+    refusing everything rather than the one spelling that is wrong.
+    """
+    commands = _cli_commands()
+    pattern = r"(?<![\w.\-])deckle\s+(" + "|".join(sorted(commands)) + r")\b"
+
+    for accepted in (
+        "`deckle-cli export book.pdf`",
+        "`python -m deckle.cli info book.pdf`",
+        "run `deckle-cli print` to plan a run",
+    ):
+        assert not re.search(pattern, accepted), accepted
+
+    # ...and it does still catch the spelling it is for, so a pattern that
+    # matched nothing at all could not pass this file.
+    assert re.search(pattern, "`deckle export book.pdf`")
 
 
 # -- the documented install can run the documented command ----------------
