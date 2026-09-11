@@ -196,6 +196,127 @@ def test_the_right_spelling_is_not_flagged_by_that_check():
     assert re.search(pattern, "`deckle export book.pdf`")
 
 
+# -- the test count the README publishes ---------------------------------
+#
+# The README said "1,720 passing, 22 skipped at `8e2e8d2`" against a tree
+# collecting 2,340, and justified the number with *"GitHub Actions runs the
+# same command ... so this number is checked rather than remembered"*. That
+# sentence was the worst part: nothing in `tests/` asserted a count, so the
+# claim of a check was itself the stalest thing on the page.
+#
+# What is checked here is deliberately one-directional. Demanding equality
+# would put a README edit on every commit that adds a test, and a guard
+# that fails on almost every commit gets worked around rather than
+# honoured -- unlike the module list and the CLI reference above, which
+# change a few times a year. What matters to a reader is that the number is
+# not INFLATED: a suite that has shrunk under a README still advertising
+# the old size is the claim that misleads. Understating is a snapshot
+# ageing, which the commit named beside it already discloses.
+
+
+def _readme_test_counts() -> tuple[int, int]:
+    """The passing and skipped counts the README publishes.
+
+    :returns: ``(passing, skipped)``.
+    :raises AssertionError: the sentence is not there or does not parse.
+        Refusing rather than returning zeros: a guard that silently found
+        no number would pass forever, which is the failure it replaced.
+    """
+    text = _read(README)
+    match = re.search(
+        r"([\d,]+)\s+passing,\s+([\d,]+)\s+skipped", text
+    )
+    assert match, (
+        "the README no longer states a 'N passing, M skipped' count; this "
+        "guard would otherwise check nothing"
+    )
+    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
+
+
+def _collected_test_count() -> int:
+    """How many tests this suite collects, asked of pytest itself.
+
+    Collection rather than a run: it is a few seconds instead of ninety,
+    and it is the same number on every interpreter in the CI matrix --
+    every ``importorskip`` in this suite is inside a fixture or a test
+    body, so nothing is skipped at collection time and no module
+    contributes a different count on 3.11 than on 3.14.
+
+    :returns: the collected test count.
+    :raises AssertionError: pytest did not report one. A parse that
+        quietly yielded 0 would make the comparison below vacuous.
+    """
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--collect-only",
+         "-p", "no:cacheprovider", ROOT],
+        capture_output=True, text=True, env=env, cwd=ROOT, timeout=600,
+    )
+    match = re.search(r"(\d+)\s+tests? collected", result.stdout)
+    assert match, (
+        "pytest did not report a collected count (exit "
+        f"{result.returncode}):\n{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+    )
+    return int(match.group(1))
+
+
+def test_the_readme_does_not_advertise_more_tests_than_exist():
+    """The direction that misleads a reader.
+
+    A README claiming a suite larger than the one in the repository is a
+    claim about how well the code is guarded, and it is the one a
+    newcomer has no way to check before trusting it.
+    """
+    passing, skipped = _readme_test_counts()
+    collected = _collected_test_count()
+
+    assert passing + skipped <= collected, (
+        f"README advertises {passing} passing + {skipped} skipped = "
+        f"{passing + skipped} tests; the suite collects {collected}"
+    )
+
+
+def test_the_readme_skip_breakdown_adds_up():
+    """The README breaks the skips down by reason. Four numbers that must
+    sum to the fifth -- checkable without running anything, and wrong in
+    exactly the way a hand-maintained tally goes wrong."""
+    _, skipped = _readme_test_counts()
+    text = _read(README)
+
+    reasons = re.search(
+        # \s+ rather than a space: the sentence wraps, so two of the four
+        # counts are separated from their reason by a newline.
+        r"(\w+)\s+of the skips are packaging.*?(\w+)\s+are Windows-only.*?"
+        r"(\w+)\s+are the golden.*?(\w+)\s+needs",
+        text,
+        re.DOTALL,
+    )
+    assert reasons, (
+        "the README's skip breakdown has been reworded; this guard reads "
+        "it by shape and would otherwise check nothing"
+    )
+
+    words = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+        "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+        "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    }
+    counted = 0
+    for group in reasons.groups():
+        key = group.lower()
+        assert key in words or key.isdigit(), f"unreadable skip count {group!r}"
+        counted += words.get(key, 0) or int(group)
+
+    assert counted == skipped, (
+        f"the README's skip breakdown sums to {counted}, but it claims "
+        f"{skipped} skipped"
+    )
+
+
 # -- the documented install can run the documented command ----------------
 #
 # A third countable claim, and the one with the worst first-contact cost.

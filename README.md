@@ -421,15 +421,23 @@ Not released. Expect breaking changes.
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |
 
-The test suite is **1,720 passing, 22 skipped** at `8e2e8d2` — verified by
+The test suite is **2,318 passing, 22 skipped** at `9aa6926` — verified by
 running `python -m pytest -q` at the repository root (on Linux, with
 `QT_QPA_PLATFORM=offscreen`, after `python -m pip install -e ".[dev]"`; see
 [Installing](#installing)). Fourteen of the skips are packaging-audit tests
 that need a built bundle in `dist/`, four are Windows-only path cases, three
 are the golden-fixture comparison whose 30 MB fixture is not committed, and
-one needs `psutil`. GitHub Actions runs the same command on Linux under
-CPython 3.11, 3.12 and 3.14 on every push, so this number is checked rather
-than remembered.
+one needs `psutil`.
+
+Read that as a floor measured at a named commit, not a live figure. GitHub
+Actions runs the same command on Linux under CPython 3.11, 3.12 and 3.14 on
+every push, so what is continuously checked is that the suite is **green** —
+not that the number above is current, and the suite only grows between
+updates. Two things about it *are* enforced, by `tests/test_docs_are_current.py`:
+the paragraph may not advertise more tests than the repository actually
+collects, and the four skip counts must sum to the total. The previous
+version of this paragraph claimed the number itself was "checked rather than
+remembered", which was untrue and left it 598 tests stale.
 
 ---
 
