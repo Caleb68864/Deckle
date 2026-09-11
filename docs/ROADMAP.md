@@ -61,6 +61,53 @@ nothing else. Start at that directory's `index.md`; read its
 >
 > Full findings, including what was checked and found correctly wired, are
 > in `vault/w1-half-wired-findings.md` (gitignored).
+>
+> **W1's Left-open list, cleared 2026-09-11.** Everything W1 found and left
+> is now either fixed or recorded as a decision. Suite on Linux: **2495
+> passed, 22 skipped**, up from 2412.
+>
+> The one on the paper path: **the driver-reported imageable border had the
+> lifetime of a single enumeration for a single printer.** It was resolved
+> once, for whichever printer happened to be preselected, and the Print
+> dialog put the generic preset's flat 18pt back the first time it closed —
+> `selected_profile()` never saw `_imageable_areas`. Both clip warnings are
+> computed from that number, so a printer whose real border is *wider* than
+> 18pt stopped warning about content it was going to cut off. Measured on
+> letter paper, content 25pt in from every edge: no warning against the
+> preset, `clipped_by_imageable_area` against a driver reporting 36/40. Same
+> shape as the page-size mismatch fixed on 2026-09-10 — it does not warn,
+> and the loss shows up on the sheet. The rule now lives in one place
+> (`print_dialog.driver_border`), is keyed by printer name, follows the
+> printer picked in the dialog, and is never written to disk.
+>
+> **`pass_index: 2` in a hand-edited state file froze the window.**
+> `_check_state` bounded `sheet_cursor` from both ends and `pass_index` only
+> from below; past the last pass, `_current_pass()` is `None`,
+> `_submit_chunk()` returns immediately and neither `finished` nor
+> `last_error` is ever set, so `_drive`'s loop never terminates — on the GUI
+> thread, with no cancel. Measured at 200,000 iterations with no state
+> change. The bound is now `plan_passes`' own answer, not the constant 2.
+>
+> Also: the session log records the whole chunk it promised (`copies`,
+> `side`, `rotate_backs` were passed and never written down —
+> `rotate_backs` being the half turn, and the first thing anyone wants for
+> "the backs came out upside down"); `chunk_size` survives a resume instead
+> of being silently reset; `SessionSummary.state_path` is gone; and
+> `FORMAT_VERSION`/`PrinterProfile.version` now **warn rather than refuse**,
+> with the warning reaching the status bar and stderr rather than only a log
+> — the owner's decision, recorded in `docs/decisions.md`, closing the Watch
+> that had stood since 2026-09-09.
+>
+> **And `deckle-cli calibration-sheet` exists** — the printed half of the
+> calibration wizard F2 specifies. It writes a duplex test target, portrait
+> and landscape, whose results grid maps one-to-one onto `flip_axis`,
+> `reverse_stack`, `output_face`, `feed_edge` and the two registration
+> offsets. Nothing in it is imposed: the pages come out in plain sequential
+> order, so what an operator reports is evidence about their printer rather
+> than a check of Deckle against itself. A ready-made pair is committed at
+> `docs/calibration/`. This is what the flip-edge physical premise
+> (`core/printing.py:10-19`, resting on a vault note in no file here) can
+> finally be tested against.
 
 Each item carries an ID so it can be referred to in that conversation.
 Sizes: **S** under a day, **M** a few days, **L** a week or more, or gated on
@@ -179,7 +226,7 @@ most of the HIGH bugs above are direct consequences of the first two.
 | ID | Feature | Promised in | What exists | Size |
 |---|---|---|---|---|
 | **F1** ◐ | **Picker done 2026-09-08 (B16); the editor is not.** Choosing between the presets and having the choice persist now works — `PrinterProfile.save` has its first caller in `deckle/`, guarded so it declines rather than overwriting a hand-measured calibration. Setting back offset X/Y and imageable area by hand is still unbuilt, and is the rest of this item. Original finding: **Printer profile picker + editor in the app.** Choose between the two built-in presets, set back offset X/Y and imageable area, save under the printer's name. Nothing in `deckle/` ever calls `PrinterProfile.save`; the only writer of a profile today is a human with a text editor. This is most of the calibration wizard's *value* at a fraction of its cost, and it fixes B16, B21 and makes F3 usable. | GUIDE §6, README status table | Model + save/load complete | S |
-| **F2** | **Calibration wizard** (MVP sub-spec 13). The spec itself says: enumerate the 16-state space in a spike first, stop and escalate if it needs more than 5 questions. | README, CHANGELOG, GUIDE §6, hardening plan WS3 | Nothing beyond F1's model | L |
+| **F2** ◐ | **Half landed 2026-09-11: the printed half.** `deckle-cli calibration-sheet -o cal.pdf` writes the duplex target — portrait and landscape, four sheets, eight faces — whose results grid maps one-to-one onto `flip_axis`, `reverse_stack`, `output_face`, `feed_edge` and the two registration offsets. A committed pair sits at `docs/calibration/`. **It is deliberately not produced by `plan_passes`**: pages come out in plain sequential order, so the operator's report is evidence about their printer rather than a statement that Deckle agrees with itself, and a structural test keeps it that way. **Still missing is the wizard**: nothing in the app walks the operator through the print, asks the questions, or writes the profile — so the 16-state spike the spec asks for is still the next step, and it is now a spike over *observations someone can actually make* rather than over guesses. Original: **Calibration wizard** (MVP sub-spec 13). The spec itself says: enumerate the 16-state space in a spike first, stop and escalate if it needs more than 5 questions. | README, CHANGELOG, GUIDE §6, hardening plan WS3 | Nothing beyond F1's model | L → M |
 | **F3** | **Registration target you read numbers off** (competitive gaps #1, "build it with the wizard"). Today: `--rule` and three rounds of trial and error. | README, GUIDE §6 | `--back-offset`, `--rule` | M |
 | **F4** | **Fold the folio dummy on paper** and record it. Gates F7, F8 and formal removal of "experimental". Cheap version is GUIDE §5 "Check 1" (the roadmap said README "Check 0"; it is in neither place under that name — corrected 2026-09-09 with D11); formal version (signatures v2 sub-spec 13) wants a calibrated profile first. | README, GUIDE §5, v2 index | `deckle dummy`, `fold_reading_order` | S effort, hardware |
 | **F5** | **CLI parity for margins**: `--margin-top/bottom/outer`, `--slack-to`, `--start-on-verso`, `--landscape-policy`. GUIDE §8 calls this "a genuine gap". `deckle impose` always writes zero-margin projects. | GUIDE §3, §8 | All are `LayoutSettings` fields | S |
@@ -200,7 +247,7 @@ duplexer-less printer.
 | ID | Feature | Why | Size |
 |---|---|---|---|
 | **N1** ✅ | **Done 2026-09-09.** Autosave keyed on the sorted (abs path, sha256) pairs, under `data_dir("autosave")`, newest ten kept. Offered back only to a fresh window; declining deletes nothing. Original: **Autosave for never-saved projects** under `data_dir()`, keyed by source hash. The recovery design table calls the unsaved case "silent"; with B9 it is the same hole twice. | Import + arrange 200 pages + crash before first Save = total loss | S-M |
-| **N2** ⏸ | **Still open, and the row below is wrong — do not follow it.** It and the SS-08 spike both say to read `fullRectPixels()` minus `paintRectPixels()` in StandardMode. Measured offscreen with no printer: a flat 10.02pt on every edge, identical for A4, Letter and a custom 200x300pt page, while `minimumMargins()` reports zero. That 10.02pt is **Qt's default page margin** — `setMargins(0,0,0,0)` takes it to zero, so it is a preference, not a limit. Following the spec would have drawn a confident red line 0.139in inside the paper on behalf of a driver never consulted, indistinguishable from a measured calibration; since B6 that line is the only thing between a binder and clipped content. `app/printer_capabilities.py` now queries `minimumMargins()` instead, with an injectable factory, and **never overrules a saved calibration or persists anything**. Unverifiable here: this machine has no printer, so `query_imageable_area_pt` returns `None` for every name and `test_this_machine_has_no_printer_to_ask` asserts that emptiness — attach a printer and it fails with the acceptance procedure in the message. Original: **Pre-fill imageable area from the driver.** Closes B15 properly. Sharper than the first draft said: the spike measured the paint rectangle *under full-page mode*, where it equals the full sheet and carries no inset. The margins exist only in the driver's standard mode, which the print backend deliberately leaves, so this needs its own `QPrinter` that is never put in full-page mode. | The red guide becomes true | S-M |
+| **N2** ⏸ | **Still open, and the row below is wrong — do not follow it.** It and the SS-08 spike both say to read `fullRectPixels()` minus `paintRectPixels()` in StandardMode. Measured offscreen with no printer: a flat 10.02pt on every edge, identical for A4, Letter and a custom 200x300pt page, while `minimumMargins()` reports zero. That 10.02pt is **Qt's default page margin** — `setMargins(0,0,0,0)` takes it to zero, so it is a preference, not a limit. Following the spec would have drawn a confident red line 0.139in inside the paper on behalf of a driver never consulted, indistinguishable from a measured calibration; since B6 that line is the only thing between a binder and clipped content. `app/printer_capabilities.py` now queries `minimumMargins()` instead, with an injectable factory, and **never overrules a saved calibration or persists anything**. Unverifiable here: this machine has no printer, so `query_imageable_area_pt` returns `None` for every name and `test_this_machine_has_no_printer_to_ask` asserts that emptiness — attach a printer and it fails with the acceptance procedure in the message. **Updated 2026-09-11: the answer now has the lifetime of a printer, not of one enumeration.** It was resolved once for the preselected printer and replaced by the preset's 18pt the first time the Print dialog closed, so on a machine that *does* have a printer the red guide reverted to the generic border after the first print — and both clip warnings with it. The rule lives in `print_dialog.driver_border`, is looked up by printer name on every profile resolution, follows the printer chosen in the dialog, and is still never persisted. Original: **Pre-fill imageable area from the driver.** Closes B15 properly. Sharper than the first draft said: the spike measured the paint rectangle *under full-page mode*, where it equals the full sheet and carries no inset. The margins exist only in the driver's standard mode, which the print backend deliberately leaves, so this needs its own `QPrinter` that is never put in full-page mode. | The red guide becomes true | S-M |
 | **N3** ✅ | **Done 2026-09-09.** A proof is deliberately **not** a `PrintSession` — no resumable run left on disk for the next dialog to offer to finish. Original: **Proof sheet with ruler** from the print dialog (`--sheets 0 --rule` is CLI-only). One checkbox. | The only actual-size check | S |
 | **N4** ✅ | **Done 2026-09-09.** `pass_export` is shared by `--pass` and the app, replacing the CLI's private `_pass_for`. Original: **Export a single pass PDF** from the GUI (`--pass front/back`) for people who print at a shop or on a second machine. | | S |
 | **N5** ✅ | **Done 2026-09-09.** `sewing_station_positions_pt` wins over the count; a position outside the sheet is refused; the schedule says "measured up from the TAIL". No `.deckle` migration — the int stays the default, with a test that hand-edits the field out of a saved project to prove it still opens. Original: **Sewing-station positions, not just a count.** Tapes need pairs at tape width; kettle stitches sit at fixed insets; long-stitch wants a pattern. `--stations 0.5in,2in,2.25in,...`. | Physical need the int cannot express | S |

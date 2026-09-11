@@ -23,12 +23,13 @@ from __future__ import annotations
 import contextlib
 import json
 import sys
+import warnings
 from typing import Sequence
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import RULE_TOO_NARROW_NOTE, proof_rule_advice
 from deckle.core.outputs import describe_write_failure, output_path_problem
-from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
+from deckle.core.profiles import BUILTIN_PRESETS, NewerProfileAdvisory, PrinterProfile
 
 
 
@@ -133,7 +134,16 @@ def _resolve_profile_origin(name: str):
     stand-in for a measurement nobody has made yet.
     """
     try:
-        return (PrinterProfile.load(name), "saved")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            profile = PrinterProfile.load(name)
+        # Rendered here rather than left to Python's default filter, which
+        # prints a bare warning naming a line inside Deckle -- nothing the
+        # user can act on, about the most expensive data the program holds.
+        for warning in caught:
+            if issubclass(warning.category, NewerProfileAdvisory):
+                print(f"note: {warning.message}", file=sys.stderr)
+        return (profile, "saved")
     except (OSError, ValueError, KeyError, TypeError):
         # No saved profile, or one that cannot be read. Either way the
         # built-ins are the next place to look, and a corrupt saved file
@@ -144,8 +154,9 @@ def _resolve_profile_origin(name: str):
         return (preset, "builtin")
     print(
         f"error: no printer profile {name!r}. Built-in profiles: "
-        f"{', '.join(sorted(BUILTIN_PRESETS))}. Calibrate a printer in the "
-        "desktop app to save one under its own name.",
+        f"{', '.join(sorted(BUILTIN_PRESETS))}. To measure your own, run "
+        "`deckle-cli calibration-sheet -o cal.pdf`, print it, and record "
+        "what you see with `deckle-cli profile set`.",
         file=sys.stderr,
     )
     return None

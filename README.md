@@ -424,8 +424,8 @@ Not released. Expect breaking changes.
 | **Folio / saddle stitch** | **Experimental.** Geometry verified, ordering unverified on paper. [See above](#signatures--folio-saddle-stitch-experimental). |
 | **Manual-duplex printing** | Works, on built-in printer presets. |
 | **Binding schedules** | Works. |
-| **Calibration wizard** | **Not built.** Printing uses two generic built-in presets rather than a profile measured from your own printer. You can now *choose* between them — the Print dialog's **Paper** picker describes each by how the sheets come out, remembers the choice per printer, and a hand-written calibration outranks both — but nothing measures your printer for you yet. |
-| **Front/back registration offset** | **Works, measured by hand.** Two numbers on the printer profile shift every back face so it lands behind its front — `--back-offset`, or `back_offset_x_pt`/`back_offset_y_pt` in the profile. Applied by both the CLI and the desktop print path. No other tool has this, because every other tool ends at a PDF and cannot know what your printer does to the second side. Corrects a **constant** offset only, not skew or scale. Finding your two numbers is currently trial-and-error against a printed proof; the calibration wizard is what will measure them in one pass. |
+| **Calibration wizard** | **Half built — the printed half.** `deckle-cli calibration-sheet -o cal.pdf` writes a duplex test sheet, portrait and landscape, whose grid maps one-to-one onto the profile fields; a ready-made pair is committed at `docs/calibration/`. Print it, read it, and `profile set` the answers. What is still missing is the *wizard*: nothing walks you through it in the app or writes the profile for you. The Print dialog's **Paper** picker still lets you choose between the two generic presets, remembers the choice per printer, and a hand-written calibration outranks both. |
+| **Front/back registration offset** | **Works, measured by hand.** Two numbers on the printer profile shift every back face so it lands behind its front — `--back-offset`, or `back_offset_x_pt`/`back_offset_y_pt` in the profile. Applied by both the CLI and the desktop print path. No other tool has this, because every other tool ends at a PDF and cannot know what your printer does to the second side. Corrects a **constant** offset only, not skew or scale. Finding your two numbers no longer needs trial and error: the calibration sheet puts a 1 mm-ticked crosshair at the exact centre of every face, so holding one finished sheet to a bright light reads the offset straight off the paper. |
 | **Cut lines** | **Works.** `--trim 0.25in` draws the trim depth on head, tail and fore-edge — where the plough goes after sewing, and whether any text is inside it. The spine is never cut, and the fore-edge alternates with the gutter. |
 | **Source cropping** | **Works, in the app and on the command line.** `--crop L,B,R,T` removes space the source already has, with `--crop-even` for a scan whose gutter alternates, and `--auto-crop` to measure it from where the ink actually is. The insets are measured against the page **as displayed**, so a scan a viewer has straightened — one carrying a `/Rotate` flag — crops on the edges you can see rather than the ones the file stores. Every other setting adds space; this is the only one that takes it away, and it is what keeps type readable at a small trim size. |
 | **Crop overlay** | **Works, as a picture rather than in the app.** `deckle-cli crop-preview` superimposes every page and draws the proposed crop on it, so an outlier that would be clipped is visible before you commit. No interactive in-app editor. |
@@ -469,8 +469,8 @@ app layer stays replaceable.
 deckle/core/    models, loader, layout, signatures, marks, export, render,
                 pdfium_lock, plan_digest, schedule, project_io, defaults,
                 outputs, printing, profiles, print_session, paper, paths,
-                locate, schema, recent, dummy, about, report, session_log,
-                diagnostics
+                locate, schema, recent, dummy, calibration_sheet, about,
+                report, session_log, diagnostics
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli/     headless entry point, imports only deckle.core
 ```

@@ -87,6 +87,11 @@ UNDRIVEABLE = [
     pytest.param({"sheet_cursor": -5}, id="cursor-before-the-start"),
     pytest.param({"sheet_cursor": 99}, id="cursor-past-the-end"),
     pytest.param({"pass_index": -1}, id="negative-pass"),
+    # Bounded from above as well, since 2026-09-11. This is the one on
+    # this list that does not merely feed the wrong paper -- it hangs the
+    # program. See `test_a_pass_past_the_end_is_refused_because_it_hangs`.
+    pytest.param({"pass_index": 2}, id="one-pass-past-the-end"),
+    pytest.param({"pass_index": 99}, id="a-pass-nothing-could-have"),
     pytest.param({"copies": -3}, id="negative-copies"),
     pytest.param({"copies": 0}, id="no-copies"),
     pytest.param({"dpi": "high"}, id="dpi-is-text"),
@@ -208,3 +213,146 @@ def test_a_count_beyond_the_pass_advances_rather_than_slicing(saved):
     session.resume(99)
 
     assert session is not None
+
+
+# -- the bound that stops the program hanging ----------------------------
+
+
+def test_a_pass_past_the_end_is_refused_because_it_hangs(saved):
+    """``pass_index`` was bounded from below only, and the missing upper
+    bound is not a wrong-paper defect -- it is a **frozen window**.
+
+    With ``pass_index`` past the last pass: ``_current_pass()`` returns
+    ``None``, ``_submit_chunk()`` returns immediately on ``None``, and
+    neither ``finished`` nor ``last_error`` is ever set. So
+    ``PrintDialog._drive``'s ``while not session.finished and
+    session.last_error is None: session.advance()`` never terminates --
+    on the GUI thread, with no cancel, and no amount of waiting helps.
+    Measured before the fix at 200,000 iterations with no state change.
+
+    Reachable only from a foreign state file, which is exactly the class
+    this guard exists for.
+    """
+    with pytest.raises(StaleSessionError) as caught:
+        saved(pass_index=2)
+
+    assert caught.value.reason == "state"
+    assert "2" in caught.value.detail
+
+
+def test_the_bound_is_the_pass_count_and_not_the_number_two(saved):
+    """The message quotes ``plan_passes``' answer rather than a constant
+    kept in ``_check_state``. A second copy of the pass count would go
+    wrong quietly in whichever direction hurts more."""
+    with pytest.raises(StaleSessionError) as caught:
+        saved(pass_index=99)
+
+    assert "2 pass(es)" in caught.value.detail
+
+
+def test_the_last_real_pass_still_loads(saved):
+    """The upper bound is exclusive, and off-by-one here would refuse every
+    resume of a back pass -- which is most of them, since the back pass is
+    the one an operator walks away from."""
+    session = saved(pass_index=1)
+
+    assert session.state["pass_index"] == 1
+
+
+class _Spun(RuntimeError):
+    """``_drive`` made no progress for long enough to call it forever."""
+
+
+class _Bounded:
+    """A session that refuses to be advanced pointlessly.
+
+    Wraps a real ``PrintSession`` and counts consecutive ``advance()``
+    calls that change nothing observable. Past the limit it raises, which
+    is what turns "the suite hangs and reports nothing" into "one test
+    fails with a number in it".
+
+    The limit is deliberately small. The real loop does not slow down or
+    give up, so any number at all proves the same thing, and a large one
+    only makes a red test slower.
+    """
+
+    LIMIT = 50
+
+    def __init__(self, inner):
+        self._inner = inner
+        self._idle = 0
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def advance(self):
+        before = (self._inner.state, self._inner.finished, self._inner.last_error)
+        self._inner.advance()
+        after = (self._inner.state, self._inner.finished, self._inner.last_error)
+        self._idle = 0 if after != before else self._idle + 1
+        if self._idle > self.LIMIT:
+            raise _Spun(
+                f"{self.LIMIT} consecutive advances changed nothing -- "
+                "_drive spins here forever, on the GUI thread, with the "
+                "window unresponsive and no way to cancel"
+            )
+
+
+def _real_dialog(plan):
+    """A real ``PrintDialog``, so ``_drive`` is the real method.
+
+    Re-implementing the loop in the test would be the B36 shape this
+    project has already been bitten by: a double that faithfully
+    reproduces the gap in the seam it stands in for.
+    """
+    pytest.importorskip("PySide6")
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from deckle.app.views.print_dialog import PrintDialog
+
+    return PrintDialog(
+        plan,
+        printer_names=["Test Printer"],
+        profile_loader=lambda name: BUILTIN_PRESETS["generic_face_down_reversed"],
+        resumable_lister=lambda: [],
+        confirm_reload=lambda instruction: None,
+        confirm_test_sheet=lambda: True,
+        show_offline_error=lambda printer, error: None,
+    )
+
+
+@pytest.mark.parametrize("pass_index", [0, 1, 2, 3, 99])
+def test_no_state_file_that_loads_can_hang_the_print_dialog(saved, pass_index):
+    """The property the upper bound exists to protect, stated as a
+    property rather than as one example.
+
+    For **every** ``pass_index`` a state file might carry: either ``load``
+    refuses it, or the real ``PrintDialog._drive`` terminates against it.
+    What must not happen -- and what did happen for anything past the last
+    pass -- is that it loads *and* spins.
+
+    Driven through the real ``_drive``, bounded by :class:`_Bounded` so a
+    regression fails this test in about a second instead of wedging the
+    suite forever.
+    """
+    try:
+        session = saved(pass_index=pass_index)
+    except StaleSessionError:
+        return  # refused: it never reaches _drive at all
+
+    dialog = _real_dialog(session.plan)
+
+    try:
+        dialog._drive(_Bounded(session))
+    except _Spun as spun:
+        pytest.fail(
+            f"a state file with pass_index={pass_index} loaded and then "
+            f"hung the dialog: {spun}"
+        )
+
+    assert session.finished or session.last_error is not None, (
+        "_drive returned with the job neither finished nor failed"
+    )

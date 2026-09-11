@@ -47,7 +47,6 @@ def _summary(session_id: str, printer: str, started_at: float,
         started_at=started_at,
         pass_index=pass_index,
         sheet_cursor=sheet_cursor,
-        state_path=f"/tmp/{session_id}.json",
     )
 
 

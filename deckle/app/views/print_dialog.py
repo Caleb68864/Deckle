@@ -20,8 +20,9 @@ and the person at the printer can. The wording is shared on purpose.
 from __future__ import annotations
 
 import time
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
+from deckle.app.printer_capabilities import profile_with_driver_margins
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import proof_rule_advice
 from deckle.core.models import SheetPlan
@@ -334,10 +335,49 @@ def profile_choices(
     return choices, 0
 
 
+def driver_border(
+    profile: PrinterProfile,
+    printer_name: str,
+    is_calibrated: bool,
+    imageable_areas: Mapping[str, tuple[float, float, float, float]] | None,
+) -> PrinterProfile:
+    """``profile`` with ``printer_name``'s driver-reported border filled in.
+
+    **The one place the substitution rule lives.** Both clip warnings, the
+    preview's red guide and "Use printer margins" are computed from
+    ``imageable_area_pt``, and until this function existed the rule was
+    written out twice -- once in ``MainWindow`` for the preview and not at
+    all for the dialog, so the dialog silently put the generic preset back
+    the first time it closed.
+
+    A driver's answer is a fact about a *queue*, not about a document or a
+    dialog. It is looked up by printer name every time a profile is
+    resolved, so it follows the printer the user picks rather than being
+    resolved once for whichever printer happened to be preselected.
+
+    **A saved calibration is never overwritten.** It exists because
+    somebody printed a target and measured it with a ruler; the driver's
+    number has been checked against nothing. Where the two disagree the
+    ruler is right.
+
+    :param profile: the resolved profile.
+    :param printer_name: the printer it was resolved for.
+    :param is_calibrated: whether ``profile`` is that printer's saved
+        calibration rather than a generic preset standing in for one.
+    :param imageable_areas: what each driver said, by printer name, or
+        ``None`` when nobody asked.
+    :returns: ``profile``, or a copy carrying the driver's border.
+    """
+    if is_calibrated or not imageable_areas:
+        return profile
+    return profile_with_driver_margins(profile, imageable_areas.get(printer_name))
+
+
 def resolve_profile(
     printer_name: str,
     profile_loader: Callable[[str], PrinterProfile] = PrinterProfile.load,
     builtin_presets: dict[str, PrinterProfile] | None = None,
+    imageable_areas: Mapping[str, tuple[float, float, float, float]] | None = None,
 ) -> PrinterProfile:
     """A profile for ``printer_name``: saved, else a builtin default.
 
@@ -348,9 +388,13 @@ def resolve_profile(
     :param profile_loader: how to load a saved profile.
     :param builtin_presets: the fallback presets, or ``None`` for
         ``BUILTIN_PRESETS``.
-    :returns: the saved profile, else the first builtin preset. Never
-        raises for a missing profile -- a printer with no calibration is
-        the normal case, not an error.
+    :param imageable_areas: what each driver said its non-printable border
+        is, by printer name. Consulted only on the uncalibrated branch --
+        see :func:`driver_border`.
+    :returns: the saved profile, else the first builtin preset with the
+        driver's border filled in where there is one. Never raises for a
+        missing profile -- a printer with no calibration is the normal
+        case, not an error.
     """
     try:
         return profile_loader(printer_name)
@@ -366,7 +410,8 @@ def resolve_profile(
         # impossible to open.
         pass
     presets = builtin_presets if builtin_presets is not None else BUILTIN_PRESETS
-    return next(iter(presets.values()))
+    preset = next(iter(presets.values()))
+    return driver_border(preset, printer_name, False, imageable_areas)
 
 
 # -- Qt wiring ---------------------------------------------------------
@@ -454,6 +499,7 @@ class PrintDialog:
         recorded_printer: str | None = None,
         profile_loader: Callable[[str], PrinterProfile] = PrinterProfile.load,
         builtin_presets: dict[str, PrinterProfile] | None = None,
+        imageable_areas: Mapping[str, tuple[float, float, float, float]] | None = None,
         session_cls: type = PrintSession,
         backend_cls=None,
         resumable_lister: Callable[[], list[SessionSummary]] | None = None,
@@ -472,6 +518,11 @@ class PrintDialog:
         self.plan = plan
         self._profile_loader = profile_loader
         self._builtin_presets = builtin_presets
+        # What each driver said its non-printable border is, by printer
+        # name, from the window's one enumeration. Read on every profile
+        # resolution rather than folded in once, so the border follows the
+        # printer the user picks in the combo above.
+        self._imageable_areas = dict(imageable_areas or {})
         self._session_cls = session_cls
         self._backend_cls = backend_cls
         self._session: PrintSession | None = None
@@ -582,7 +633,12 @@ class PrintDialog:
     # -- printer / profile helpers ------------------------------------------
 
     def _resolve_profile(self, printer_name: str) -> PrinterProfile:
-        return resolve_profile(printer_name, self._profile_loader, self._builtin_presets)
+        return resolve_profile(
+            printer_name,
+            self._profile_loader,
+            self._builtin_presets,
+            self._imageable_areas,
+        )
 
     def _sync_profile_choices(self, printer_name: str) -> None:
         """Refill the profile combo for ``printer_name``.
@@ -611,14 +667,21 @@ class PrintDialog:
         so the pure path (and any caller constructing the dialog headlessly)
         behaves as it always did.
 
+        The combo's own entries are kept **unsubstituted** -- a driver's
+        number is not a calibration and must never be what
+        :meth:`_remember_profile_choice` writes to disk. The border is
+        filled in here, on the way out, for this printer.
+
         :param printer_name: the printer being printed to.
         :returns: the profile to print with.
         """
         data = self.profile_combo.currentData()
         if data is None:
             return self._resolve_profile(printer_name)
-        profile, _is_saved = data
-        return profile
+        profile, is_saved = data
+        return driver_border(
+            profile, printer_name, is_saved, self._imageable_areas
+        )
 
     def selected_profile(self) -> PrinterProfile:
         """The profile the dialog is currently set to print with.
@@ -628,6 +691,13 @@ class PrintDialog:
         margins" are all this same profile, and the dialog is where a user
         picks one (B16). Reading it back is how that choice reaches the
         rest of the app instead of ending when the dialog closes.
+
+        It carries the driver's border for the selected printer when that
+        printer has no calibration. Without that, closing the dialog once
+        put the generic preset's flat 18pt back over a border the driver
+        had already reported -- and since both clip warnings are computed
+        from this number, a printer whose real border is *wider* than 18pt
+        then stopped warning about content it was going to cut off.
 
         :returns: the profile, never raising -- an unreadable calibration
             degrades to a preset, as everywhere else.

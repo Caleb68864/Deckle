@@ -110,7 +110,13 @@ def test_failed_chunk_cancels_remaining_chunks_of_the_pass():
 def test_submit_logs_one_record_before_returning(monkeypatch):
     logged = []
 
-    def _fake_log(printer, profile, sheets, dpi, pass_index):
+    # `**kwargs`, not the five positionals this used to name. A double
+    # narrower than the function it stands in for is the B36 shape: when
+    # `log_print_job` gained `copies`, `side` and `rotate_backs` -- the
+    # parameters its own module docstring had been promising all along --
+    # this signature is what would have hidden it, by failing for the
+    # wrong reason or, worse, by silently never being widened.
+    def _fake_log(printer, profile, sheets, dpi, pass_index, **kwargs):
         logged.append((printer, profile, list(sheets), dpi, pass_index))
 
     monkeypatch.setattr(backend_mod, "log_print_job", _fake_log)
@@ -134,7 +140,9 @@ def test_submit_pass_calls_log_once_per_chunk(monkeypatch):
     monkeypatch.setattr(
         backend_mod,
         "log_print_job",
-        lambda printer, profile, sheets, dpi, pass_index: logged.append(list(sheets)),
+        lambda printer, profile, sheets, dpi, pass_index, **kwargs: logged.append(
+            list(sheets)
+        ),
     )
 
     backend = _RecordingBackend(_profile(), chunk_size=10)

@@ -143,7 +143,7 @@ def test_a_working_log_still_records_and_reports_success(backend, monkeypatch):
     recorded: list[tuple] = []
     monkeypatch.setattr(
         backend_mod, "log_print_job",
-        lambda printer, profile, sheets, dpi, pass_index:
+        lambda printer, profile, sheets, dpi, pass_index, **kwargs:
             recorded.append((printer, list(sheets), dpi, pass_index)),
     )
 
@@ -193,7 +193,7 @@ def test_a_chunk_reaches_the_session_log_once(backend, monkeypatch):
     """
     recorded: list[tuple] = []
 
-    def record(printer, profile, sheets, dpi, pass_index):
+    def record(printer, profile, sheets, dpi, pass_index, **kwargs):
         recorded.append((printer, tuple(sheets), pass_index))
 
     # Both namespaces, deliberately. `log_print_job` is imported *into* each
@@ -508,7 +508,7 @@ def test_the_resume_prompt_says_what_the_number_it_shows_means(backend, failing_
     text = resume_count_prompt(
         SessionSummary(
             session_id="abc", printer_name="P", started_at=0.0,
-            pass_index=1, sheet_cursor=7, state_path="/tmp/abc.json",
+            pass_index=1, sheet_cursor=7,
         )
     )
 

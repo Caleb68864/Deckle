@@ -360,7 +360,6 @@ class _FakeWindow:
     _set_gated_actions = app_main.MainWindow._set_gated_actions
     _refresh_status_message = app_main.MainWindow._refresh_status_message
     set_printer_profile = app_main.MainWindow.set_printer_profile
-    _profile_with_driver_answer = app_main.MainWindow._profile_with_driver_answer
 
 
 def test_zero_printers_disables_print_but_leaves_save_pdf_alone():

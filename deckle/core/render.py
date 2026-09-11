@@ -385,7 +385,7 @@ def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]
     if bbox_px is None:
         result = (0.0, 0.0, 0.0, 0.0)
     else:
-        result = _scale_bbox_to_points(bbox_px, pil_image.size, ref, dpi)
+        result = _scale_bbox_to_points(bbox_px, pil_image.size, ref)
 
     with _ink_bbox_cache_lock:
         _ink_bbox_cache[ref] = result
@@ -399,8 +399,24 @@ def _scale_bbox_to_points(
     bbox_px: tuple[int, int, int, int],
     image_size: tuple[int, int],
     ref: SourceRef,
-    dpi: int,
 ) -> tuple[float, float, float, float]:
+    """A pixel bounding box in the source page's own points.
+
+    **There is deliberately no ``dpi`` parameter.** There used to be one
+    and nothing read it, which is easy to misread as an oversight: the
+    scale comes from ``ref.width_pt / img_w``, the ratio of the page's
+    real size to the size it actually rasterised to. That ratio already
+    *is* the resolution, measured rather than asserted, so a ``dpi``
+    argument could only ever agree with it or be wrong -- and if the
+    rasteriser clamped or rounded the size it was asked for, the argument
+    would be the wrong one of the two.
+
+    :param bbox_px: ``(left, top, right, bottom)`` in image pixels, with
+        the image's top-left origin.
+    :param image_size: the rasterised image's ``(width, height)``.
+    :param ref: the source page, for its upright size in points.
+    :returns: ``(x0, y0, x1, y1)`` in PDF points, bottom-left origin.
+    """
     left_px, top_px, right_px, bottom_px = bbox_px
     img_w, img_h = image_size
     scale_x = ref.width_pt / img_w if img_w else 0.0

@@ -439,6 +439,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--dpi", type=int, default=72,
         help="rasterisation resolution (default: 72)",
     )
+    preview_parser.add_argument(
+        # `crop-preview` is where a person looks at an ink measurement
+        # before committing to it, and `--pages` is precisely the flag
+        # that keeps a scanner target out of that measurement -- so the
+        # one command whose whole job is checking the crop was the one
+        # that could not exclude the page that spoils it.
+        "--pages", dest="page_selection",
+        type=values._parse_page_selection, default=None, metavar="SPEC",
+        help=(
+            "composite only these pages of the source, counting from 1 as "
+            "your PDF viewer does -- e.g. 7-312,400. Applied before "
+            "--auto-crop, so a scanner target's calibration bar cannot "
+            "widen the measured ink extent of the book you are cropping"
+        ),
+    )
     preview_parser.set_defaults(
         func=commands._cmd_crop_preview, _subparser=preview_parser,
     )
@@ -463,6 +478,46 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dummy_parser.set_defaults(
         func=commands._cmd_dummy, _subparser=dummy_parser,
+    )
+
+    calibration_parser = subparsers.add_parser(
+        "calibration-sheet",
+        help=(
+            "write the duplex calibration sheet to print, so a profile can "
+            "be measured instead of guessed"
+        ),
+    )
+    _add_output_arg(
+        calibration_parser, required=True,
+        help_text=(
+            "base path to write -- cal.pdf becomes cal.portrait.pdf and "
+            "cal.landscape.pdf"
+        ),
+    )
+    calibration_parser.add_argument(
+        "--orientation", choices=("portrait", "landscape", "both"), default="both",
+        help=(
+            "which orientations to write (default: both). The flip rule "
+            "inverts between them, so one answers only half the question"
+        ),
+    )
+    calibration_parser.add_argument(
+        "--paper", type=values._parse_paper, default=values.LETTER_PT, metavar="WxH",
+        help="paper size, given upright (default: letter)",
+    )
+    calibration_parser.add_argument(
+        # Spelled out rather than imported: `deckle.core.calibration_sheet`
+        # pulls in pikepdf, and this module is built on every CLI
+        # invocation including `--help`. `tests/test_calibration_sheet.py`
+        # holds the two numbers together.
+        "--sheets", type=int, default=4,
+        help=(
+            "how many sheets to test (default: 4, giving eight faces). Two "
+            "cannot tell a reversed stack from a preserved one"
+        ),
+    )
+    calibration_parser.set_defaults(
+        func=commands._cmd_calibration_sheet, _subparser=calibration_parser,
     )
 
     print_parser = subparsers.add_parser(

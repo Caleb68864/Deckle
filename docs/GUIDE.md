@@ -402,9 +402,24 @@ it quiet.
 Declining deletes the autosave. That is deliberate: leaving it would bring the
 prompt back on every subsequent open of the same project.
 
-A project that has never been saved has nowhere to autosave *to*, so this
-protects a job you have named and not the one you started ten minutes ago.
-Save early.
+**A project you have never saved is covered too.** It has no `.deckle` to sit
+beside, so its autosave goes into Deckle's own data directory instead, keyed
+by the sources you imported. Open Deckle after a crash and it offers those
+back, newest first, naming what each one holds.
+
+Two differences from the autosave beside a named project, both because that
+file is the *only* copy of the work:
+
+- **Declining deletes nothing.** A mis-click must not be destructive when
+  there is nothing else to fall back on. The list is kept from growing by age
+  and count instead — the ten newest, and nothing older than thirty days.
+- **A source that has moved does not block the recovery.** It is loaded
+  without re-checking the source hashes, because a moved source is exactly
+  when this matters most. Thumbnails degrade to placeholders and you can point
+  the import view at the file again.
+
+Saving still earns you the first kind, which is tied to a file you chose and
+can copy. But an unnamed job is not unprotected.
 
 ---
 
@@ -632,9 +647,41 @@ Deckle turns that into a sentence before you touch the stack — for example:
 before reloading, flip each sheet on its long edge, face down, and print pass
 2 (backs)."*
 
-**The calibration wizard is not built.** Until it is, Deckle uses two built-in
-generic presets covering the two common reload behaviours: a face-down printer
-whose stack comes out reversed, and a face-up printer that keeps its order.
+**The calibration wizard is not built — but its printed half is.** Until it
+is, Deckle uses two built-in generic presets covering the two common reload
+behaviours: a face-down printer whose stack comes out reversed, and a face-up
+printer that keeps its order.
+
+### Measuring your printer instead of guessing it
+
+```bash
+python -m deckle.cli calibration-sheet -o cal.pdf
+```
+
+That writes `cal.portrait.pdf` and `cal.landscape.pdf`. Page 1 of each tells
+you what to do and carries the grid to fill in; the remaining eight pages are
+four sheets, front and back, each with a large number, the word FRONT or BACK,
+a solid band along one named edge, and a big up-pointing triangle you can read
+across a room.
+
+Print the front pages, turn the stack over the way you normally would, print
+the back pages, and look at what came out. The grid's answers map one-to-one
+onto `output_face`, `feed_edge`, `reverse_stack`, `flip_axis` and the two
+registration offsets, so you can go straight to `deckle-cli profile set`.
+
+Two things about it are deliberate and worth knowing:
+
+- **Nothing in those files is imposed.** The pages come out in plain
+  sequential order. If the sheet were laid out by the same pass planner it is
+  used to check, your report would only tell us that Deckle agrees with
+  itself.
+- **Do both orientations.** The flip rule *inverts* between them — a portrait
+  sheet's vertical edge is its long one, a landscape sheet's is its short one
+  — so one file answers half the question and invites you to get the other
+  half backwards.
+
+A ready-made pair is committed at `docs/calibration/`, so you can print it
+without running anything.
 
 Both are reachable. The Print dialog's **Paper** picker lists them by what
 they mean at the tray — "Comes out face up, order kept" — rather than by name,
@@ -702,8 +749,11 @@ Store them on the profile once you know them, as `back_offset_x_pt` and
 every desktop print run applies them without the flag. `--back-offset`
 overrides the stored value, which is what makes trial-and-error bearable.
 
-**Finding your two numbers.** The calibration wizard is not built, so this is
-currently iterative:
+**Finding your two numbers.** The calibration sheet above carries a crosshair
+at the exact centre of every face, with 1 mm ticks along its arms — hold sheet
+1 up to a bright light and read the gap between the front cross and the back
+one straight off the paper. That is usually enough. Failing that, or to
+confirm it, the iterative version:
 
 1. Print one sheet, both sides, with a ruler on each face:
    `--sheets 0 --rule`, once with `--pass front` and once with `--pass back`.
@@ -876,10 +926,10 @@ server with no display libraries installed at all.
 | `export SOURCE -o OUT.pdf` | Impose and write the imposed PDF. |
 | `impose SOURCE -o OUT.deckle` | Impose and write a `.deckle` project file, to open in the app. Also takes `--printer NAME` to record a printer with it. |
 | `schedule SOURCE [-o OUT.txt]` | Print the binding schedule. Defaults to stdout. |
-| `crop-preview SOURCE -o OUT.png` | Write a composite of every page with a proposed crop drawn on it, to look at before you commit to the numbers. `--parity odd`/`--parity even` for a scan whose gutter alternates; `--dpi` sets the rasterisation resolution (default `72`). |
-| `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`), `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
+| `crop-preview SOURCE -o OUT.png` | Write a composite of every page with a proposed crop drawn on it, to look at before you commit to the numbers. `--parity odd`/`--parity even` for a scan whose gutter alternates; `--dpi` sets the rasterisation resolution (default `72`); `--pages SPEC` leaves pages out of both the picture and the `--auto-crop` measurement. |
 | `print SOURCE --profile NAME` | Plan a manual-duplex run: which sheets go through in which order on each pass, whether the backs need turning, and what to do at the printer in between. **Submits nothing** — see below. With `-o job.pdf` it also writes `job.front.pdf` and `job.back.pdf`, with the profile's registration correction already applied. `--sheets SPEC` narrows it. |
 | `profile list\|show\|set` | The calibrated printer profiles on this machine. Takes no `SOURCE` and no layout options. |
+| `calibration-sheet -o OUT.pdf` | Write the duplex calibration sheet to print, so a printer profile can be measured instead of guessed. Writes `OUT.portrait.pdf` and `OUT.landscape.pdf`. `--orientation {portrait,landscape,both}` (default `both`), `--paper WxH` (default `letter`), `--sheets N` (default `4`). Takes no `SOURCE`. See §7. |
 | `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`) — here a *count*, not the page selection the layout options below describe, because `dummy` has no source to select from — and `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
 
 `-o`, or `--output`, is the destination in every command that writes one.
@@ -897,13 +947,25 @@ would make `deckle-cli export project.deckle` produce a different book from the
 one the project describes. Layout flags typed beside a project are reported as
 ignored on stderr rather than quietly dropped — and rather than applied, which
 would be worse. `--sheets`, `--pass`, `--profile` and `--printer` are not
-layout, and are honoured. (`dummy` is the exception to all of this: it has no
-`SOURCE`.)
+layout, and are honoured. (`dummy`, `profile` and `calibration-sheet` are the
+exceptions to all of this: none of them has a `SOURCE`.)
 
 ### Layout options
 
-Every command above accepts all of these — so a plan you inspect with `info`
-is the plan `export` writes.
+**The five commands that impose a document accept all of these** — `info`,
+`export`, `impose`, `schedule` and `print` — so a plan you inspect with `info`
+is the plan `export` writes. That is the point of the table: one set of flags,
+one imposition, whichever command you reach for.
+
+The other four take only what applies to them, because they do not impose
+anything:
+
+| Command | Takes | Why not the rest |
+|---|---|---|
+| `crop-preview` | `--crop`, `--auto-crop`, `--auto-crop-margin`, `--pages` | It draws a rectangle on a picture of your source. Paper, folding and sewing decide nothing about that picture. `--crop-even` is out because it composites one parity at a time, so a second rectangle would have nothing to be drawn over. |
+| `dummy` | `--pages N`, `--page-size` | It has no source to impose. Its `--pages` is a *count*, not the selection above. |
+| `calibration-sheet` | `--paper`, `--orientation`, `--sheets` | It prints a fixed target, not your document. |
+| `profile` | nothing from this table | It reads and writes stored printer profiles. |
 
 | Option | Default | Notes |
 |---|---|---|

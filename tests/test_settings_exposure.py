@@ -82,7 +82,19 @@ EXEMPT: dict[str, str] = {
     # which README's status table already records as not built. A
     # free-text box for `back_offset_y_pt` would be the half-wired
     # control this instruction exists to remove.
-    "--back-offset": "calibration; needs the measuring wizard, not a text box",
+    #
+    # **Narrower since 2026-09-11.** The stated ground was "no way to
+    # preview the damage". `deckle-cli calibration-sheet` is that preview:
+    # it prints a target whose grid maps one-to-one onto these fields, and
+    # the crosshair at each face's centre gives the two back-offset
+    # numbers off one finished sheet. So the values are now *measurable*
+    # before any paper is committed to a book. What is still missing is
+    # the wizard -- something in the app that walks the operator through
+    # the print, asks the questions and writes the profile. Until that
+    # exists a text box is still the wrong control, because it would take
+    # a number nobody has measured; the reason has simply gone from "this
+    # cannot be measured" to "nothing in the app measures it yet".
+    "--back-offset": "calibration; measurable via calibration-sheet, but the app has no wizard",
     "--flip-axis": "calibration; see --back-offset",
     "--output-face": "calibration; see --back-offset",
     "--feed-edge": "calibration; see --back-offset",
@@ -99,6 +111,12 @@ EXEMPT: dict[str, str] = {
     "--dpi": "resolution of the CLI's composite image; the app draws on screen",
     "--parity": "the app's ink-composite box has its own parity control",
     "--page-size": "`dummy` writes a scratch document; it is not a project",
+    # `calibration-sheet` prints a fixed target, not the user's document.
+    # Both orientations are written by default precisely because the
+    # operator must do both -- the flip rule inverts between them -- so a
+    # control offering the choice would mostly be a way to do half the
+    # calibration.
+    "--orientation": "`calibration-sheet` writes both by default; doing one is doing half",
     # Reached in the app, but not through a CONTROLS row. Each names the
     # mechanism, and `test_the_non_control_routes_still_exist` checks the
     # named thing is really there.

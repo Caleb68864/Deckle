@@ -22,11 +22,11 @@ menu entry, a ``clicked`` signal or a test reaches for.
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
 from deckle.app.state import AppState, unsaved_autosave_label
-from deckle.app.printer_capabilities import profile_with_driver_margins
 
 # Re-exported, and the ``noqa`` is load-bearing. ``MainWindow.refresh_printers``
 # stays in this module and resolves ``_PrinterQueryWorker``, ``_new_thread``
@@ -71,7 +71,7 @@ from deckle.app.views.print_dialog import (
 )
 from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
-from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
+from deckle.core.profiles import BUILTIN_PRESETS, NewerProfileAdvisory, PrinterProfile
 
 LETTER_PT = (612.0, 792.0)
 
@@ -140,6 +140,7 @@ def profile_for_printers(
     profile_loader=PrinterProfile.load,
     fallback: PrinterProfile = DEFAULT_PROFILE,
     recorded_printer: str | None = None,
+    imageable_areas=None,
 ) -> PrinterProfile:
     """The profile the preview should be drawing, given what is installed.
 
@@ -168,6 +169,12 @@ def profile_for_printers(
         available -- and Print is disabled in that state anyway.
     :param recorded_printer: the printer the open project names
         (``Project.printer``), or ``None``.
+    :param imageable_areas: what each driver said its non-printable border
+        is, by printer name. Passed straight through to
+        :func:`~deckle.app.views.print_dialog.resolve_profile`, which is
+        what keeps this answer and the dialog's identical -- the rule for
+        when a driver's number replaces a preset's lives in one place
+        (``print_dialog.driver_border``) and is applied by one function.
     :returns: the profile to draw against.
     """
     chosen = select_preselected_printer(
@@ -175,7 +182,9 @@ def profile_for_printers(
     )
     if chosen is None:
         return fallback
-    return resolve_profile(chosen, profile_loader)
+    return resolve_profile(
+        chosen, profile_loader, imageable_areas=imageable_areas
+    )
 
 def default_project() -> Project:
     """An empty project for a freshly launched window.
@@ -896,42 +905,26 @@ class MainWindow:
         self._refresh_status_message()
         # Enumeration is the first moment the window knows which printer
         # it is drawing for. Until this call existed, it never found out.
-        self.set_printer_profile(
-            self._profile_with_driver_answer(
-                profile_for_printers(
-                    self._printers,
-                    self.profile_loader,
-                    recorded_printer=self.state.project.printer,
-                )
+        # The advisory is caught here rather than left to Python's default
+        # filter, which prints a bare warning naming a line inside Deckle
+        # to a console the desktop user does not have. It outranks the
+        # printer-count message for the same reason the import advisory
+        # outranks "imported 12 pages": one is a receipt, the other is news
+        # about whether what is on screen is what was measured.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            profile = profile_for_printers(
+                self._printers,
+                self.profile_loader,
+                recorded_printer=self.state.project.printer,
+                imageable_areas=self._imageable_areas,
             )
-        )
-
-    def _profile_with_driver_answer(self, profile: PrinterProfile) -> PrinterProfile:
-        """``profile``, with the driver's border in place of the preset's.
-
-        **A saved calibration is never overwritten.** It exists because
-        somebody printed a target and measured it with a ruler; the
-        driver's number has been checked against nothing. Where the two
-        disagree the ruler is right, so the substitution happens only when
-        the profile is the generic preset standing in for a calibration
-        nobody has done -- which is exactly the case the red guide was
-        lying about.
-
-        :param profile: the resolved profile.
-        :returns: it, or a copy carrying the driver's border.
-        """
-        name = select_preselected_printer(
-            self._printers, self.profile_loader, self.state.project.printer
-        )
-        if name is None:
-            return profile
-        try:
-            self.profile_loader(name)
-        except (FileNotFoundError, OSError, ValueError):
-            pass  # uncalibrated: the preset is a stand-in, so fill it in
-        else:
-            return profile
-        return profile_with_driver_margins(profile, self._imageable_areas.get(name))
+        for warning in caught:
+            if issubclass(warning.category, NewerProfileAdvisory):
+                self._printer_message = str(warning.message)
+                log_event("profile_newer_format", detail=self._printer_message)
+                self._refresh_status_message()
+        self.set_printer_profile(profile)
 
     def set_printer_profile(self, profile: PrinterProfile) -> None:
         """Draw the preview and the margins against ``profile``.
@@ -988,6 +981,12 @@ class MainWindow:
             # it a different calibration.
             recorded_printer=self.state.project.printer,
             profile_loader=self.profile_loader,
+            # The driver's borders, by printer name, from the window's one
+            # enumeration. Without them the dialog resolved every
+            # uncalibrated printer to the preset's flat 18pt and handed
+            # that back on close, replacing a border a driver had actually
+            # reported -- and both clip warnings are computed from it.
+            imageable_areas=self._imageable_areas,
         )
         self.print_dialog.widget.exec()
         # The dialog is where the printer and its paper behaviour are

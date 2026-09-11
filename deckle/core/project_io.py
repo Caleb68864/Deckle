@@ -38,6 +38,29 @@ from deckle.core.schema import check_values, describe, describes
 FORMAT_VERSION = 1
 
 
+class NewerFormatAdvisory(UserWarning):
+    """A ``.deckle`` written by a build newer than this one.
+
+    **A warning, deliberately, and never a refusal.** The owner's decision,
+    2026-09-11, closing the standing Watch in ``docs/decisions.md``: this
+    file's ``version`` was written from the beginning and read by nothing,
+    so a newer file was parsed hopefully and silently.
+
+    Refusing would strand somebody who opened a project on a newer build
+    and came back to an older one -- and this program's whole posture is
+    that a person standing at a printer always has a way forward. The
+    reader is already tolerant in both directions
+    (:class:`UnknownLayoutFieldsWarning` drops keys it does not know and
+    defaults the ones it lacks), so the file *does* open correctly in
+    every case anyone has produced. What was missing was saying so.
+
+    Carried as an advisory rather than logged, because a warning that only
+    reaches a log is the defect the W1 sweep found in the import path:
+    every advisory computed, none of them shown, and a book four pages
+    short with nothing on screen to suggest it.
+    """
+
+
 class SourceChangedWarning(Exception):
     """Raised by ``load_project`` when a source file's content hash has
     changed since the project was saved.
@@ -442,6 +465,51 @@ def save_project(project: Project, path: str) -> None:
     write_text_atomic(path, buffer.getvalue())
 
 
+def newer_format_message(path: str, found: int) -> str:
+    """What to tell someone whose project was written by a newer Deckle.
+
+    Three parts, like every other message this program gives: what is the
+    case, what it means for them, what to do. It deliberately does not say
+    "cannot open" -- the project *is* open by the time this is read.
+
+    :param path: the project file, for its basename.
+    :param found: the version stored in the file.
+    :returns: one user-facing sentence.
+    """
+    return (
+        f"{os.path.basename(path)} was saved by a newer version of Deckle "
+        f"(project format {found}; this build reads {FORMAT_VERSION}). It "
+        "has been opened, but settings this build does not understand were "
+        "ignored -- check the layout before printing, and save with the "
+        "newer version if you have it."
+    )
+
+
+def _warn_if_newer_format(path: str, found: Any) -> None:
+    """Emit :class:`NewerFormatAdvisory` when the file is from the future.
+
+    Older files say nothing: this format has been tolerant of missing
+    fields from the start, so an older file is not a surprise and not
+    worth a sentence. A *newer* one may be carrying settings that silently
+    did not survive the read, which is the case worth a human seeing.
+
+    A ``version`` that is absent or not an integer is also left alone
+    rather than reported. Every other shape check in this module answers
+    "is this a Deckle project", and a missing version has never stopped it
+    being one -- warning here would fire on files this build itself could
+    have written before the key was checked.
+    """
+    if not isinstance(found, int) or isinstance(found, bool):
+        return
+    if found <= FORMAT_VERSION:
+        return
+    warnings.warn(
+        newer_format_message(path, found),
+        NewerFormatAdvisory,
+        stacklevel=3,
+    )
+
+
 def load_project(
     path: str,
     *,
@@ -499,6 +567,11 @@ def load_project(
     :raises UnknownLayoutFieldsWarning: never raised -- emitted through
         :mod:`warnings` when the file carries layout keys this build does
         not recognise, so field drift in either direction still opens.
+    :raises NewerFormatAdvisory: never raised -- emitted through
+        :mod:`warnings` when ``version`` is higher than
+        :data:`FORMAT_VERSION`. A warning and not a refusal: refusing
+        would strand somebody who opened a project on a newer build and
+        came back to an older one.
     """
     with open(path, "r", encoding="utf-8") as f:
         payload = json.load(f)
@@ -513,6 +586,8 @@ def load_project(
         # printed a traceback and the desktop app told the user "list
         # indices must be integers or slices, not str".
         raise KeyError("pages")
+
+    _warn_if_newer_format(path, payload.get("version"))
 
     stored_pages = payload["pages"]
     if not isinstance(stored_pages, list):
