@@ -421,7 +421,7 @@ Not released. Expect breaking changes.
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |
 
-The test suite is **2,363 passing, 22 skipped** at `2fa2c1b` — verified by
+The test suite is **2,366 passing, 22 skipped** at `0cb0f8a` — verified by
 running `python -m pytest -q` at the repository root (on Linux, with
 `QT_QPA_PLATFORM=offscreen`, after `python -m pip install -e ".[dev]"`; see
 [Installing](#installing)). Fourteen of the skips are packaging-audit tests

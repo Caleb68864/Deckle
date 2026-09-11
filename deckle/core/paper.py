@@ -224,7 +224,14 @@ class SignatureSuggestion:
     :ivar pages: the same in pages, which is what a binder counts in --
         one folded sheet is four.
     :ivar creep_pt: how far the innermost leaf will protrude at the
-        fore-edge, by the same formula the schedule prints.
+        fore-edge, by the same formula the schedule prints. **No caller
+        in Deckle reads it** -- both consumers of a suggestion take
+        ``sheets``, ``pages`` and ``limited_by``. Kept, and deliberately
+        not shown: at the *suggested* number of sheets the creep is
+        within tolerance by construction, so putting it in the panel's
+        sentence would be reporting a number the binder has nothing to do
+        about. The creep worth showing is the one at the size actually
+        set, and ``core.layout`` already warns with that.
     :ivar limited_by: which constraint bound the answer. Reported rather
         than merely used, because the remedy differs: ``"creep"`` means
         plan a trim, ``"fold"`` means this paper is thick.

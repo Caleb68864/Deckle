@@ -12,8 +12,8 @@ saved (a mismatched ``sha256``, on a file that still exists) raises
 the new content -- see the module docstring in
 ``deckle/core/print_session.py`` for why silent substitution during
 printing is unacceptable. A source file that has been moved or deleted --
-a different failure -- raises ``SourceMissingError`` instead, carrying an
-``expected_path`` and a ``relocate(new_path)`` affordance for the caller.
+a different failure -- raises ``SourceMissingError`` instead, carrying the
+``expected_path`` so a caller can name the file it could not find.
 
 This module must not import Qt bindings -- see ``tests/test_core_purity.py``.
 """
@@ -62,31 +62,28 @@ class SourceMissingError(Exception):
     longer matches).
 
     Carries ``expected_path`` -- where the project expected to find the
-    file -- so a caller (the CLI or the UI) can offer a *relocate*
-    affordance rather than a bare failure. ``relocate(new_path)`` records
-    the path the caller found the file at, for use in a subsequent
-    load/save cycle.
+    file -- so a caller can name it. Both catchers do:
+    ``cli.commands`` and ``app.project_actions`` each report it and
+    return.
+
+    This class used to also carry a ``relocate(new_path)`` method and a
+    ``relocated_path`` attribute, documented as letting a caller "offer a
+    *relocate* affordance rather than a bare failure". They were removed
+    because nothing could consume them: ``relocate`` set an attribute on
+    an exception object that its catcher then discarded, and
+    :func:`load_project` has no parameter that would accept a substitute
+    source. A relocate affordance is a real feature and a reasonable one
+    -- it belongs in ``load_project``'s signature, where a caller could
+    pass the path the user pointed at, and not on the exception that
+    announces the problem.
 
     :param expected_path: where the project expected the file to be.
     :ivar expected_path: the same.
-    :ivar relocated_path: ``None`` until :meth:`relocate` is called.
     """
 
     def __init__(self, expected_path: str):
         self.expected_path = expected_path
-        self.relocated_path: str | None = None
         super().__init__(f"Source file missing: {expected_path}")
-
-    def relocate(self, new_path: str) -> str:
-        """Record ``new_path`` as the relocated location of the missing
-        source and return it, for the caller to use when re-loading or
-        re-saving the project.
-
-        :param new_path: where the user found the file.
-        :returns: ``new_path``, so the call can be used inline.
-        """
-        self.relocated_path = new_path
-        return new_path
 
 
 class PathOutsideRootsWarning(Exception):

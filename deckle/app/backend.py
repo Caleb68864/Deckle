@@ -411,6 +411,19 @@ class QtPrintBackend:
         ``deckle.core.printing`` is a frozen seam, so the indices live here.
     :ivar unsubmitted_sheets: sheets never sent, because the failure
         cancelled the rest of the pass.
+
+    **All three stay empty on a real run.** They are written only by
+    :meth:`submit_pass` and :meth:`submit_duplex`, and nothing in Deckle
+    calls either -- see each method's own docstring. The production path
+    is :class:`~deckle.core.print_session.PrintSession`, which chunks
+    itself and calls :meth:`submit` per chunk, so after a failed print
+    run these are still ``[]``. Said here rather than left implied
+    because the wording above reads as a live account of the last real
+    pass, and it is not one; the same sentence used to be true of
+    ``Mark.cut_line`` and ``Sheet.back``. What *does* record a real
+    failure is :meth:`submit`'s own ``print_chunk_failed`` event, which
+    names the chunk in flight, plus the session state file's
+    ``sheet_cursor``.
     """
 
     def __init__(
@@ -556,6 +569,21 @@ class QtPrintBackend:
         dpi: int,
     ) -> PrintResult:
         """Submit an entire ``PrintPass`` in bounded chunks.
+
+        **Nothing calls this yet, and wiring it up would be a
+        regression** -- which is what separates it from
+        :meth:`submit_duplex`, whose absent caller is a capability Deckle
+        does not offer yet rather than one it deliberately stopped using.
+        :meth:`deckle.core.print_session.PrintSession._submit_sheets`
+        says why in its own words: the session chunks the pass itself so
+        that the resume cursor advances **per chunk**, and a resume lands
+        on a sheet rather than on a whole pass. Submitting a pass in one
+        call gives that up, and what it costs is paper -- an interrupted
+        25-sheet pass would resume by reprinting all 25.
+
+        So this is kept for its accounting, not as an alternative
+        submission path, and ``test_nothing_in_deckle_submits_a_whole_pass``
+        fails the moment a caller appears.
 
         A failed chunk cancels the remaining chunks of the pass rather
         than continuing to submit into a jammed or offline printer. The

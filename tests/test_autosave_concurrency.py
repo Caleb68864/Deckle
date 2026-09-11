@@ -156,3 +156,68 @@ def test_an_unsaved_project_writes_to_the_recovery_store(tmp_path, monkeypatch):
     store = tmp_path / "deckle" / "autosave"
     assert fresh.autosave_path.startswith(str(store))
     assert os.path.exists(fresh.autosave_path)
+
+
+# -- a timer must not outlive the test that scheduled it -----------------
+#
+# The debounce is a *daemon* timer, so nothing stops one running past the
+# end of its test. It then fires inside whatever test is running half a
+# second later and writes into whatever data root that test has in force.
+# That is a real flake, not a theoretical one: it put a fourth
+# `.deckle.autosave` into a `tests/test_unsaved_autosave.py` test that
+# planted exactly three and asserted on all of them, once in nine
+# full-suite runs. `tests/conftest.py` cancels them; these two pin that it
+# does, from both ends.
+
+
+def _live_timers():
+    return [
+        thread for thread in threading.enumerate()
+        if isinstance(thread, threading.Timer) and thread.is_alive()
+    ]
+
+
+def test_the_guard_cancels_a_debounce_a_test_left_running(
+    tmp_path, monkeypatch, cancel_autosave_timers
+):
+    """The helper itself: it reports what it cancelled, and nothing lands."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    leaky = AppState(_project(36.0), project_path=None, autosave_delay_s=30.0)
+
+    leaky.mutate(lambda p: _project(2.0))
+
+    assert _live_timers(), "the premise failed: no real debounce was scheduled"
+
+    cancelled = cancel_autosave_timers()
+
+    assert cancelled >= 1
+    assert _live_timers() == []
+    assert not (tmp_path / "deckle" / "autosave").exists(), (
+        "the cancelled debounce still wrote a recovery file"
+    )
+
+
+def test_a_debounce_left_running_by_one_test_is_gone_by_the_next(tmp_path,
+                                                                monkeypatch):
+    """Half of a pair. This one deliberately leaks; the next asserts the
+    leak was cleaned up, which is what the autouse fixture is *for*.
+
+    A 30-second debounce, so the timer cannot have fired on its own
+    between the two tests -- the only thing that can end it is the guard.
+    """
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    leaky = AppState(_project(36.0), project_path=None, autosave_delay_s=30.0)
+
+    leaky.mutate(lambda p: _project(3.0))
+
+    assert _live_timers(), "the premise failed: no real debounce was scheduled"
+
+
+def test_and_so_this_test_starts_with_no_debounce_in_flight():
+    """The other half. Reddens if the autouse guard stops being autouse."""
+    assert _live_timers() == [], (
+        "an autosave debounce from an earlier test is still in flight; it "
+        "will fire inside this one and write into this test's data root"
+    )

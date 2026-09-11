@@ -28,7 +28,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import deckle.app.views
 from deckle.app.main import default_project
 from deckle.app.state import AppState
-from deckle.app.views.arrange_view import reorder
+from deckle.app.views.arrange_view import reorder_to
 from deckle.app.views.import_view import load_and_apply_import
 from deckle.app.views.layout_panel import apply_layout_change, set_gutter_pt
 from deckle.app.views.preview_view import build_preview_frame
@@ -283,8 +283,10 @@ def test_end_to_end_import_arrange_layout_preview_export_print(tmp_path):
     image_pages, _image_warnings = load_and_apply_import(state, image_dir)
     assert len(state.project.pages) == len(image_pages) == 3
 
-    # 3. reorder: move the last imported page to the front
-    reorder(state, 2, 0)
+    # 3. reorder: move the last imported page to the front. Stated as the
+    # whole resulting order, because that is what a drop actually
+    # produces and `reorder_to` is the only path the grid takes.
+    reorder_to(state, [2, 0, 1])
     assert state.project.pages[0] == image_pages[2]
 
     # 4. set gutter, 5. impose -- apply_layout_change mutates and

@@ -99,8 +99,22 @@ def record(path: str) -> None:
 def forget(path: str) -> None:
     """Drop ``path`` from the list.
 
-    The only thing that removes an entry. Listing never does -- see
-    :func:`existing`.
+    The only thing that removes an entry -- and **nothing calls it
+    today**, so in practice the store only ever grows until
+    :data:`MAX_ENTRIES` pushes the oldest off the end. Said plainly
+    because "the only thing that removes an entry" reads as a live
+    description of a mechanism in use, and it is a description of a
+    policy instead: :func:`existing` filters for display and never
+    prunes, for the reason its own docstring gives, so *something* has
+    to be the deletion and this is it.
+
+    The caller it is waiting for is a deliberate user action -- a
+    "Remove from this list" beside an entry in the Recent menu. That
+    control does not exist, and this function is deliberately not wired
+    to anything else in the meantime: the two automatic callers that
+    suggest themselves, pruning on a failed open and pruning on a
+    listing, are both the behaviour :func:`existing` was written to
+    prevent. A project on an unplugged drive would be erased by either.
 
     :param path: the project to forget.
     :returns: nothing, and never raises.

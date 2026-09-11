@@ -106,7 +106,25 @@ def duplex_flip_edge(paper_pt: tuple[float, float]) -> Literal["long", "short"]:
 
 @dataclass(frozen=True)
 class PrintResult:
-    """The outcome of submitting one or more passes to a print backend."""
+    """The outcome of submitting one or more passes to a print backend.
+
+    :ivar submitted: how many sheets reached the spooler. A count, not
+        indices -- this is a frozen seam and the indices live on the
+        backend.
+    :ivar job_id: the spooler's handle for the job. **Always ``None``
+        today.** Every construction site in ``deckle/`` passes ``None``
+        and nothing reads it, because Qt's ``QPrinter`` gives no id back;
+        obtaining one means asking the platform spooler, which is a
+        feature Deckle does not have. Said here because a field typed
+        ``str | None`` invites ``if result.job_id:`` -- a branch that can
+        only ever be false. Kept because it is the field a
+        "check on this job" feature would fill, and because this seam is
+        frozen: the tests already construct ``PrintResult`` with an id,
+        so the shape is the contract, not the value.
+    :ivar error: what went wrong, or ``None``. A print failure is
+        reported here and never raised -- the caller's job is to offer a
+        resume, not to unwind a stack.
+    """
 
     submitted: int
     job_id: str | None
