@@ -39,6 +39,9 @@ import atexit
 import os
 import shutil
 import tempfile
+import threading
+
+import pytest
 
 _SCRATCH_HOME = tempfile.mkdtemp(prefix="deckle-tests-home-")
 
@@ -62,3 +65,66 @@ os.environ["APPDATA"] = os.path.join(_SCRATCH_HOME, "appdata")
 os.environ["DECKLE_EXPORT_CACHE_DIR"] = os.path.join(_SCRATCH_HOME, "export-cache")
 
 atexit.register(shutil.rmtree, _SCRATCH_HOME, True)
+
+
+def cancel_pending_autosave_timers() -> int:
+    """Cancel every autosave debounce still in flight.
+
+    ``AppState`` schedules its autosave on a daemon ``threading.Timer``
+    with a 500ms debounce. A test that constructs an ``AppState`` without
+    injecting a synchronous timer, mutates it, and returns leaves that
+    timer running: it fires half a second later, *inside whichever test
+    happens to be running then*, and writes a recovery file into whatever
+    data directory is in force at that moment.
+
+    That is not hypothetical. ``tests/test_unsaved_autosave.py`` gives
+    each of its tests its own data root, so a stray timer scheduled back
+    in ``tests/test_ui_surface.py`` lands a fourth ``.deckle.autosave``
+    inside a test that planted exactly three and asserts on all of them.
+    It failed once in nine full-suite runs and was green in isolation,
+    because the flake needs a 500ms timer to land inside a
+    sub-millisecond test body.
+
+    Cancelling here fixes the cause rather than the symptom: an autosave
+    timer belongs to the test that scheduled it, and stops existing when
+    that test does. ``AppState`` is the only thing in ``deckle/`` that
+    uses ``threading.Timer`` -- ``layout_panel`` uses Qt's ``QTimer`` --
+    so this cannot cancel anything else's work.
+
+    :returns: how many timers were cancelled, so a test can prove this
+        has teeth rather than trusting that it does.
+    """
+    cancelled = 0
+    for thread in threading.enumerate():
+        if isinstance(thread, threading.Timer) and thread.is_alive():
+            thread.cancel()
+            thread.join(timeout=2.0)
+            cancelled += 1
+    return cancelled
+
+
+@pytest.fixture(autouse=True)
+def _no_autosave_timer_outlives_its_test():
+    """Stop a test's autosave debounce leaking into the next one.
+
+    See :func:`cancel_pending_autosave_timers` for what goes wrong
+    without it.
+    """
+    yield
+    cancel_pending_autosave_timers()
+
+
+@pytest.fixture
+def cancel_autosave_timers():
+    """Hand a test the same guard the autouse fixture runs.
+
+    Offered as a fixture rather than imported, because
+    ``tests/test_suite_imports_only_declared_dependencies.py`` reads a
+    module-level ``from tests.conftest import ...`` as a dependency on an
+    undeclared distribution -- and it is right to: a conftest is reached
+    through pytest, not through ``sys.path``.
+
+    :returns: :func:`cancel_pending_autosave_timers` itself, which
+        returns how many timers it cancelled.
+    """
+    return cancel_pending_autosave_timers
