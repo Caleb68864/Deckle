@@ -32,6 +32,8 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.paper import PT_PER_MM
 from deckle.core.paper import PAPER_PRESETS as PAPER_STOCKS
 from deckle.core.paper import (
+    GRADE_BASIS_SIZES_IN,
+    PAPER_BULK,
     caliper_pt_from_gsm,
     gsm_from_pounds,
     suggest_sheets_per_signature,
@@ -1161,6 +1163,85 @@ CONTROLS: tuple[Control, ...] = (
             "caliper. The thickness below is an estimate -- bulk varies "
             "about 10% between manufacturers -- and is used only to predict "
             "fore-edge creep and spine width, never to place a page."
+        ),
+    ),
+    # -- the weight off the ream wrapper --------------------------------
+    #
+    # `set_paper_from_weight` was written for this, documented as "the
+    # escape hatch behind `Custom...`", and had no caller: the CLI could
+    # turn 80gsm into a caliper and the app could not. Four rows rather
+    # than one because a weight on its own does not determine a caliper
+    # -- the bulk does the other half, and a pound weight means nothing
+    # without the basis size it is quoted against.
+    #
+    # None of the four is stored in the project. Only the caliper they
+    # derive is, exactly as the CLI stores only the caliper: keeping the
+    # weight as well would be two descriptions of one sheet with no rule
+    # for which wins, which is the error `_caliper_pt` already refuses.
+    Control(
+        name="paper_weight_spinbox",
+        kind="count",
+        tab="paper",
+        label="Paper weight:",
+        minimum=0,
+        maximum=1000,
+        handler="_on_paper_weight_changed",
+        tooltip=(
+            "The number on the ream wrapper -- 80 for 80gsm, 24 for 24lb "
+            "-- for a paper the stock list above does not carry.\n\n"
+            "Deckle derives the caliper from this and the two boxes "
+            "beside it, and writes it into Paper thickness below. Bulk "
+            "varies about 10% between manufacturers, so it is an "
+            "estimate, used only to predict fore-edge creep and spine "
+            "width, never to place a page.\n\n"
+            "Leave at 0 if you would rather type the thickness itself."
+        ),
+    ),
+    Control(
+        name="paper_weight_unit_combo",
+        kind="choice",
+        tab="paper",
+        label="Weight unit:",
+        choices=(("gsm", "gsm (grams per m2)"), ("lb", "lb (US basis weight)")),
+        by_key=True,
+        default="gsm",
+        handler="_on_paper_weight_changed",
+        tooltip=(
+            "Which number is on the wrapper. Metric reams say gsm; US "
+            "reams say a basis weight in pounds, which also needs the "
+            "grade beside it."
+        ),
+    ),
+    Control(
+        name="paper_grade_combo",
+        kind="choice",
+        tab="paper",
+        label="Weight grade:",
+        choices=tuple((name, name) for name in sorted(GRADE_BASIS_SIZES_IN)),
+        by_key=True,
+        default="bond",
+        handler="_on_paper_weight_changed",
+        tooltip=(
+            "Which basis size a POUND weight is quoted against. Ignored "
+            "for gsm.\n\n"
+            "This is not a detail: 20lb is 75gsm as bond and 54gsm as "
+            "cover, so guessing would be wrong by half."
+        ),
+    ),
+    Control(
+        name="paper_type_combo",
+        kind="choice",
+        tab="paper",
+        label="Paper bulk:",
+        choices=tuple((name, name) for name in sorted(PAPER_BULK)),
+        by_key=True,
+        default="offset",
+        handler="_on_paper_weight_changed",
+        tooltip=(
+            "How bulky the stock is, which is what separates two papers "
+            "of the same weight -- a coated sheet is thinner than an "
+            "offset sheet of identical grammage, and a bulky one is "
+            "thicker by a third again."
         ),
     ),
     Control(
@@ -2810,6 +2891,79 @@ class LayoutPanel:
         plan = apply_layout_change(
             self.state, lambda project: set_paper_stock(project, name)
         )
+        self._show_derived_thickness(plan)
+
+    def _on_paper_weight_changed(self, _value=None) -> None:
+        """Re-derive the caliper from the weight boxes.
+
+        Four controls share this handler and it reads all four, the way
+        :meth:`_on_crop_changed` re-reads a whole rectangle when one box
+        moves: a weight, a unit, a grade and a bulk are one description
+        of one sheet, and applying them one at a time would write three
+        wrong calipers on the way to the right one.
+
+        :param _value: the changed control's value, ignored. Which of the
+            four moved does not matter; the answer is a function of all
+            of them.
+        :returns: nothing.
+
+        Zero means *not said* rather than *infinitely thin*, so it leaves
+        the thickness alone. Writing 0 back would erase a caliper set
+        from a named stock, or typed into the box below, the moment
+        somebody glanced at this one.
+        """
+        weight = self.paper_weight_spinbox.value()
+        if not weight:
+            return
+        unit = self._choice_key("paper_weight_unit_combo")
+        grade = self._choice_key("paper_grade_combo")
+        stock_type = self._choice_key("paper_type_combo")
+        if unit is None or stock_type is None:
+            # A combo mid-rebuild, not an edit. Same guard as
+            # `_control_value` applies to every keyed combo.
+            return
+        try:
+            plan = apply_layout_change(
+                self.state,
+                lambda project: set_paper_from_weight(
+                    project, weight, unit, stock_type, grade
+                ),
+            )
+        except ValueError as exc:
+            # A refused weight is a number the user can correct, not a
+            # traceback -- the same contract every other control here has.
+            self.schedule_saved.emit(f"Paper weight: {exc}")
+            return
+        # The named stock can no longer describe this paper. Leaving it
+        # selected is B29 exactly: the panel said "80gsm copier (0.104
+        # mm)" over a document holding 0.434pt. The document stayed
+        # correct; the panel stated something untrue, which is the
+        # failure the stock combo exists to prevent.
+        self._set_stock_combo_custom()
+        self._show_derived_thickness(plan)
+
+    def _choice_key(self, name: str) -> str | None:
+        """The model-side key a keyed combo is showing.
+
+        :param name: the control's name.
+        :returns: the key, or ``None`` when the combo has no valid
+            selection -- a rebuild in progress rather than a choice.
+        """
+        keys = self._choice_keys.get(name, [])
+        index = self.controls[name].currentIndex()
+        return keys[index] if 0 <= index < len(keys) else None
+
+    def _show_derived_thickness(self, plan) -> None:
+        """Display a caliper the user did not type, and say where it came from.
+
+        Shared by the named-stock combo and the weight boxes, so the two
+        routes to a derived thickness cannot disagree about what they
+        update afterwards -- which is how B29 was found: a thickness box
+        showing one number while the document held another.
+
+        :param plan: the re-imposed plan to announce.
+        :returns: nothing.
+        """
         self.paper_thickness_spinbox.blockSignals(True)
         self.paper_thickness_spinbox.set_points(
             self.state.project.layout.paper_thickness_pt

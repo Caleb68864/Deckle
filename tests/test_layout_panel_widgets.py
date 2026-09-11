@@ -410,3 +410,175 @@ def test_saving_defaults_does_not_touch_the_open_project(panel, config_root):
 
     assert panel.state.project is before
     assert panel.state.can_undo is False
+
+
+# -- paper weight, from the ream wrapper ---------------------------------
+#
+# `set_paper_from_weight` existed, was tested as a function, and had no
+# caller: `deckle-cli --paper-weight 80gsm` derived a caliper and the app
+# could not. Its own docstring called it "the escape hatch behind
+# `Custom...`", and `_on_paper_stock_changed` early-returns on exactly
+# that entry.
+#
+# These drive the widgets rather than the function, because the function
+# was never the broken part. A control wired to nothing, or to the wrong
+# setter, passes every test of `set_paper_from_weight` there is.
+
+
+def _set_weight(panel, weight, *, unit=None, grade=None, stock_type=None):
+    """Type a weight into the Paper tab the way a user would.
+
+    Each combo is set by its key through the panel's own index map, so
+    this cannot silently select the wrong row if the lists are reordered.
+    """
+    if unit is not None:
+        keys = panel._choice_keys["paper_weight_unit_combo"]
+        panel.paper_weight_unit_combo.setCurrentIndex(keys.index(unit))
+    if grade is not None:
+        keys = panel._choice_keys["paper_grade_combo"]
+        panel.paper_grade_combo.setCurrentIndex(keys.index(grade))
+    if stock_type is not None:
+        keys = panel._choice_keys["paper_type_combo"]
+        panel.paper_type_combo.setCurrentIndex(keys.index(stock_type))
+    panel.paper_weight_spinbox.setValue(weight)
+
+
+def test_the_paper_tab_starts_with_no_weight_typed(panel):
+    """The premise. Every assertion below is about a change, so a panel
+    that already carried the expected thickness would prove nothing."""
+    from deckle.core.paper import caliper_pt_from_gsm
+
+    assert panel.paper_weight_spinbox.value() == 0
+    assert panel.state.project.layout.paper_thickness_pt != pytest.approx(
+        caliper_pt_from_gsm(90, "offset")
+    )
+
+
+def test_a_grammage_typed_on_the_paper_tab_reaches_the_document(panel):
+    """The wiring, end to end: widget -> handler -> project."""
+    from deckle.core.paper import caliper_pt_from_gsm
+
+    _set_weight(panel, 90, unit="gsm", stock_type="offset")
+
+    assert panel.state.project.layout.paper_thickness_pt == pytest.approx(
+        caliper_pt_from_gsm(90, "offset")
+    )
+
+
+def test_a_different_weight_gives_a_different_thickness(panel):
+    """The control that must fail for a handler that writes a constant.
+
+    A control wired to `set_paper_thickness_pt(project, 0.42)` would
+    satisfy the test above for one value and this one for none.
+    """
+    _set_weight(panel, 80, unit="gsm", stock_type="offset")
+    lighter = panel.state.project.layout.paper_thickness_pt
+
+    _set_weight(panel, 160, unit="gsm", stock_type="offset")
+    heavier = panel.state.project.layout.paper_thickness_pt
+
+    assert heavier > lighter
+    assert heavier == pytest.approx(2 * lighter)
+
+
+def test_the_paper_type_re_derives_the_caliper(panel):
+    """`--paper-type` is what separates two papers of the same weight, so
+    the combo has to reach the arithmetic too -- not just the weight."""
+    from deckle.core.paper import caliper_pt_from_gsm
+
+    _set_weight(panel, 100, unit="gsm", stock_type="coated")
+    coated = panel.state.project.layout.paper_thickness_pt
+
+    _set_weight(panel, 100, unit="gsm", stock_type="bulky")
+    bulky = panel.state.project.layout.paper_thickness_pt
+
+    assert coated == pytest.approx(caliper_pt_from_gsm(100, "coated"))
+    assert bulky == pytest.approx(caliper_pt_from_gsm(100, "bulky"))
+    assert bulky > coated
+
+
+def test_pounds_are_read_against_the_chosen_grade(panel):
+    """20lb is 75gsm as bond and 54gsm as cover. A pound weight that
+    ignored the grade would be wrong by half, silently."""
+    from deckle.core.paper import caliper_pt_from_gsm, gsm_from_pounds
+
+    _set_weight(panel, 20, unit="lb", grade="bond", stock_type="offset")
+    bond = panel.state.project.layout.paper_thickness_pt
+
+    _set_weight(panel, 20, unit="lb", grade="cover", stock_type="offset")
+    cover = panel.state.project.layout.paper_thickness_pt
+
+    assert bond == pytest.approx(
+        caliper_pt_from_gsm(gsm_from_pounds(20, "bond"), "offset")
+    )
+    assert cover == pytest.approx(
+        caliper_pt_from_gsm(gsm_from_pounds(20, "cover"), "offset")
+    )
+    assert bond != pytest.approx(cover)
+
+
+def test_clearing_the_weight_leaves_the_thickness_alone(panel):
+    """Zero is "I have not said", not "this paper is infinitely thin".
+
+    Writing 0 back would erase a caliper the user had set another way --
+    from a named stock, or by typing it -- the moment they glanced at
+    this box.
+    """
+    _set_weight(panel, 120, unit="gsm", stock_type="offset")
+    derived = panel.state.project.layout.paper_thickness_pt
+    assert derived > 0
+
+    panel.paper_weight_spinbox.setValue(0)
+
+    assert panel.state.project.layout.paper_thickness_pt == pytest.approx(derived)
+
+
+def test_the_thickness_box_follows_the_weight(panel):
+    """B29's lesson: a greyed button beside a live menu item is the app
+    disagreeing with itself, and so is a thickness box showing one number
+    while the document holds another."""
+    _set_weight(panel, 90, unit="gsm", stock_type="offset")
+
+    assert panel.paper_thickness_spinbox.points() == pytest.approx(
+        panel.state.project.layout.paper_thickness_pt
+    )
+
+
+def test_a_derived_thickness_says_the_stock_is_custom(panel):
+    """The named-stock combo can no longer describe this paper, and
+    saying otherwise is how B29 was found.
+
+    A named stock is selected FIRST. Without that the assertion is
+    vacuous -- a fresh panel already shows ``Custom``, so the first
+    version of this test passed against code that left the combo reading
+    "80gsm copier (0.104 mm)" over a document holding 0.434pt.
+    """
+    from deckle.app.views.layout_panel import CUSTOM_STOCK_LABEL
+    from deckle.core.paper import caliper_pt_from_gsm
+
+    keys = panel._choice_keys["paper_stock_combo"]
+    panel.paper_stock_combo.setCurrentIndex(keys.index("80gsm copier"))
+    assert panel.paper_stock_combo.currentText() != CUSTOM_STOCK_LABEL
+
+    _set_weight(panel, 90, unit="gsm", stock_type="bulky")
+
+    assert panel.paper_stock_combo.currentText() == CUSTOM_STOCK_LABEL
+    assert panel.state.project.layout.paper_thickness_pt == pytest.approx(
+        caliper_pt_from_gsm(90, "bulky")
+    )
+
+
+def test_the_weight_controls_are_declared_in_the_table(panel):
+    """The four new widgets go through CONTROLS, not into the form by
+    hand. That table exists because this list was once maintained in four
+    places, then five."""
+    from deckle.app.views.layout_panel import CONTROLS
+
+    declared = {spec.name for spec in CONTROLS}
+    for name in (
+        "paper_weight_spinbox",
+        "paper_weight_unit_combo",
+        "paper_grade_combo",
+        "paper_type_combo",
+    ):
+        assert name in declared, f"{name} was added outside the CONTROLS table"

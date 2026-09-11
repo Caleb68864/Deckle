@@ -194,6 +194,18 @@ def _layout_fields() -> list[str]:
     return names
 
 
+def _control_row_fields() -> list[str]:
+    """The fields a ``CONTROLS`` row is expected to display.
+
+    The three reached another way are excluded here rather than skipped
+    inside the test: they are not "cannot be checked on this machine",
+    which is what a skip means everywhere else in this suite, and three
+    permanent skips would quietly change a number the README publishes.
+    :func:`test_the_non_control_routes_still_exist` is what covers them.
+    """
+    return [name for name in _layout_fields() if name not in NOT_A_CONTROL_ROW]
+
+
 def _cli_flags() -> set[str]:
     parser = build_parser()
     subs: dict = {}
@@ -276,7 +288,7 @@ def test_every_exemption_gives_a_reason():
 # -- 2. every setting is visible ------------------------------------------
 
 
-@pytest.mark.parametrize("field", _layout_fields())
+@pytest.mark.parametrize("field", _control_row_fields())
 def test_every_project_setting_is_displayed_by_some_control(field: str):
     """A setting the project file holds that nothing in the app shows.
 
@@ -284,9 +296,6 @@ def test_every_project_setting_is_displayed_by_some_control(field: str):
     asked what it would display. A control that names the field but shows
     something else does not count.
     """
-    if field in NOT_A_CONTROL_ROW:
-        pytest.skip(f"reached by {NOT_A_CONTROL_ROW[field]}, not a CONTROLS row")
-
     noticed = _controls_showing(field)
 
     assert noticed, (
