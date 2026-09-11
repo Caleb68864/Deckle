@@ -108,6 +108,44 @@ nothing else. Start at that directory's `index.md`; read its
 > `docs/calibration/`. This is what the flip-edge physical premise
 > (`core/printing.py:10-19`, resting on a vault note in no file here) can
 > finally be tested against.
+>
+> **A calibration no longer depends on a bookkeeping integer, 2026-09-11.**
+> The day after the newer-file decision above, its other half. A profile
+> *from the future* warned and loaded; a profile with **no `version` at
+> all** did not load — the field had no default, so `cls(**kwargs)` raised
+> `TypeError`. A warning has a way forward; a `TypeError` has none, and
+> this is the most expensive data the program holds.
+>
+> The cost was in which callers catch what. The CLI's four `except` clauses
+> list `TypeError` and reported it as *"no printer profile 'X'"* — wrong,
+> and it sends someone back to the printer to re-measure. The desktop app's
+> `resolve_profile` catches `(FileNotFoundError, OSError, ValueError)` and
+> runs inside `PrintDialog.__init__`, so **one hand-edited file made the
+> Print dialog impossible to open**. Measured on the real resolver, with a
+> corrupt-value profile as the control that had to keep falling back.
+>
+> The rule: a reader supplies what it can answer honestly and never
+> supplies a measurement. A versionless file reads as `PROFILE_VERSION`;
+> the five behavioural fields stay required and are now refused as a
+> `StoredValueError` naming the fields and the file, so the dialog's
+> existing `except` sees it. `deckle-cli profile set` already refuses to
+> create a profile without `--from` — *"a printer profile has no partial
+> form"* — and this is the same refusal on the reading side. This is
+> `docs/specs/2026-09-04-roadmap/B28-read-the-version-fields.md` §4 step 7,
+> whose acceptance row 670 now passes verbatim; the spec was **not** edited,
+> because it was right about what it wanted and honest about the unfixed
+> tree. Suite: **2511 passed, 22 skipped**.
+>
+> **And the audit tail was re-verified rather than carried forward.**
+> `scan2-findings.md`'s *"Still open, re-confirmed at 187f20e"* list — 24
+> `P*`/`S*`/`H*`/`C*` rows — was checked row by row against this tree, by
+> grep or by running. **None of them is still open.** Eighteen had shipped;
+> three (`recent.forget`, `PrintResult.job_id`,
+> `SignatureSuggestion.creep_pt`) were never defects and now carry
+> docstrings that say so, which is the fix; `FOLD_SCHEMES` gained a guard;
+> the README's test count is a deliberate floor. The whole of Deckle's
+> `P*`/`S*`/`H*`/`C*` backlog is closed. The evidence, row by row, is in
+> `vault/w1-half-wired-findings.md`.
 
 Each item carries an ID so it can be referred to in that conversation.
 Sizes: **S** under a day, **M** a few days, **L** a week or more, or gated on
