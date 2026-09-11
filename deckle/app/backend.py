@@ -511,6 +511,18 @@ class QtPrintBackend:
             # from begin()/newPage(). The distinction lives in the message,
             # so record it -- along with which sheets were in flight, which
             # is the part the paper cannot tell you afterwards.
+            #
+            # `copies` and `dpi` take one value each in every production
+            # path today, and that is not a reason to drop them. Both are
+            # written into the session state file, restored by
+            # `PrintSession.load`, and range-checked by `_check_state` --
+            # the program stores, reloads and validates them, which makes
+            # them variables whatever their current range. A failure
+            # record that omits what it assumes cannot vary goes silent at
+            # exactly the moment the assumption stops holding, and this is
+            # the record that exists because print failures are not
+            # reproducible after the fact. `log_print_job` above was the
+            # same question answered the other way, and was wrong.
             log_exception(
                 "print_chunk_failed",
                 exc,
@@ -539,7 +551,10 @@ class QtPrintBackend:
         # as it did before. `submitted` counts the sheets because they
         # printed -- that number describes paper, not bookkeeping.
         try:
-            log_print_job(printer_name, self.profile, sheets, dpi, pass_index)
+            log_print_job(
+                printer_name, self.profile, sheets, dpi, pass_index,
+                copies=copies, side=side, rotate_backs=rotate_backs,
+            )
         except OSError as exc:
             log_exception(
                 "print_session_log_failed",
@@ -948,7 +963,13 @@ class QtPrintBackend:
                     unsubmitted_sheets=remaining,
                 )
                 return PrintResult(submitted=submitted_total, job_id=None, error=str(exc))
-            log_print_job(printer_name, self.profile, chunk, dpi, 0)
+            # `submit_duplex` paints both faces of every sheet in one go,
+            # so there is no single `side` and no half turn to record --
+            # the duplexer performs the turn, not Deckle.
+            log_print_job(
+                printer_name, self.profile, chunk, dpi, 0,
+                copies=copies, side="both", rotate_backs=False,
+            )
             self.submitted_sheets.extend(chunk)
             submitted_total += len(chunk)
         self.unsubmitted_sheets = []

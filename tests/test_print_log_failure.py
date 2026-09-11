@@ -143,7 +143,7 @@ def test_a_working_log_still_records_and_reports_success(backend, monkeypatch):
     recorded: list[tuple] = []
     monkeypatch.setattr(
         backend_mod, "log_print_job",
-        lambda printer, profile, sheets, dpi, pass_index:
+        lambda printer, profile, sheets, dpi, pass_index, **kwargs:
             recorded.append((printer, list(sheets), dpi, pass_index)),
     )
 
@@ -193,7 +193,7 @@ def test_a_chunk_reaches_the_session_log_once(backend, monkeypatch):
     """
     recorded: list[tuple] = []
 
-    def record(printer, profile, sheets, dpi, pass_index):
+    def record(printer, profile, sheets, dpi, pass_index, **kwargs):
         recorded.append((printer, tuple(sheets), pass_index))
 
     # Both namespaces, deliberately. `log_print_job` is imported *into* each

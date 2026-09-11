@@ -73,12 +73,37 @@ def log_print_job(
     sheets: Sequence[int],
     dpi: int,
     pass_index: int,
+    copies: int = 1,
+    side: str = "front",
+    rotate_backs: bool = False,
 ) -> None:
     """Append one structured record describing a submitted print chunk.
 
     Called once per submitted chunk (see ``PrintSession._submit_sheets``).
     Includes a timestamp so the log can reconstruct exactly what was sent
     to the printer and when, after the fact.
+
+    **The module docstring above promises "every submitted chunk's full
+    parameters", and for a long time this recorded five of eight.**
+    ``copies``, ``side`` and ``rotate_backs`` were all passed to
+    ``PrintBackend.submit`` and none of them reached the log. The last two
+    are the ones that hurt: ``rotate_backs`` is the half turn, decided by
+    ``plan_passes`` from the flip axis *and* the paper, and it is the
+    single most likely thing to be wrong in a report that begins "the
+    backs came out upside down". It cannot be recovered from this record
+    afterwards without re-running the planner against a profile that may
+    since have changed.
+
+    ``copies`` is 1 in every production path today. Recorded anyway,
+    because it is **persisted in the session state file, restored by
+    ``load``, and range-checked by ``_check_state``** -- a value the
+    program stores, reloads and validates is a variable, whatever its
+    current range, and a failure log that assumes otherwise is silent
+    exactly when the assumption stops holding.
+
+    Defaulted rather than required, because `tests/test_project_io.py`
+    and two backend doubles already call this with five arguments and
+    none of them are about copies or sides.
 
     :param printer: the printer the chunk went to.
     :param profile: the calibrated profile in force. Its five behavioural
@@ -87,6 +112,11 @@ def log_print_job(
     :param sheets: the sheet indices in this chunk.
     :param dpi: the rasterization resolution used.
     :param pass_index: ``0`` for the front pass, ``1`` for the back pass.
+    :param copies: copies of the chunk submitted.
+    :param side: which physical face was painted, ``"front"`` or
+        ``"back"``.
+    :param rotate_backs: whether this chunk's pages were given a
+        180-degree turn.
     :returns: nothing.
     :raises OSError: the log directory cannot be created or the file
         cannot be written. Unlike :mod:`deckle.core.diagnostics`, this log
@@ -106,6 +136,9 @@ def log_print_job(
         "sheets": list(sheets),
         "dpi": dpi,
         "pass_index": pass_index,
+        "copies": copies,
+        "side": side,
+        "rotate_backs": rotate_backs,
     }
 
     path = session_log_path()
