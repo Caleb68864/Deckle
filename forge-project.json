@@ -4,7 +4,7 @@
   "default_branch": "main",
   "project_vault": "docs",
   "tech_stack": [
-    "Python 3.12",
+    "Python 3.11+",
     "PySide6",
     "pikepdf",
     "pypdfium2",
@@ -17,7 +17,7 @@
     "Tests need the project's virtualenv: use .venv/bin/python -m pytest -q, and add -p no:cacheprovider in a sandbox.",
     "Two entry points: `python -m deckle` (or the `deckle` console script) starts the GUI and blocks on the Qt event loop, though `--help` and `--version` are answered before Qt starts; `python -m deckle.cli` (or the `deckle-cli` console script) is the headless one. Anything scripted wants deckle.cli.",
     "There is no build step for the app itself; run.bat package builds a Windows binary via packaging/deckle.spec.",
-    "tests/test_preview_paint.py segfaults in Qt teardown AFTER passing. Pre-existing and harmless; do not chase it.",
+    "A Qt-teardown crash in tests/test_preview_paint.py was once recorded here as pre-existing and harmless. It is not reproducible on this tree -- that file exits 0 run alone, and so does the full suite -- so the note was removed on 2026-09-11. If it ever comes back, chase it: pdfium's rendering is not thread-safe and fails as a native access violation with no traceback, which is a real defect this project has already fixed once.",
     "The suite enforces its own rules: test_core_purity (no Qt in deckle.core), test_docs_coverage (every module has a docs/api/*.rst page), test_single_source_decisions."
   ],
   "spec_output_dir": "docs/specs",

@@ -196,6 +196,116 @@ def test_the_right_spelling_is_not_flagged_by_that_check():
     assert re.search(pattern, "`deckle export book.pdf`")
 
 
+# -- forge-project.json describes this repo to an agent -------------------
+#
+# It said `"Python 3.12"` against `requires-python = ">=3.11"` and a CI
+# matrix of 3.11/3.12/3.14, and warned that `tests/test_preview_paint.py`
+# "segfaults in Qt teardown AFTER passing. Pre-existing and harmless; do
+# not chase it." Measured on this tree: that file exits 0, three runs in a
+# row, and so does the full suite. The note was an instruction to ignore a
+# failure that does not happen -- which is worse than no note, because the
+# next real segfault there would be waved off by it.
+
+
+def _forge() -> dict:
+    import json
+
+    with open(os.path.join(ROOT, "forge-project.json"), encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def test_the_forge_manifest_agrees_with_requires_python():
+    """One floor, stated in two files."""
+    import sys
+
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:  # pragma: no cover
+        import tomli as tomllib
+
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
+        requires = tomllib.load(handle)["project"]["requires-python"]
+
+    floor = re.search(r"(\d+)\.(\d+)", requires)
+    assert floor, f"requires-python is unparseable: {requires!r}"
+    expected = f"{floor.group(1)}.{floor.group(2)}"
+
+    pythons = [
+        entry for entry in _forge()["tech_stack"] if entry.lower().startswith("python")
+    ]
+    assert pythons, "forge-project.json's tech_stack no longer names Python"
+
+    assert any(expected in entry for entry in pythons), (
+        f"forge-project.json says {pythons} while pyproject.toml requires "
+        f"{requires!r}"
+    )
+
+
+def test_the_forge_manifest_does_not_tell_an_agent_to_ignore_a_crash():
+    """A note saying "segfaults, do not chase it" is a standing licence to
+    ignore the next real crash in that file. It has to earn its place by
+    being true, and it is not."""
+    notes = " ".join(_forge()["notes"]).lower()
+
+    assert "segfault" not in notes, (
+        "forge-project.json still warns about a segfault; it was not "
+        "reproducible on this tree -- the file exits 0 alone and the suite "
+        "exits 0"
+    )
+
+
+# -- CONTRIBUTING may not forbid what the repo already gates on -----------
+#
+# The file newcomers are pointed at said *"Don't add PyInstaller specs,
+# Inno Setup scripts, or AppImage recipes"* against a tracked
+# `packaging/deckle.spec`, a `run.bat package` that builds from it, and a
+# `package-audit` job that fails releases on its output. A contributor
+# following it would have been told to leave a release gate alone.
+#
+# Installers and AppImage recipes really are still deferred, so the
+# sentence is narrowed rather than deleted -- and the check below has to
+# allow that, or it would be demanding the opposite lie.
+
+
+def test_contributing_does_not_forbid_the_packaging_the_repo_gates_on():
+    spec = os.path.join(ROOT, "packaging", "deckle.spec")
+    workflow = os.path.join(ROOT, ".github", "workflows", "test.yml")
+
+    # The premise. Without a tracked spec and a job that builds it, the
+    # old sentence was merely cautious rather than wrong, and this guard
+    # would be asserting a preference.
+    assert os.path.exists(spec), (
+        "packaging/deckle.spec is gone; this guard exists because the repo "
+        "ships one, so revisit it rather than the prose"
+    )
+    assert "deckle.spec" in _read(workflow), (
+        "no CI job references the spec any more; same reasoning"
+    )
+
+    text = _read(CONTRIBUTING)
+    assert not re.search(r"[Dd]on't add PyInstaller specs", text), (
+        "CONTRIBUTING.md tells contributors not to add a PyInstaller spec, "
+        "while packaging/deckle.spec is tracked and package-audit gates "
+        "releases on it"
+    )
+
+
+def test_contributing_still_defers_the_decisions_that_are_deferred():
+    """The control that must be *accepted*.
+
+    Deleting the whole paragraph would pass the test above and lose a
+    real boundary: installers and distro recipes are genuinely undecided,
+    and a guard that forbade saying so would be demanding the opposite
+    lie.
+    """
+    text = _read(CONTRIBUTING)
+
+    assert "Inno Setup" in text, "the installer decision is no longer recorded"
+    assert re.search(r"deferred|not made|undecided", text), (
+        "CONTRIBUTING no longer says packaging decisions are deferred"
+    )
+
+
 # -- the test count the README publishes ---------------------------------
 #
 # The README said "1,720 passing, 22 skipped at `8e2e8d2`" against a tree
