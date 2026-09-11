@@ -395,7 +395,9 @@ Organised the way the work happens.
 
 ### 6 · Take the schedule to the bench
 
-`deckle-cli schedule`, or **Save schedule** on the Signatures tab. A printable
+`deckle-cli schedule`, or **Save schedule…**, which sits *below* the mode tabs
+rather than on either of them — a schedule is not a signature artefact, and the
+flat-sheet one carries the whole AT THE PRINTER block. A printable
 work order derived from the imposed plan: gathering order per signature, which
 pages land on each face, where padding blanks fall, sewing-station guidance,
 a fore-edge creep advisory, and a spine-thickness range to cut boards against.

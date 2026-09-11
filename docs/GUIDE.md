@@ -128,7 +128,7 @@ sheets to nest, and **which constraint decided it**. The remedy differs —
 `creep` means plan a fore-edge trim, `fold` means the paper is thick and the
 gathering has to be smaller. 80gsm with a quarter-inch trim comes out at 8
 sheets, a 32-page gathering, which is the standard trade signature. In the app
-the suggestion appears under *Sheets per signature* with an **Apply** button,
+the suggestion appears under *Sheets per signature* with a **Use it** button,
 and disappears once you have taken it.
 
 ---
@@ -531,11 +531,27 @@ Expect warnings, and read them. On a 14-page document at four sheets per
 signature:
 
 ```
-[signature_padding] sheet 0: padded with 2 blank page(s) to complete the
-  final signature
-[creep_advisory] sheet 0: predicted fore-edge creep of 1.15pt over 4 sheets
-  per signature; reduce to 2 sheets per signature to shrink it
+[grain_direction] the fold runs across the paper grain, not along it.
+  long-grain stock at 792x612pt has its fibres running horizontally, while
+  the spine runs vertically. Expect the fold to crack rather than crease,
+  and the finished book to resist opening flat. Turn the sheet, or use
+  short-grain stock.
+[signature_padding] padded with 2 blank page(s) to complete the final
+  signature
 ```
+
+**No creep advisory here, and that is the right answer.** Four sheets of
+0.004in stock creep `(4 − 1) × 0.288 = 0.86pt`, which is under the point
+Deckle treats as invisible, so it says nothing. Thicken the paper or
+enlarge the gathering and it speaks — sixteen sheets of 0.3pt board gives:
+
+```
+[creep_advisory] predicted fore-edge creep of 4.50pt over 16 sheets per
+  signature; 4 sheets per signature would keep it inside what is visible
+```
+
+A planned `--trim` raises that threshold rather than lowering it: creep you
+are going to cut off is creep you do not need to hear about.
 
 **6. Save the schedule** and print it. See [§7](#7--reading-a-binding-schedule).
 
@@ -932,9 +948,10 @@ server with no display libraries installed at all.
 | `calibration-sheet -o OUT.pdf` | Write the duplex calibration sheet to print, so a printer profile can be measured instead of guessed. Writes `OUT.portrait.pdf` and `OUT.landscape.pdf`. `--orientation {portrait,landscape,both}` (default `both`), `--paper WxH` (default `letter`), `--sheets N` (default `4`). Takes no `SOURCE`. See §7. |
 | `dummy -o OUT.pdf` | Write a numbered document whose only content is its own page order, for checking how an imposition folds on scrap. `--pages N` (default `16`) — here a *count*, not the page selection the layout options below describe, because `dummy` has no source to select from — and `--page-size WxH` (default `letter`). Takes no `SOURCE`. |
 
-`-o`, or `--output`, is the destination in every command that writes one.
-`schedule` is the only one where it is optional; without it the schedule goes
-to stdout.
+`-o`, or `--output`, is the destination in every command that writes one, and
+it is required wherever writing a file is the point. Two commands make it
+optional because they are useful without one: `schedule` prints to stdout
+without it, and `print` plans the run and writes nothing.
 
 `SOURCE` is a PDF file, **a directory of images**, or **a `.deckle` project
 you saved earlier**. Image folders are ordered naturally by filename (`page2`
@@ -946,9 +963,10 @@ you set up, previewed and saved, and silently overriding it from flag defaults
 would make `deckle-cli export project.deckle` produce a different book from the
 one the project describes. Layout flags typed beside a project are reported as
 ignored on stderr rather than quietly dropped — and rather than applied, which
-would be worse. `--sheets`, `--pass`, `--profile` and `--printer` are not
-layout, and are honoured. (`dummy`, `profile` and `calibration-sheet` are the
-exceptions to all of this: none of them has a `SOURCE`.)
+would be worse. `--sheets`, `--pass`, `--profile`, `--back-offset`, `--rule`
+and `--printer` are not layout, and are honoured. (`dummy`, `profile` and
+`calibration-sheet` are the exceptions to all of this: none of them has a
+`SOURCE`.)
 
 ### Layout options
 
