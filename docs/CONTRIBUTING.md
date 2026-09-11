@@ -129,6 +129,19 @@ referenced anywhere else in `deckle/core/layout.py`.
 - `tests/test_integration.py` asserts every module under
   `deckle/app/views/` is imported by `deckle/app/main.py` -- a new view
   that isn't wired into `MainWindow` fails that test on purpose.
-- Packaging (one-file vs. one-folder, installers) is an explicitly
-  deferred decision for this MVP. Don't add PyInstaller specs, Inno Setup
-  scripts, or AppImage recipes.
+- Packaging exists and is gated, so **don't treat it as off-limits** —
+  this bullet used to rule the PyInstaller spec out of bounds, which
+  stopped being true once `packaging/deckle.spec` was tracked,
+  `run.bat package` built from it, and the `package-audit` job in
+  `.github/workflows/test.yml` started failing releases on it. A newcomer
+  following the old sentence would have been told not to touch a release
+  gate.
+
+  What *is* still deferred is everything past the one spec: **installers**
+  (Inno Setup, MSI), AppImage or `.deb` recipes, code signing, and
+  one-file vs. one-folder as a settled choice. Add one of those and you
+  are making a decision this project has not made. The spec itself is
+  maintained: change it, and `tests/test_packaging_audit.py` will tell you
+  what the bundle now contains — it exists because the first build
+  produced a 1.6 GB artifact carrying torch, paddle, cv2 and PyMuPDF,
+  which is AGPL code inside an MIT program.

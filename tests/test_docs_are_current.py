@@ -25,6 +25,7 @@ CORE = os.path.join(ROOT, "deckle", "core")
 GUIDE = os.path.join(ROOT, "docs", "GUIDE.md")
 README = os.path.join(ROOT, "README.md")
 CONTRIBUTING = os.path.join(ROOT, "docs", "CONTRIBUTING.md")
+CHANGELOG = os.path.join(ROOT, "CHANGELOG.md")
 RUN_BAT = os.path.join(ROOT, "run.bat")
 
 
@@ -110,6 +111,320 @@ def test_the_guide_documents_every_cli_option():
     missing = sorted(flag for flag in options if flag not in section)
 
     assert not missing, f"CLI options absent from GUIDE section 8: {missing}"
+
+
+# -- the changelog is a list of things the code owns too ------------------
+#
+# A third countable inventory, and the one nobody re-reads. The CHANGELOG's
+# CLI entry named six subcommands while the parser had eight -- `print` and
+# `profile` shipped without reaching it -- and spelled the six it did name
+# as `deckle <command>`. `deckle` is the GUI console script; the CLI one is
+# `deckle-cli`. Every such line in the README and the GUIDE was corrected
+# when `[project.scripts]` was added; the CHANGELOG was not, so the file
+# that is supposed to be the record of what changed disagreed with the
+# packaging about what the program is called.
+#
+# Subcommands only, not flags. The GUIDE's section 8 is the reference and
+# is already checked flag by flag; demanding the same of a changelog would
+# turn it into a second reference manual, which is the thing that makes
+# both of them go stale.
+
+
+def _cli_commands() -> set[str]:
+    from deckle.cli import build_parser
+
+    parser = build_parser()
+    commands: set[str] = set()
+    for action in parser._subparsers._group_actions:  # noqa: SLF001
+        commands.update(getattr(action, "choices", {}) or {})
+    assert commands, "build_parser() exposed no subcommands to check against"
+    return commands
+
+
+def test_the_changelog_names_every_cli_command():
+    """A command that shipped without reaching the changelog never shipped,
+    as far as the only file that claims to record what shipped knows."""
+    text = _read(CHANGELOG)
+    missing = sorted(name for name in _cli_commands() if f"`{name}`" not in text)
+
+    assert not missing, f"CLI commands absent from CHANGELOG.md: {missing}"
+
+
+def test_the_changelog_spells_a_command_the_way_it_is_installed():
+    """`deckle info` is not a command anybody can run.
+
+    ``[project.scripts]`` installs ``deckle`` (the GUI, which answers
+    ``--help`` and then opens a window) and ``deckle-cli`` (the headless
+    one). A changelog line reading ``deckle info`` sends the reader to the
+    GUI entry point with a subcommand it has never parsed.
+    """
+    commands = _cli_commands()
+    text = _read(CHANGELOG)
+
+    pattern = r"(?<![\w.\-])deckle\s+(" + "|".join(sorted(commands)) + r")\b"
+    wrong = [
+        f"line {text[: m.start()].count(chr(10)) + 1}: {m.group(0)!r}"
+        for m in re.finditer(pattern, text)
+    ]
+
+    assert not wrong, (
+        "CHANGELOG.md gives the GUI console script a CLI subcommand; the "
+        f"headless one is `deckle-cli`: {wrong}"
+    )
+
+
+def test_the_right_spelling_is_not_flagged_by_that_check():
+    """The control the refusing check needs.
+
+    A pattern that also matched ``deckle-cli export`` or
+    ``python -m deckle.cli export`` would be unsatisfiable -- there would
+    be no way to write the line correctly -- and the test above would be
+    refusing everything rather than the one spelling that is wrong.
+    """
+    commands = _cli_commands()
+    pattern = r"(?<![\w.\-])deckle\s+(" + "|".join(sorted(commands)) + r")\b"
+
+    for accepted in (
+        "`deckle-cli export book.pdf`",
+        "`python -m deckle.cli info book.pdf`",
+        "run `deckle-cli print` to plan a run",
+    ):
+        assert not re.search(pattern, accepted), accepted
+
+    # ...and it does still catch the spelling it is for, so a pattern that
+    # matched nothing at all could not pass this file.
+    assert re.search(pattern, "`deckle export book.pdf`")
+
+
+# -- forge-project.json describes this repo to an agent -------------------
+#
+# It said `"Python 3.12"` against `requires-python = ">=3.11"` and a CI
+# matrix of 3.11/3.12/3.14, and warned that `tests/test_preview_paint.py`
+# "segfaults in Qt teardown AFTER passing. Pre-existing and harmless; do
+# not chase it." Measured on this tree: that file exits 0, three runs in a
+# row, and so does the full suite. The note was an instruction to ignore a
+# failure that does not happen -- which is worse than no note, because the
+# next real segfault there would be waved off by it.
+
+
+def _forge() -> dict:
+    import json
+
+    with open(os.path.join(ROOT, "forge-project.json"), encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def test_the_forge_manifest_agrees_with_requires_python():
+    """One floor, stated in two files."""
+    import sys
+
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:  # pragma: no cover
+        import tomli as tomllib
+
+    with open(os.path.join(ROOT, "pyproject.toml"), "rb") as handle:
+        requires = tomllib.load(handle)["project"]["requires-python"]
+
+    floor = re.search(r"(\d+)\.(\d+)", requires)
+    assert floor, f"requires-python is unparseable: {requires!r}"
+    expected = f"{floor.group(1)}.{floor.group(2)}"
+
+    pythons = [
+        entry for entry in _forge()["tech_stack"] if entry.lower().startswith("python")
+    ]
+    assert pythons, "forge-project.json's tech_stack no longer names Python"
+
+    assert any(expected in entry for entry in pythons), (
+        f"forge-project.json says {pythons} while pyproject.toml requires "
+        f"{requires!r}"
+    )
+
+
+def test_the_forge_manifest_does_not_tell_an_agent_to_ignore_a_crash():
+    """A note saying "segfaults, do not chase it" is a standing licence to
+    ignore the next real crash in that file. It has to earn its place by
+    being true, and it is not."""
+    notes = " ".join(_forge()["notes"]).lower()
+
+    assert "segfault" not in notes, (
+        "forge-project.json still warns about a segfault; it was not "
+        "reproducible on this tree -- the file exits 0 alone and the suite "
+        "exits 0"
+    )
+
+
+# -- CONTRIBUTING may not forbid what the repo already gates on -----------
+#
+# The file newcomers are pointed at said *"Don't add PyInstaller specs,
+# Inno Setup scripts, or AppImage recipes"* against a tracked
+# `packaging/deckle.spec`, a `run.bat package` that builds from it, and a
+# `package-audit` job that fails releases on its output. A contributor
+# following it would have been told to leave a release gate alone.
+#
+# Installers and AppImage recipes really are still deferred, so the
+# sentence is narrowed rather than deleted -- and the check below has to
+# allow that, or it would be demanding the opposite lie.
+
+
+def test_contributing_does_not_forbid_the_packaging_the_repo_gates_on():
+    spec = os.path.join(ROOT, "packaging", "deckle.spec")
+    workflow = os.path.join(ROOT, ".github", "workflows", "test.yml")
+
+    # The premise. Without a tracked spec and a job that builds it, the
+    # old sentence was merely cautious rather than wrong, and this guard
+    # would be asserting a preference.
+    assert os.path.exists(spec), (
+        "packaging/deckle.spec is gone; this guard exists because the repo "
+        "ships one, so revisit it rather than the prose"
+    )
+    assert "deckle.spec" in _read(workflow), (
+        "no CI job references the spec any more; same reasoning"
+    )
+
+    text = _read(CONTRIBUTING)
+    assert not re.search(r"[Dd]on't add PyInstaller specs", text), (
+        "CONTRIBUTING.md tells contributors not to add a PyInstaller spec, "
+        "while packaging/deckle.spec is tracked and package-audit gates "
+        "releases on it"
+    )
+
+
+def test_contributing_still_defers_the_decisions_that_are_deferred():
+    """The control that must be *accepted*.
+
+    Deleting the whole paragraph would pass the test above and lose a
+    real boundary: installers and distro recipes are genuinely undecided,
+    and a guard that forbade saying so would be demanding the opposite
+    lie.
+    """
+    text = _read(CONTRIBUTING)
+
+    assert "Inno Setup" in text, "the installer decision is no longer recorded"
+    assert re.search(r"deferred|not made|undecided", text), (
+        "CONTRIBUTING no longer says packaging decisions are deferred"
+    )
+
+
+# -- the test count the README publishes ---------------------------------
+#
+# The README said "1,720 passing, 22 skipped at `8e2e8d2`" against a tree
+# collecting 2,340, and justified the number with *"GitHub Actions runs the
+# same command ... so this number is checked rather than remembered"*. That
+# sentence was the worst part: nothing in `tests/` asserted a count, so the
+# claim of a check was itself the stalest thing on the page.
+#
+# What is checked here is deliberately one-directional. Demanding equality
+# would put a README edit on every commit that adds a test, and a guard
+# that fails on almost every commit gets worked around rather than
+# honoured -- unlike the module list and the CLI reference above, which
+# change a few times a year. What matters to a reader is that the number is
+# not INFLATED: a suite that has shrunk under a README still advertising
+# the old size is the claim that misleads. Understating is a snapshot
+# ageing, which the commit named beside it already discloses.
+
+
+def _readme_test_counts() -> tuple[int, int]:
+    """The passing and skipped counts the README publishes.
+
+    :returns: ``(passing, skipped)``.
+    :raises AssertionError: the sentence is not there or does not parse.
+        Refusing rather than returning zeros: a guard that silently found
+        no number would pass forever, which is the failure it replaced.
+    """
+    text = _read(README)
+    match = re.search(
+        r"([\d,]+)\s+passing,\s+([\d,]+)\s+skipped", text
+    )
+    assert match, (
+        "the README no longer states a 'N passing, M skipped' count; this "
+        "guard would otherwise check nothing"
+    )
+    return int(match.group(1).replace(",", "")), int(match.group(2).replace(",", ""))
+
+
+def _collected_test_count() -> int:
+    """How many tests this suite collects, asked of pytest itself.
+
+    Collection rather than a run: it is a few seconds instead of ninety,
+    and it is the same number on every interpreter in the CI matrix --
+    every ``importorskip`` in this suite is inside a fixture or a test
+    body, so nothing is skipped at collection time and no module
+    contributes a different count on 3.11 than on 3.14.
+
+    :returns: the collected test count.
+    :raises AssertionError: pytest did not report one. A parse that
+        quietly yielded 0 would make the comparison below vacuous.
+    """
+    import subprocess
+    import sys
+
+    env = dict(os.environ)
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--collect-only",
+         "-p", "no:cacheprovider", ROOT],
+        capture_output=True, text=True, env=env, cwd=ROOT, timeout=600,
+    )
+    match = re.search(r"(\d+)\s+tests? collected", result.stdout)
+    assert match, (
+        "pytest did not report a collected count (exit "
+        f"{result.returncode}):\n{result.stdout[-2000:]}\n{result.stderr[-2000:]}"
+    )
+    return int(match.group(1))
+
+
+def test_the_readme_does_not_advertise_more_tests_than_exist():
+    """The direction that misleads a reader.
+
+    A README claiming a suite larger than the one in the repository is a
+    claim about how well the code is guarded, and it is the one a
+    newcomer has no way to check before trusting it.
+    """
+    passing, skipped = _readme_test_counts()
+    collected = _collected_test_count()
+
+    assert passing + skipped <= collected, (
+        f"README advertises {passing} passing + {skipped} skipped = "
+        f"{passing + skipped} tests; the suite collects {collected}"
+    )
+
+
+def test_the_readme_skip_breakdown_adds_up():
+    """The README breaks the skips down by reason. Four numbers that must
+    sum to the fifth -- checkable without running anything, and wrong in
+    exactly the way a hand-maintained tally goes wrong."""
+    _, skipped = _readme_test_counts()
+    text = _read(README)
+
+    reasons = re.search(
+        # \s+ rather than a space: the sentence wraps, so two of the four
+        # counts are separated from their reason by a newline.
+        r"(\w+)\s+of the skips are packaging.*?(\w+)\s+are Windows-only.*?"
+        r"(\w+)\s+are the golden.*?(\w+)\s+needs",
+        text,
+        re.DOTALL,
+    )
+    assert reasons, (
+        "the README's skip breakdown has been reworded; this guard reads "
+        "it by shape and would otherwise check nothing"
+    )
+
+    words = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+        "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+        "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    }
+    counted = 0
+    for group in reasons.groups():
+        key = group.lower()
+        assert key in words or key.isdigit(), f"unreadable skip count {group!r}"
+        counted += words.get(key, 0) or int(group)
+
+    assert counted == skipped, (
+        f"the README's skip breakdown sums to {counted}, but it claims "
+        f"{skipped} skipped"
+    )
 
 
 # -- the documented install can run the documented command ----------------

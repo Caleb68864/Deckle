@@ -337,6 +337,10 @@ class _FakeWindow:
         # The Print menu entry is disabled alongside the Print button, so
         # the double has to own the map the real window keeps them in.
         self.menu_actions = {}
+        # The enable rules read which commands are gated off the menu
+        # description rather than naming them, so a double that drives
+        # them needs the description too.
+        self._menus = app_main.MENUS
         self.layout_panel = _FakeProfileConsumer()
         self.preview_view = _FakeProfileConsumer()
 
@@ -346,6 +350,7 @@ class _FakeWindow:
     # button itself, it asks. Bound here for the same reason
     # `_refresh_status_message` is: the double drives the real method.
     _sync_print_action = app_main.MainWindow._sync_print_action
+    _set_gated_actions = app_main.MainWindow._set_gated_actions
     _refresh_status_message = app_main.MainWindow._refresh_status_message
     set_printer_profile = app_main.MainWindow.set_printer_profile
     _profile_with_driver_answer = app_main.MainWindow._profile_with_driver_answer

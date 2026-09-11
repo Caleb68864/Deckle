@@ -18,11 +18,17 @@ be caught, only observed as an exit code.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 
 import pytest
+
+#: Prefix for the per-probe scratch data root. Named once: the cleanup,
+#: the creation and the test that checks nothing is left behind all have
+#: to agree about it, and three copies of a string is how they stop.
+_DATA_ROOT_PREFIX = "deckle-shutdown-data-"
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(REPO_ROOT, "tests", "fixtures", "sample.pdf")
@@ -98,16 +104,70 @@ def _run(how: str) -> subprocess.CompletedProcess:
     # cannot answer. Point the data root at a scratch directory so the
     # probe sees an empty store -- and so it cannot leave recovery offers
     # in the developer's real one either.
-    data_root = tempfile.mkdtemp(prefix="deckle-shutdown-data-")
+    data_root = tempfile.mkdtemp(prefix=_DATA_ROOT_PREFIX)
     env["XDG_DATA_HOME"] = data_root
     env["APPDATA"] = data_root
-    return subprocess.run(
-        [sys.executable, "-u", "-c", PROBE, FIXTURE, how],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=180,
-        cwd=REPO_ROOT,
+    try:
+        return subprocess.run(
+            [sys.executable, "-u", "-c", PROBE, FIXTURE, how],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=180,
+            cwd=REPO_ROOT,
+        )
+    finally:
+        # The probe has exited by now -- `subprocess.run` waits -- so the
+        # store is nobody's any more. In `finally` rather than after the
+        # call so that a probe which times out or raises still takes its
+        # directory with it: four per run of this file, never removed, is
+        # how this machine reached 236 copies of an empty data store.
+        shutil.rmtree(data_root, ignore_errors=True)
+
+
+def _scratch_roots() -> set[str]:
+    """Every scratch data root this module has left in the temp directory.
+
+    Globbed on the same prefix ``_run`` creates, taken from the one
+    constant rather than retyped, so a renamed prefix cannot make this
+    check quietly look at nothing.
+    """
+    import glob
+
+    return set(
+        glob.glob(os.path.join(tempfile.gettempdir(), f"{_DATA_ROOT_PREFIX}*"))
+    )
+
+
+def test_a_probe_run_cleans_up_its_scratch_data_root():
+    """The leak, stated directly.
+
+    ``_run`` made a fresh ``mkdtemp`` per probe and never removed it. Four
+    probes per run of this file, so an ordinary development day left
+    dozens; this machine had **236** of them when the leak was found, and
+    `vault/scan2-findings.md` had already measured the rate at 56 -> 60
+    across one run of this file alone.
+
+    Nothing breaks, which is why it survived: the suite stays green while
+    the developer's temp directory fills with copies of an empty
+    application data store.
+    """
+    before = _scratch_roots()
+
+    result = _run("close")
+
+    # The premise. A probe that did not run would leave nothing behind
+    # for the reason that has nothing to do with cleanup, and this test
+    # would pass without having checked anything.
+    assert result.returncode == 0, (
+        f"the probe did not run (exit {result.returncode}), so this test "
+        f"cannot say anything about cleanup.\nstderr:\n{result.stderr[-1500:]}"
+    )
+    assert "exited via close" in result.stdout
+
+    assert _scratch_roots() - before == set(), (
+        "the probe left its scratch data root in the temp directory; four "
+        "per run of this file is how the machine reached 236 of them"
     )
 
 

@@ -45,6 +45,7 @@ from deckle.app.printer_query import (  # noqa: F401
     available_printer_names,
 )
 from deckle.core.defaults import load_defaults
+from deckle.app import menus
 from deckle.app.menus import MENUS, build_menu_bar
 from deckle.app import exporting, project_actions, shutdown
 
@@ -340,6 +341,14 @@ class MainWindow:
         #: construction without asking whether the menus exist yet.
         self.menu_actions: dict = {}
 
+        #: The menu description this window was built from. Held as an
+        #: attribute rather than reached for as a module global so that
+        #: the enable rules below read the *same* description the menu
+        #: bar was built from -- they used to name their commands in
+        #: hand-written tuples, which is how a rename could disable
+        #: nothing and redden nothing.
+        self._menus = MENUS
+
         #: How a saved calibration is loaded. Injected rather than reached
         #: for, so a test can drive a calibrated printer without writing
         #: one into the user's real config directory -- and so the preview
@@ -550,7 +559,7 @@ class MainWindow:
         self.menu_actions = build_menu_bar(
             self.window,
             self,
-            MENUS,
+            self._menus,
             scope_widgets={"grid": self.arrange_view.list_widget},
         )
 
@@ -576,17 +585,20 @@ class MainWindow:
         a document and a printer, so it is decided by
         :meth:`_sync_print_action`, which this method and
         :meth:`_apply_printers` both call.
+
+        Which entries those are is read off :data:`deckle.app.menus.MENUS`
+        -- ``gate="document"`` -- rather than listed here. It was listed
+        here, as four string literals, and the list had to agree with the
+        menu description by hand while the lookup below quietly tolerated
+        a name it could not find. A rename in either direction turned the
+        gating into a no-op that nothing detected.
         """
         has_pages = bool(self.state.project.pages)
         self.save_pdf_button.setEnabled(has_pages)
         # The menu entries are the same commands as the buttons, so they
         # have to be unavailable at the same moments -- a greyed button
         # beside a live menu item is the app disagreeing with itself.
-        for name in ("save_pdf", "save_project", "save_project_as",
-                     "export_single_pass"):
-            action = self.menu_actions.get(name)
-            if action is not None:
-                action.setEnabled(has_pages)
+        self._set_gated_actions("document", has_pages)
         # Opening is always available; saving needs something to save.
         self.save_project_button.setEnabled(has_pages)
         self.save_project_button.setToolTip(
@@ -595,6 +607,28 @@ class MainWindow:
         self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
         self.layout_panel.set_document_loaded(has_pages)
         self._sync_print_action()
+
+    def _set_gated_actions(self, gate: str, enabled: bool) -> None:
+        """Enable or disable every menu entry carrying ``gate``.
+
+        :param gate: one of :data:`deckle.app.menus.GATES`. A gate the
+            menus do not define raises rather than matching nothing --
+            see :func:`deckle.app.menus.actions_gated_by`.
+        :param enabled: what to set them to.
+        :returns: nothing.
+
+        The ``is not None`` below is for a window whose menu bar has not
+        been built: :attr:`menu_actions` is empty for the whole first half
+        of ``__init__`` and stays empty on the test doubles that drive
+        these methods directly. It is no longer load-bearing for
+        *correctness* -- the names come from the same description the menu
+        bar was built from, so one cannot be absent because it was
+        misspelled.
+        """
+        for name in menus.actions_gated_by(gate, self._menus):
+            action = self.menu_actions.get(name)
+            if action is not None:
+                action.setEnabled(enabled)
 
     def _sync_print_action(self) -> None:
         """Print needs a printer **and** a document.
@@ -619,9 +653,7 @@ class MainWindow:
         has_pages = bool(self.state.project.pages)
         enabled = has_printers and has_pages
         self.print_button.setEnabled(enabled)
-        print_action = self.menu_actions.get("print_document")
-        if print_action is not None:
-            print_action.setEnabled(enabled)
+        self._set_gated_actions("document+printer", enabled)
         if enabled:
             self.print_button.setToolTip("")
         elif not has_printers:
@@ -1275,10 +1307,10 @@ class MainWindow:
         """Enable each button only when it would do something."""
         self.undo_button.setEnabled(self.state.can_undo)
         self.redo_button.setEnabled(self.state.can_redo)
-        for name, enabled in (("undo", self.state.can_undo), ("redo", self.state.can_redo)):
-            action = self.menu_actions.get(name)
-            if action is not None:
-                action.setEnabled(enabled)
+        # Same two names, same reason: read off the menu description
+        # rather than repeated here. See :meth:`_set_gated_actions`.
+        self._set_gated_actions("undo", self.state.can_undo)
+        self._set_gated_actions("redo", self.state.can_redo)
 
     def _recover_autosave_if_offered(self, path: str, project: Project) -> Project:
         """Offer a newer autosave in place of the project just loaded.
