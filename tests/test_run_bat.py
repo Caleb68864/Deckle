@@ -109,3 +109,111 @@ def test_the_header_documents_exactly_the_subcommands_that_exist():
     header = _text().split("rem ===", 2)[1]
     for command in SUBCOMMANDS:
         assert f"run.bat {command}" in header, f"{command!r} is undocumented"
+
+
+# -- the failure path must return ----------------------------------------
+#
+# `:fail` ended `pause` then `exit /b 1`. `pause` reads the *console*, not
+# stdin, so on a runner without one its behaviour is not something to rely
+# on; if it blocks, a failed build waits for a keypress nobody will press
+# and burns the whole job timeout instead of failing in two minutes. Same
+# family as `python -m deckle --help` launching the GUI: an entry point
+# that never returns. The keypress is worth keeping for the developer who
+# double-clicked run.bat and would otherwise watch the window vanish, so
+# it is guarded rather than deleted.
+
+
+def _block(label: str) -> str:
+    """The body of one ``:label`` block, up to the next label.
+
+    :param label: the label to read, without its colon.
+    :returns: the lines between that label and the next one.
+    :raises AssertionError: the label is not in the file. Refusing rather
+        than returning ``""``: an empty block would make every assertion
+        about its contents vacuously true.
+    """
+    text = _text()
+    match = re.search(rf"^:{label}$", text, re.MULTILINE)
+    assert match, f"run.bat has no :{label} block to check"
+    tail = text[match.end():]
+    nxt = re.search(r"^:\w+", tail, re.MULTILINE)
+    body = tail[: nxt.start()] if nxt else tail
+    assert body.strip(), f":{label} is empty"
+    return body
+
+
+def _pause_lines(text: str) -> list[str]:
+    """Every line that runs ``pause`` as a command.
+
+    Matches ``pause`` as a whole word at the end of a command, so a
+    guarded ``if not defined CI pause`` is found too -- the question this
+    file asks is whether the guard is *there*, not whether pause is.
+    ``rem`` lines are skipped so the comment explaining the guard does
+    not read as a second call.
+    """
+    found = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith("rem "):
+            continue
+        if re.search(r"(?<![\w:])pause\s*$", stripped, re.IGNORECASE):
+            found.append(stripped)
+    return found
+
+
+def test_the_failure_path_still_reports_and_exits_nonzero():
+    """The premise. Without it, "no unguarded pause" would be satisfied by
+    a :fail block that had been deleted."""
+    body = _block("fail")
+
+    assert "exit /b 1" in body, ":fail no longer exits nonzero"
+    assert "failed" in body.lower(), ":fail no longer says anything failed"
+
+
+def test_the_failure_path_does_not_block_on_a_keypress_unattended():
+    """The regression, stated directly.
+
+    A bare ``pause`` on the failure path means an unattended run -- CI, a
+    scheduled build, anything with no console -- can wait forever for a
+    key nobody is at the keyboard to press.
+    """
+    unguarded = [
+        line
+        for line in _pause_lines(_text())
+        if not re.match(r"if\s", line, re.IGNORECASE)
+    ]
+
+    assert not unguarded, (
+        "run.bat runs pause unconditionally, so a failed unattended build "
+        f"waits for a keypress: {unguarded}"
+    )
+
+
+def test_the_guard_is_the_variable_every_runner_sets():
+    """``CI`` by name, not just "some condition".
+
+    A guard on a variable nothing sets is the same hang with more words,
+    and the failure would be invisible: the build simply stops.
+    """
+    paused = _pause_lines(_text())
+    if not paused:
+        return  # nothing to guard; the test above already allows this
+    assert any("defined CI" in line for line in paused), (
+        f"pause is guarded, but not on CI: {paused}"
+    )
+
+
+def test_the_keypress_is_still_available_to_a_person():
+    """The control that must be *accepted*.
+
+    Deleting ``pause`` outright would pass both tests above and quietly
+    remove the thing it is there for: a developer who double-clicked
+    run.bat, whose window would otherwise close before the error is
+    readable. The guard has to be a guard, not a removal.
+    """
+    body = _block("fail")
+
+    assert _pause_lines(body), (
+        ":fail no longer pauses at all, so a double-clicked run.bat closes "
+        "its window before the error can be read"
+    )

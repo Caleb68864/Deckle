@@ -157,7 +157,15 @@ echo.
 echo [deckle] command failed ^(exit %errorlevel%^).
 echo          Try: run.bat doctor
 echo.
-pause
+rem The keypress is for a developer who double-clicked run.bat, whose
+rem window would otherwise close before the error can be read. It must
+rem never happen unattended: `pause` reads the CONSOLE rather than stdin,
+rem so on a runner without one its behaviour is not something to rely on,
+rem and if it blocks, a failed build waits for a key nobody will press and
+rem burns the full 30-minute job timeout instead of failing in two
+rem minutes. CI is set by GitHub Actions and by essentially every other
+rem runner; DECKLE_NO_PAUSE is the escape hatch for anything that is not.
+if not defined CI if not defined DECKLE_NO_PAUSE pause
 exit /b 1
 
 :done
