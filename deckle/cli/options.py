@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(impose_parser)
     impose_parser.set_defaults(
-        func=commands._cmd_impose, _command="impose",
+        func=commands._cmd_impose,
         _subparser=impose_parser, _layout_dests=layout_dests,
     )
 
@@ -371,7 +371,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(export_parser)
     export_parser.set_defaults(
-        func=commands._cmd_export, _command="export",
+        func=commands._cmd_export,
         _subparser=export_parser, _layout_dests=layout_dests,
     )
 
@@ -386,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(info_parser)
     info_parser.set_defaults(
-        func=commands._cmd_info, _command="info",
+        func=commands._cmd_info,
         _subparser=info_parser, _layout_dests=layout_dests,
     )
 
@@ -408,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(schedule_parser)
     schedule_parser.set_defaults(
-        func=commands._cmd_schedule, _command="schedule",
+        func=commands._cmd_schedule,
         _subparser=schedule_parser, _layout_dests=layout_dests,
     )
 
@@ -440,7 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="rasterisation resolution (default: 72)",
     )
     preview_parser.set_defaults(
-        func=commands._cmd_crop_preview, _command="crop-preview", _subparser=preview_parser,
+        func=commands._cmd_crop_preview, _subparser=preview_parser,
     )
 
     dummy_parser = subparsers.add_parser(
@@ -462,7 +462,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     dummy_parser.set_defaults(
-        func=commands._cmd_dummy, _command="dummy", _subparser=dummy_parser,
+        func=commands._cmd_dummy, _subparser=dummy_parser,
     )
 
     print_parser = subparsers.add_parser(
@@ -502,7 +502,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_layout_args(print_parser)
     print_parser.set_defaults(
-        func=commands._cmd_print, _command="print",
+        func=commands._cmd_print,
         _subparser=print_parser, _layout_dests=layout_dests,
     )
 
@@ -522,7 +522,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit the listing as one JSON document with stable key names",
     )
     profile_list_parser.set_defaults(
-        func=commands._cmd_profile_list, _command="profile", _subparser=profile_list_parser,
+        func=commands._cmd_profile_list, _subparser=profile_list_parser,
     )
 
     profile_show_parser = profile_subparsers.add_parser(
@@ -534,7 +534,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="emit the profile as one JSON document with stable key names",
     )
     profile_show_parser.set_defaults(
-        func=commands._cmd_profile_show, _command="profile", _subparser=profile_show_parser,
+        func=commands._cmd_profile_show, _subparser=profile_show_parser,
     )
 
     profile_set_parser = profile_subparsers.add_parser(
@@ -600,7 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     profile_set_parser.set_defaults(
-        func=commands._cmd_profile_set, _command="profile", _subparser=profile_set_parser,
+        func=commands._cmd_profile_set, _subparser=profile_set_parser,
     )
 
     return parser

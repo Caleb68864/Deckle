@@ -303,6 +303,16 @@ def reorder_pages(project: Project, old_index: int, new_index: int) -> Project:
     Operates purely on ``project.pages`` (a plain ``list[SourcePage]``) --
     never touches a PDF page-tree.
 
+    **Not the drag-and-drop path.** The grid uses
+    :func:`reorder_pages_to`, which takes the whole resulting order, for
+    the reason that function's docstring gives: Qt reorders its own model
+    during a drop by inserting a copy and removing the original rather
+    than emitting a move, so reconstructing a ``(from, to)`` pair from
+    what the view is left holding is guesswork. ``arrange_view`` used to
+    carry a ``reorder(state, old, new)`` wrapper around this; it had no
+    production caller and was removed, because its only effect if one had
+    appeared would have been to reintroduce that guess.
+
     :param project: the project to derive a new one from. Never mutated;
         ``Project`` is frozen, which is what makes undo a matter of holding
         a reference rather than deep-copying.

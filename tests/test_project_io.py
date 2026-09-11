@@ -137,24 +137,15 @@ def test_load_raises_source_missing_error_for_deleted_file(tmp_path):
     assert not isinstance(exc_info.value, SourceChangedWarning)
 
 
-def test_source_missing_error_relocate_records_new_path(tmp_path):
-    """The relocate affordance lets a caller (CLI/UI) record where the
-    missing source was actually found, for a subsequent load/save cycle."""
-    content = b"original content"
-    source_path = _make_source_file(tmp_path, content=content)
-    project = _make_project(source_path, content)
-
-    out_path = os.path.join(str(tmp_path), "proj.deckle")
-    save_project(project, out_path)
-    os.remove(source_path)
-
-    with pytest.raises(SourceMissingError) as exc_info:
-        load_project(out_path)
-
-    relocated = os.path.join(str(tmp_path), "relocated.pdf")
-    result = exc_info.value.relocate(relocated)
-    assert result == relocated
-    assert exc_info.value.relocated_path == relocated
+# `test_source_missing_error_relocate_records_new_path` lived here. It
+# asserted that `relocate(x)` returns `x` and stores it on the exception,
+# and its docstring claimed that was "for a subsequent load/save cycle" --
+# a cycle no code in Deckle can perform, because `load_project` has no
+# parameter that would take the substitute. The method set an attribute on
+# an object its own catcher discarded, so the test could not fail: it
+# compared a setter with its argument. Both are gone. What mattered here
+# -- that a deleted source raises `SourceMissingError` naming the path it
+# looked for -- is asserted by the test above.
 
 
 def test_load_still_raises_source_changed_warning_when_file_exists(tmp_path):

@@ -44,7 +44,6 @@ from deckle.app.state import (
     AppState,
     insert_blank,
     remove_pages,
-    reorder_pages,
     reorder_pages_to,
     set_rotation,
     skip_pages,
@@ -109,18 +108,6 @@ def request_visible_thumbnails(
 
 
 # -- mutation helpers, each routed through AppState.mutate -------------
-
-
-def reorder(state: AppState, old_index: int, new_index: int) -> None:
-    """Move a page, through ``AppState.mutate``.
-
-    :param state: the app state to mutate.
-    :param old_index: where the page is now.
-    :param new_index: where it should end up.
-    :returns: nothing; read the result back from ``state.project``.
-    :raises IndexError: ``old_index`` is out of range.
-    """
-    state.mutate(lambda project: reorder_pages(project, old_index, new_index))
 
 
 def reorder_to(state: AppState, order: list[int]) -> None:

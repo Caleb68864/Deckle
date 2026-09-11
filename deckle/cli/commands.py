@@ -252,9 +252,18 @@ def _layout_flags_given(args: argparse.Namespace) -> list[str]:
     rediscover the subparser the arguments had just come out of. It then
     built a *second* throwaway parser, in ``_layout_dests``, to read
     back the dests of the flags that subparser already carried.
-    ``set_defaults`` carries both instead -- which is how ``_command``
-    already reached here -- so ``build_parser`` runs exactly once per
-    invocation and this function constructs nothing at all.
+    ``set_defaults`` carries both instead, so ``build_parser`` runs
+    exactly once per invocation and this function constructs nothing at
+    all.
+
+    That rewrite left ``_command`` behind: ten ``set_defaults`` calls
+    went on naming the subcommand a second time, nothing ever read it,
+    and this docstring cited it as the precedent for the fix -- a
+    sentence certifying a dead value as live, in the paragraph explaining
+    why it is no longer needed. The ten are gone. ``args.command`` is
+    **not**: ``add_subparsers(dest="command")`` is what argparse prints
+    when no subcommand is given (*"the following arguments are required:
+    command"*), so it is read, by argparse, into something a user sees.
     """
     sub = getattr(args, "_subparser", None)
     if sub is None:
