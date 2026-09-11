@@ -61,7 +61,7 @@ from deckle.core.diagnostics import (
     log_exception,
 )
 from deckle.app.views.arrange_view import ArrangeView
-from deckle.app.views.import_view import ImportView
+from deckle.app.views.import_view import ImportView, import_advisory_message
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.print_dialog import (
@@ -533,12 +533,13 @@ class MainWindow:
         #: bar has ONE writer and a later import cannot leave a stale
         #: instruction up.
         self._printer_message = ""
-        #: Why the last import was refused, or "" when the last one was
-        #: not. Held for the same reason `_printer_message` is: printer
-        #: enumeration finishes on a background thread and ends in a
-        #: `_refresh_status_message()`, so a failure written straight to
-        #: the bar could be wiped a moment later by an unrelated message,
-        #: with nothing left to say it ever appeared.
+        #: What the last import had to say -- why it was refused, or what
+        #: it left behind -- or "" when it had nothing to report. Held for
+        #: the same reason `_printer_message` is: printer enumeration
+        #: finishes on a background thread and ends in a
+        #: `_refresh_status_message()`, so a message written straight to
+        #: the bar could be wiped a moment later by an unrelated one, with
+        #: nothing left to say it ever appeared.
         self._import_message = ""
         #: Asked, before a document is thrown away, what to do with the
         #: unsaved work. Injected the way `confirm_recovery` is, so the
@@ -693,10 +694,28 @@ class MainWindow:
         self._refresh_status_message()
 
     def _on_imported(self, pages, warnings) -> None:
+        """Take an import's pages, and say what it left behind.
+
+        :param pages: the newly imported pages. Not read here: they are
+            already in ``state.project`` by the time this runs, and the
+            views below read them from there.
+        :param warnings: the loader's advisories. **This is the half that
+            was missing.** ``ImportView`` carried them across the signal
+            and this slot ignored both arguments, so a folder of scans
+            containing four files Deckle will not take imported silently
+            and the book came out four pages short. The CLI has always
+            printed them.
+        :returns: nothing.
+        """
         # The failure this replaces is no longer the newest true thing,
         # and an error about a file the user has since replaced is worse
-        # than silence.
-        self._import_message = ""
+        # than silence. An advisory about the import that just happened
+        # takes its place in the same slot, for the same reason
+        # `_refresh_status_message` gives: it is the answer to something
+        # the user did a second ago.
+        self._import_message = import_advisory_message(warnings)
+        if self._import_message:
+            log_event("import_advisory", detail=self._import_message)
         self.arrange_view.refresh()
         self._sync_document_actions()
         # An import is a project mutation like any other, so it lands on
@@ -750,18 +769,22 @@ class MainWindow:
     def _refresh_status_message(self) -> None:
         """Say the most useful true thing about the current state.
 
-        There are four, in order of precedence: a refused import, then a
-        printer fault the user cannot otherwise see, then the next step
-        when nothing is loaded, then nothing at all. Silence is the right
-        answer for a document that is ready to print -- the status bar is
-        not a place to announce that everything is fine.
+        There are four, in order of precedence: the last thing an import
+        said, then a printer fault the user cannot otherwise see, then the
+        next step when nothing is loaded, then nothing at all. Silence is
+        the right answer for a document that is ready to print -- the
+        status bar is not a place to announce that everything is fine.
 
-        The refused import outranks the printer fault while it lasts. A
-        printer fault is a standing condition; a refused import is the
-        answer to something the user did a second ago, and it is the only
-        one of the two they can act on with no document loaded. It is
-        cleared by the next successful import, at which point the printer
-        fault comes back.
+        "The last thing an import said" is a refusal *or* an advisory --
+        an import that succeeded while leaving files behind. Both go in
+        one slot because both are answers to something the user did a
+        second ago, and a second successful import replaces either.
+
+        The import outranks the printer fault while it lasts. A printer
+        fault is a standing condition; what an import just said is the
+        only one of the two the user can act on with no document loaded.
+        It is cleared by the next import that has nothing to report, at
+        which point the printer fault comes back.
         """
         if self._import_message:
             self.status_bar.showMessage(self._import_message)

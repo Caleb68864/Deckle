@@ -73,6 +73,39 @@ def load_and_apply_import(
     return page_list, warnings
 
 
+def import_advisory_message(warnings: Sequence[object]) -> str:
+    """One line saying what the import quietly left out, or ``""``.
+
+    ``load_and_apply_import`` returns its warnings "so a caller can report
+    what it just added", and for the whole life of the GUI the caller did
+    not: ``MainWindow._on_imported`` took the list and read neither entry.
+    The CLI has always printed them (``deckle.cli.report``), so importing
+    a folder of scans on the command line told you that four files were
+    skipped and importing the same folder in the app did not.
+
+    That is the one advisory the loader raises that changes what reaches
+    paper. ``skipped_non_image_files`` means pages the user believes they
+    scanned are not in the book, and nothing downstream can notice: the
+    plan, the preview and the exported PDF are all internally consistent
+    around the gap. It is found by counting the printed book.
+
+    Pure and Qt-free, like everything above the Qt wiring in this module,
+    so the wording is testable without a display.
+
+    :param warnings: the advisories from :func:`load_and_apply_import`.
+        Objects carrying ``.detail``; anything else is rendered with
+        ``str`` rather than dropped, because an advisory nobody can read
+        is still better than an advisory nobody is shown.
+    :returns: the status-bar text, or ``""`` when there is nothing to say.
+    """
+    details = [
+        getattr(warning, "detail", None) or str(warning)
+        for warning in warnings
+    ]
+    details = [detail for detail in details if detail]
+    return " ".join(details)
+
+
 # -- Qt wiring ---------------------------------------------------------
 # Imported lazily inside the classes below so this module stays importable
 # (and load_and_apply_import stays callable) without PySide6/a display --
