@@ -12,6 +12,41 @@
 - Watch: `test_suite_imports_only_declared_dependencies.py` rejected the first draft's `from tests.conftest import ...` as a module-level dependency on an undeclared distribution, and it was right — a conftest is reached through pytest, not through `sys.path`. The helper is offered as a fixture instead. A guard with teeth, caught on the way in.
 - Commit: (this commit)
 
+## 2026-09-11 — OPEN, NEEDS THE OWNER: what is `docs/specs/` for? (D9 / P4)
+- **Not a fix, and deliberately not decided here.** Two findings — maintainability row 15 (D9) and scan-2 P4 — are the same question wearing two hats, and it is a question about intent that only the owner can answer. Everything below is measured, so the answer can be one sentence.
+- **What is actually there**, counted rather than estimated (`scratchpad/fix15/deckle/measure_specs.py`, which refuses to report if it finds no files or matches no references):
+
+  | | whole `docs/specs/` | the `2026-09-04-roadmap/` subtree |
+  |---|---|---|
+  | markdown files | 117 | 83 |
+  | lines | 61,971 | 51,403 |
+  | `path.py` references | 5,798 | 4,430 |
+  | …of those, pinned to a `:NNN` | 1,779 | 1,704 |
+  | references to a path that no longer exists | **539** (67 distinct paths) | 454 (64 distinct) |
+  | `:NNN` past the end of a file that does exist | **2** | 2 |
+
+- **The last two rows are the whole difficulty.** The 539 broken paths are mechanically checkable and split into two honest kinds: files that were *restructured away* (`deckle/cli.py`, 181 references) and files that were *never built* (`deckle/app/views/calibration_wizard.py`, `deckle/core/calibration.py`, `deckle/core/registration.py` — the calibration wizard the README already records as not built). But the line pins are not checkable at all: only **2** of 1,779 overshoot a file's end, because the usual drift is line 519 now holding *different* code, not no code. No test can see that. Nothing in `tests/` checks any of it today.
+- **P4 is the concrete instance.** B6 was settled on 2026-09-08 and the code shipped; `docs/ROADMAP.md:83` marks it ✅ while citing `app/backend.py:519-529`, where the code now sits at `624-675`. `index.md:76` and `:216` still list B6 as *"Two branches; owner picks"*, and `B6-true-size-or-fit-to-margins.md`'s header still reads **"Decision needed first: yes, and it is the whole spec"** — with a "verify on the unfixed tree" command underneath it. Cross-references in B15/B16/B17/B36/N2/N3/F1 still describe the pre-B6 scaling as current behaviour. A reader who opens B6 today is told the program's most-settled print decision is still open.
+
+### Option A — a dated design record
+The tree is what was decided on 2026-09-04 at commit `08e7f49`, and it is not maintained. Line numbers are historical by definition; the reasoning is the artifact.
+
+- **One-time cost:** a banner on `index.md` and the two sibling subtree roots saying so; one triage pass over the 67 missing paths to separate "restructured away" from "never built"; one test asserting every referenced *path* either exists or is on the declared never-built list. Half a day, most of it the triage.
+- **Ongoing cost:** near zero. The test fires only when a file is deleted or renamed, which is rare and is exactly when someone should look.
+- **What P4 becomes:** not a defect. B6's header is a correct record of the question *as it stood that day*, and the banner is what stops it reading as current. Nothing in the 83 files needs rewriting.
+- **What it gives up:** the specs stop being usable as navigation — 1,779 line pins stay wrong, openly. A reader must grep.
+
+### Option B — a live document
+The tree states current intent, and a change that moves code updates it.
+
+- **One-time cost:** rewrite B6's header and the `index.md` rows to record the answer, and the seven cross-references that describe pre-B6 behaviour as current (P4, small). Then the real bill: 1,779 `:NNN` pins that cannot be mechanically verified and will be wrong again after the next refactor. Keeping them honest by hand is not sustainable, so this option realistically means **dropping the line pins entirely** and citing symbols instead — a one-time edit across 1,779 sites in 117 files, with no test able to confirm the result.
+- **Ongoing cost:** every refactor that moves a file or renames a symbol becomes a docs change too, across a tree eight times the size of `deckle/` itself. `tests/test_docs_are_current.py` already does this for the README and GUIDE; extending it to 61,971 lines of spec is a different order of thing.
+- **What it gives:** the tree stays usable as navigation and as a statement of what Deckle is currently trying to be.
+
+### What would settle it
+One sentence: *"the spec tree is a dated record — banner it and check the paths"*, or *"the spec tree is live — drop the line pins and keep it current."* Both are defensible; they differ mostly in whether anyone will read these files to find code, or only to find reasoning. Whoever answers should also say whether the never-built calibration files (`calibration_wizard.py`, `core/calibration.py`, `core/registration.py`) are still planned, because that is the same question about the roadmap rather than about the specs, and the answer to one constrains the other.
+- Commit: (this commit)
+
 ## 2026-09-11 — The dead-code tail: H3, H4, H6, H8, H9, H11, decided one at a time
 - Six rows scoring 4 or below, all the same complaint — written and never read, each carrying a docstring asserting it is live. Taken individually rather than as a sweep, because the right answer differs per row and a uniform one would be wrong four times out of six. The standing lesson is a sibling project's `resolveComponent`: unreachable from both ends, where *wiring* it cost fifteen lines and deleting would have thrown away ~250 lines of finished hardening.
 - **H8 — half of it was a false positive, and checking is what found that.** `args._command` (ten `set_defaults` sites) is genuinely dead: nothing in `deckle/` or `tests/` reads it, and `_layout_flags_given`'s own docstring cited it as the precedent for the rewrite that made it unnecessary — a sentence certifying a dead value as live, inside the paragraph explaining why it is not needed. The ten are gone and the sentence is corrected. **`args.command` is not dead.** `add_subparsers(dest="command")` is what argparse prints when no subcommand is given, and running the program says so: `deckle-cli: error: the following arguments are required: command`. It is read — by argparse, into something a user sees. Removing it on the strength of a grep would have changed the error message a first-time user gets.
