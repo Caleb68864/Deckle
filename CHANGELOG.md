@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing released yet. The gutter-shift path is functional and hardened.
 Saddle-stitch signature imposition is implemented but **experimental** --
-see the README. The calibration wizard is not built.
+see the README. The calibration wizard is not built; its printed half,
+`calibration-sheet`, is.
 
 ### Added
 
@@ -34,9 +35,10 @@ see the README. The calibration wizard is not built.
   instructions, test-one-sheet, chunked submission, sheet-granular resume,
   and a session log.
 - **CLI** — installed as `deckle-cli` (`deckle` is the desktop app), or
-  `python -m deckle.cli`. Eight subcommands: `impose`, `export`, `info`,
-  `schedule`, `crop-preview`, `dummy`, `print` and `profile`, plus
-  `--version`. Imports only `deckle.core`, so it runs headlessly.
+  `python -m deckle.cli`. Nine subcommands: `impose`, `export`, `info`,
+  `schedule`, `crop-preview`, `dummy`, `print`, `profile` and
+  `calibration-sheet`, plus `--version`. Imports only `deckle.core`, so it
+  runs headlessly.
   `export` additionally takes `--sheets` (a subset, for proofs),
   `--rule` (a printed ruler to check the printer's scaling), and
   `--pass`/`--profile`/`--back-offset` for manual duplex. Every command

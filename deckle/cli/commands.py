@@ -336,29 +336,9 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
     pages = _load_source_or_report(args.source)
     if pages is None:
         return None
-    # Before the layout, and so before `--auto-crop`, deliberately: a
-    # scanner target's black calibration bar must not widen the measured
-    # ink extent of a book it is not part of. `auto_crop_insets` already
-    # excludes skipped pages.
-    selection = getattr(args, "page_selection", None)
-    if selection is not None:
-        try:
-            selected = apply_page_selection(pages, keep=selection)
-        except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            log_exception("page_selection_rejected", exc)
-            return None
-        # `apply_page_selection` returns a plain list, which drops
-        # `ImportedPages.warnings` -- and with them every mixed-DPI
-        # advisory an image-directory import raised.
-        pages = ImportedPages(selected, list(getattr(pages, "warnings", [])))
-        if all(page.skipped for page in pages):
-            print(
-                "error: --pages kept no pages, so there would be nothing "
-                "to impose",
-                file=sys.stderr,
-            )
-            return None
+    pages = _select_pages_or_report(pages, args)
+    if pages is None:
+        return None
     try:
         settings = _build_layout_settings(args)
     except ValueError as exc:
@@ -372,6 +352,49 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
     if getattr(args, "auto_crop", False):
         settings = _apply_auto_crop(pages, settings, args)
     return pages, settings
+
+
+
+def _select_pages_or_report(pages, args: argparse.Namespace):
+    """Apply ``--pages``, or print an actionable error and return ``None``.
+
+    Applied **before** the layout, and so before ``--auto-crop``,
+    deliberately: a scanner target's black calibration bar must not widen
+    the measured ink extent of a book it is not part of.
+    ``auto_crop_insets`` already excludes skipped pages.
+
+    One function rather than a block in each caller, because ``export``
+    and ``crop-preview`` have to exclude *the same* pages from *the same*
+    measurement. ``crop-preview`` is where a person looks at what
+    ``--auto-crop`` found before committing to it, so a picture drawn over
+    a different set of pages than the crop was measured on is the one
+    thing that command must not produce.
+
+    :param pages: what the loader returned.
+    :param args: parsed arguments; ``page_selection`` may be absent.
+    :returns: the pages, with the excluded ones marked skipped, or
+        ``None`` when the selection was refused.
+    """
+    selection = getattr(args, "page_selection", None)
+    if selection is None:
+        return pages
+    try:
+        selected = apply_page_selection(pages, keep=selection)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        log_exception("page_selection_rejected", exc)
+        return None
+    # `apply_page_selection` returns a plain list, which drops
+    # `ImportedPages.warnings` -- and with them every mixed-DPI advisory
+    # an image-directory import raised.
+    pages = ImportedPages(selected, list(getattr(pages, "warnings", [])))
+    if all(page.skipped for page in pages):
+        print(
+            "error: --pages kept no pages, so there would be nothing left",
+            file=sys.stderr,
+        )
+        return None
+    return pages
 
 
 
@@ -733,6 +756,11 @@ def _cmd_crop_preview(args: argparse.Namespace) -> int:
     pages = _load_source_or_report(args.source)
     if pages is None:
         return 1
+    # Before the measurement, not after: the same order `_resolve_input`
+    # uses, and the reason `crop-preview` needed `--pages` at all.
+    pages = _select_pages_or_report(pages, args)
+    if pages is None:
+        return 1
 
     crop = args.crop
     if args.auto_crop:
@@ -817,6 +845,73 @@ def _cmd_dummy(args: argparse.Namespace) -> int:
         "eight-page folio puts 8 and 1 on the outside of the sheet and 4 "
         "and 5 at the centre."
     )
+    return 0
+
+
+
+def _cmd_calibration_sheet(args: argparse.Namespace) -> int:
+    """Write the duplex calibration sheet, one file per orientation.
+
+    The printed half of the calibration wizard the README records as not
+    built. ``PrinterProfile``'s four paper-behaviour fields -- ``flip_axis``,
+    ``reverse_stack``, ``output_face``, ``feed_edge`` -- are not reported
+    by any driver, and until now the only way to set them was to guess a
+    built-in preset and find out on a finished book.
+
+    **Both orientations by default, and that is not padding.** The flip
+    rule inverts between portrait and landscape: a portrait sheet's
+    vertical edge is its long one, a landscape sheet's is its short one.
+    An operator who calibrates portrait alone and generalises gets the
+    other half backwards, which is the defect the README and the GUIDE
+    both carried until 2026-09-11.
+    """
+    from deckle.core.calibration_sheet import make_calibration_pdf
+
+    wanted = (
+        ("portrait", "landscape")
+        if args.orientation == "both"
+        else (args.orientation,)
+    )
+    targets = [(name, _pass_output_path(args.output, name)) for name in wanted]
+
+    # Every path checked before anything is written, so a mistyped second
+    # destination does not leave one orientation on disk and the other
+    # not -- a half-written pair is worse than none, because the operator
+    # has no way to see which half is missing.
+    for _name, path in targets:
+        if report._report_output_problem(path):
+            return 1
+
+    for name, path in targets:
+        try:
+            make_calibration_pdf(
+                path, args.paper, landscape=(name == "landscape"), sheets=args.sheets
+            )
+        except OSError as exc:
+            report._report_write_failure(path, exc)
+            return 1
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            log_exception("calibration_sheet_failed", exc, sheets=args.sheets)
+            return 1
+        print(f"wrote {path} -- {name}, {args.sheets} sheet(s), {args.sheets * 2} faces")
+
+    print(
+        "Page 1 tells you what to do and holds the grid to fill in. Print "
+        "the front pages, turn the stack over the way you normally would, "
+        "print the back pages, then read the paper."
+    )
+    print(
+        "Nothing in these files is imposed -- the pages come out in plain "
+        "order, so what you observe is evidence about the printer rather "
+        "than a check of Deckle against itself."
+    )
+    if args.orientation == "both":
+        print(
+            "Do both files: the rule that turns the answers into a profile "
+            "inverts between portrait and landscape."
+        )
+    print("Then record what you found with: deckle-cli profile set NAME ...")
     return 0
 
 

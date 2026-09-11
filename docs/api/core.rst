@@ -15,7 +15,11 @@ them: it is described (:mod:`~deckle.core.models`), loaded off disk
 :mod:`~deckle.core.pdfium_lock`), persisted
 (:mod:`~deckle.core.project_io`), and finally printed
 (:mod:`~deckle.core.printing`, :mod:`~deckle.core.profiles`,
-:mod:`~deckle.core.print_session`). :mod:`~deckle.core.report` describes
+:mod:`~deckle.core.print_session`).
+:mod:`~deckle.core.calibration_sheet` sits beside
+:mod:`~deckle.core.profiles` and deliberately *outside* that chain: it is
+the printed target whose whole value is that it does not use the pass
+planner. :mod:`~deckle.core.report` describes
 any of that as JSON for the CLI's ``--json`` flags, and the two log
 modules sit underneath all of it.
 
@@ -42,6 +46,7 @@ modules sit underneath all of it.
    core.printing
    core.recent
    core.profiles
+   core.calibration_sheet
    core.print_session
    core.schedule
    core.report
