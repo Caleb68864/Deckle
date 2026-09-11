@@ -1628,10 +1628,6 @@ CONTROLS: tuple[Control, ...] = (
 )
 
 
-#: Every control, by name. Built once, so a lookup is not a scan.
-CONTROLS_BY_NAME: dict[str, Control] = {spec.name: spec for spec in CONTROLS}
-
-
 # -- Qt wiring -----------------------------------------------------------
 # Imported lazily so this module -- and every pure function above -- stays
 # importable without PySide6/a display, matching arrange_view.py/import_view.py.

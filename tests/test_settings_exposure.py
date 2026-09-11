@@ -378,6 +378,55 @@ def test_the_non_control_routes_still_exist():
         )
 
 
+# -- 4. the choices offered are the choices the model accepts -------------
+#
+# `layout_panel` keeps a tuple per multiple-choice setting and builds the
+# combo's options from it. Three of the four feed a control; `FOLD_SCHEMES`
+# feeds none, because the Single/Signatures tabs are the mode -- which
+# leaves it free to drift from the `Literal` it is supposed to mirror,
+# with nothing to notice (H12). It is kept rather than deleted: F7
+# (quarto) and F8 (french fold) both name it as the place their scheme
+# gets added, so deleting it would strand two written plans.
+#
+# The live three are worth the same guard for a sharper reason: a combo
+# offering a value the model refuses is an option that raises when
+# clicked, and one missing a value the model accepts is a setting a saved
+# project can hold and the panel cannot show.
+
+#: ``layout_panel`` constant -> the ``LayoutSettings`` field it mirrors.
+CHOICE_CONSTANTS: dict[str, str] = {
+    "BINDING_EDGES": "binding_edge",
+    "LANDSCAPE_POLICIES": "landscape_policy",
+    "FOLD_SCHEMES": "fold_scheme",
+    "BLANK_MODES": "blank_mode",
+}
+
+
+@pytest.mark.parametrize(("constant", "field"), sorted(CHOICE_CONSTANTS.items()))
+def test_the_offered_choices_match_the_model(constant: str, field: str):
+    import typing
+
+    from deckle.app.views import layout_panel
+
+    offered = getattr(layout_panel, constant, None)
+    assert offered is not None, (
+        f"{constant} is gone; if that is deliberate remove its row here, "
+        "but F7 and F8 both name FOLD_SCHEMES as where a new scheme lands"
+    )
+
+    hints = typing.get_type_hints(LayoutSettings)
+    accepted = typing.get_args(hints[field])
+    # The premise: this only means anything while the field really is a
+    # Literal. A field widened to `str` would make `accepted` empty and
+    # every comparison below trivially wrong rather than trivially right.
+    assert accepted, f"{field} is no longer a Literal, so there is nothing to match"
+
+    assert tuple(offered) == tuple(accepted), (
+        f"layout_panel.{constant} offers {tuple(offered)} while "
+        f"LayoutSettings.{field} accepts {tuple(accepted)}"
+    )
+
+
 # -- 3. the escape hatches are reachable ----------------------------------
 
 
