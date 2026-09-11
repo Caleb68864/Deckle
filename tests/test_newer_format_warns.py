@@ -197,13 +197,10 @@ def test_a_version_that_is_not_an_integer_raises_no_advisory(version):
     that module answers "is this a profile", and a version this build
     cannot compare has never been what makes one.
 
-    Checked on ``_warn_if_newer_profile`` directly, deliberately. A
-    versionless profile does **not** currently load at all -- ``version``
-    is a required field with no default, so ``cls(**kwargs)`` raises
-    ``TypeError``. That is a pre-existing limitation with a real cost (a
-    downgrade loses a measured calibration rather than ignoring a field),
-    it is not what this change is about, and asserting the whole load here
-    would tie this rule to it.
+    Checked on ``_warn_if_newer_profile`` directly, deliberately: it pins
+    the rule without tying it to what ``load`` does afterwards. The
+    through-the-load half is
+    ``test_a_calibration_with_no_version_loads_and_says_nothing`` below.
     """
     from deckle.core.profiles import _warn_if_newer_profile
 
@@ -212,6 +209,161 @@ def test_a_version_that_is_not_an_integer_raises_no_advisory(version):
         _warn_if_newer_profile("Brother", version)
 
     assert not [w for w in caught if issubclass(w.category, NewerProfileAdvisory)]
+
+
+# -- the other half: a calibration with no version at all --------------
+#
+# Decided 2026-09-11, a day after the newer-file rule above and by the same
+# reasoning carried one step further. `version` was a required dataclass
+# field with no default, so `cls(**kwargs)` raised `TypeError` and a
+# profile that omitted it did not open at all -- the exact failure `load`'s
+# own docstring says it exists to prevent, and worse than the newer-file
+# case it sits beside, because there is no way forward from it at all.
+#
+# The GUIDE tells people a hand-edited profile survives, and
+# `calibration-sheet` now exists, so hand-written profiles are about to be
+# the ordinary case rather than a hypothetical one.
+
+
+def _write_profile_without(name, *fields, extra=None):
+    """A saved profile with ``fields`` removed from the JSON.
+
+    Written through ``save`` first so the payload is exactly what Deckle
+    writes, then edited -- a hand-built dict would let this test decide the
+    shape it is checking.
+    """
+    BUILTIN_PRESETS["generic_face_down_reversed"].save(name)
+    from deckle.core.profiles import _profile_path
+
+    path = _profile_path(name)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for field in fields:
+        data.pop(field, None)
+    if extra:
+        data.update(extra)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def test_a_calibration_with_no_version_loads_and_says_nothing(profile_dir):
+    """The measurement survives a missing bookkeeping integer.
+
+    Before 2026-09-11 this raised
+    ``TypeError: PrinterProfile.__init__() missing 1 required positional
+    argument: 'version'``.
+    """
+    _write_profile_without(
+        "Brother", "version", extra={"flip_axis": "short", "back_offset_x_pt": 3.5}
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        loaded = PrinterProfile.load("Brother")
+
+    assert loaded.version == PROFILE_VERSION, "read as this build's shape"
+    # The measured values are the point. A load that returned a preset
+    # would satisfy the line above and lose the calibration.
+    assert loaded.flip_axis == "short"
+    assert loaded.back_offset_x_pt == 3.5
+    assert not [w for w in caught if issubclass(w.category, NewerProfileAdvisory)], (
+        "a versionless file is not a file from the future"
+    )
+
+
+def test_the_print_dialog_can_be_opened_with_a_versionless_calibration(profile_dir):
+    """The surface that made this worse than the CLI.
+
+    ``resolve_profile`` catches ``(FileNotFoundError, OSError, ValueError)``
+    and runs inside ``PrintDialog.__init__``. ``TypeError`` is not in that
+    tuple, so one hand-edited file did not degrade a printer to
+    uncalibrated -- it made the Print dialog impossible to open. The CLI's
+    four ``except`` clauses all list ``TypeError`` and reported it.
+    """
+    from deckle.app.views.print_dialog import resolve_profile
+
+    _write_profile_without("Brother", "version", extra={"flip_axis": "short"})
+
+    resolved = resolve_profile("Brother")
+
+    assert resolved.flip_axis == "short", "the saved calibration, not a preset"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["flip_axis", "output_face", "feed_edge", "reverse_stack", "imageable_area_pt"],
+)
+def test_a_calibration_missing_a_measurement_is_still_refused(profile_dir, field):
+    """The control on the rule above: bookkeeping is supplied, a
+    measurement never is.
+
+    ``deckle-cli profile set`` already refuses to create a profile without
+    ``--from`` -- *"a printer profile has no partial form"* -- and this is
+    the same refusal on the reading side. A value this reader invented
+    would plan a back pass against a printer nobody measured.
+    """
+    path = _write_profile_without("Brother", field)
+
+    with pytest.raises(ValueError) as raised:
+        PrinterProfile.load("Brother")
+
+    message = str(raised.value)
+    assert repr(field) in message, "it must name the field"
+    assert str(path) in message, "and the file, so it can be opened"
+
+
+def test_a_missing_measurement_reaches_the_print_dialog_as_a_fallback(profile_dir):
+    """Refused, but not as a ``TypeError`` out of ``PrintDialog.__init__``.
+
+    This is the half the fix to ``version`` alone would not have covered:
+    the refusal has to be a ``ValueError`` for the dialog's existing
+    ``except`` to see it.
+    """
+    from deckle.app.views.print_dialog import resolve_profile
+
+    _write_profile_without("Brother", "flip_axis")
+
+    resolved = resolve_profile("Brother")
+
+    assert resolved is not None, "the dialog still opens"
+
+
+def test_calibrated_at_is_not_supplied_either(profile_dir):
+    """Absent, there is no calibration run to claim.
+
+    ``calibrated_at`` and ``calibration_version`` describe a run that
+    measured this printer. Defaulting them to the built-ins' ``""``/``0``
+    would be a reader asserting a run did not happen, which is a different
+    claim from the file not saying. They stay required, and the refusal
+    names them.
+    """
+    _write_profile_without("Brother", "calibrated_at", "calibration_version")
+
+    with pytest.raises(ValueError) as raised:
+        PrinterProfile.load("Brother")
+
+    message = str(raised.value)
+    assert "'calibrated_at'" in message
+    assert "'calibration_version'" in message
+
+
+def test_constructing_a_profile_in_code_still_names_its_version():
+    """The default lives in the reader, not on the dataclass.
+
+    A caller building a profile in code knows which shape it is building;
+    only a caller reading one does not. Putting a default on the field
+    would have let a future constructor call silently record the wrong
+    version -- and would have forced a default onto every field after it.
+    """
+    with pytest.raises(TypeError):
+        PrinterProfile(
+            flip_axis="long",
+            output_face="down",
+            feed_edge="top",
+            reverse_stack=True,
+            imageable_area_pt=(18.0, 18.0, 18.0, 18.0),
+            calibrated_at="",
+            calibration_version=0,
+        )
 
 
 def test_this_builds_own_calibration_says_nothing(profile_dir):

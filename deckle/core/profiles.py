@@ -27,7 +27,7 @@ from urllib.parse import quote, unquote
 import warnings
 
 from deckle.core.paths import config_dir, write_text_atomic
-from deckle.core.schema import check_values
+from deckle.core.schema import StoredValueError, check_values
 
 PROFILE_VERSION = 1
 """The profile shape this build writes and understands.
@@ -143,7 +143,15 @@ class PrinterProfile:
 
         Tolerates field drift in both directions: keys this build does not
         recognise are dropped, and keys it expects but does not find fall
-        back to the dataclass defaults.
+        back to the dataclass defaults where a field *has* one.
+
+        **Two of them do not, and the difference is the whole rule.**
+        ``version`` is bookkeeping -- it says which shape wrote the file,
+        not what the printer does -- so a file without one is read as
+        :data:`PROFILE_VERSION` rather than refused. The five behavioural
+        fields are measurements, and this reader will not invent one; a
+        profile missing ``flip_axis`` is refused, by name. See
+        :func:`_supply_bookkeeping`.
 
         That is not speculative hardening. ``cls(**data)`` is a schema
         contract whether or not it was written as one, and the same latent
@@ -172,8 +180,14 @@ class PrinterProfile:
         :raises OSError: no profile is stored for that printer.
         :raises json.JSONDecodeError: the stored file is not valid JSON.
         :raises deckle.core.schema.StoredValueError: a stored value is not
-            one this build can honour. A ``ValueError``, so a caller with
-            a ``ValueError`` branch already reports it cleanly.
+            one this build can honour, or a field this build cannot
+            supply for itself is absent. A ``ValueError``, so a caller
+            with a ``ValueError`` branch already reports it cleanly --
+            which ``TypeError`` from ``cls(**kwargs)`` was not:
+            ``print_dialog.resolve_profile`` catches
+            ``(FileNotFoundError, OSError, ValueError)``, so one
+            hand-edited file did not degrade a printer to uncalibrated,
+            it made the Print dialog impossible to open.
         :raises NewerProfileAdvisory: never raised -- emitted through
             :mod:`warnings` when ``version`` exceeds
             :data:`PROFILE_VERSION`. A calibration is too expensive to
@@ -192,7 +206,13 @@ class PrinterProfile:
         _warn_if_newer_profile(name, data.get("version"))
         known = {field.name for field in dataclasses.fields(cls)}
         kwargs = {key: value for key, value in data.items() if key in known}
+        _supply_bookkeeping(kwargs)
+        # `check_values` after `_supply_bookkeeping`, so the value this
+        # reader supplies is type-checked like any other -- and before the
+        # missing-field check, so a `flip_axis` that is present and wrong
+        # is reported as wrong rather than as absent.
         check_values(cls, kwargs, subject="printer profile field")
+        _refuse_missing_measurements(cls, name, path, kwargs)
         # Every list back to a tuple, not just `imageable_area_pt`. That
         # entry's own lesson -- any `Type(**stored_dict)` breaks on the next
         # field change -- was applied here only to unknown keys; the tuple
@@ -204,6 +224,85 @@ class PrinterProfile:
             for key, value in kwargs.items()
         }
         return cls(**kwargs)
+
+
+def _supply_bookkeeping(kwargs: dict) -> None:
+    """Fill in the fields a reader may honestly answer for itself.
+
+    There is exactly one, and the list is short on purpose.
+
+    ``version`` records which shape wrote the file. It is not a fact about
+    the printer, and a file that omits it is not asking for behaviour this
+    build cannot produce -- it is a file written before the field existed,
+    or by a hand that did not know about it, which is the ordinary case
+    the GUIDE invites when it says a hand-edited profile survives. Reading
+    it as :data:`PROFILE_VERSION` says "nothing here came from the future",
+    which is true of every such file, and it is what
+    :func:`_warn_if_newer_profile` then correctly declines to warn about.
+
+    **Supplied by the reader, not defaulted on the dataclass**, and that
+    distinction is load-bearing: ``PrinterProfile(...)`` in code must still
+    name its version, because a caller constructing a profile knows which
+    shape it is building. Only a caller *reading* one does not.
+
+    The five behavioural fields -- ``flip_axis``, ``output_face``,
+    ``feed_edge``, ``reverse_stack``, ``imageable_area_pt`` -- are never
+    supplied here, and neither are ``calibrated_at`` and
+    ``calibration_version``. The first five are measurements: somebody
+    printed a target and read it with a ruler, and a value this reader
+    invented would plan a back pass against a printer nobody measured.
+    ``deckle-cli profile set`` already refuses to create a profile without
+    ``--from`` for that reason -- *"a printer profile has no partial
+    form"* -- and this is the same refusal on the reading side. The last
+    two are claims about a calibration *run*; absent, there is nothing to
+    claim, and saying ``""`` would assert a run that did not happen.
+
+    :param kwargs: the filtered stored values, modified in place.
+    :returns: nothing.
+    """
+    kwargs.setdefault("version", PROFILE_VERSION)
+
+
+def _refuse_missing_measurements(
+    cls: type, name: str, path: Path, kwargs: dict
+) -> None:
+    """Refuse a profile that is missing a field, by name, as a ``ValueError``.
+
+    Without this, ``cls(**kwargs)`` raises ``TypeError``, and the whole
+    cost of the defect is in which callers catch what: the CLI's four
+    ``except`` clauses list ``TypeError`` and report it, and
+    ``print_dialog.resolve_profile`` does not -- so in the desktop app a
+    single unreadable file propagated out of ``PrintDialog.__init__``.
+
+    The required-field set is read off the dataclass rather than written
+    out, so a field added to :class:`PrinterProfile` without a default is
+    covered the day it is added.
+
+    :param cls: the dataclass being built.
+    :param name: the printer, for the message.
+    :param path: the file the values came from, so the user can open it.
+    :param kwargs: the filtered stored values.
+    :returns: nothing.
+    :raises StoredValueError: one or more required fields are absent.
+    """
+    required = [
+        field.name
+        for field in dataclasses.fields(cls)
+        if field.default is dataclasses.MISSING
+        and field.default_factory is dataclasses.MISSING
+    ]
+    missing = [field for field in required if field not in kwargs]
+    if not missing:
+        return
+    raise StoredValueError(
+        f"the calibration for {name!r} is missing "
+        + ", ".join(repr(field) for field in missing)
+        + f". Those are measurements, not settings with a sensible default, "
+        f"so Deckle will not guess them -- guessing wrong prints every back "
+        f"onto the wrong front. The file is {path}. Add them, or delete it "
+        f"and run 'deckle-cli profile set {name} --from "
+        f"{next(iter(BUILTIN_PRESETS))}' to start from a built-in."
+    )
 
 
 def newer_profile_message(name: str, found: int) -> str:
@@ -225,10 +324,16 @@ def newer_profile_message(name: str, found: int) -> str:
 def _warn_if_newer_profile(name: str, found: object) -> None:
     """Emit :class:`NewerProfileAdvisory` for a profile from the future.
 
-    Older and versionless profiles say nothing. ``load`` has defaulted
-    missing fields from the start -- ``tests/.../B28`` pins a versionless
-    profile loading -- so an older file is not a surprise. A newer one may
-    be carrying a measurement that silently did not survive the read.
+    Older and versionless profiles say nothing. An older file is not a
+    surprise: ``load`` drops keys it does not know, and since 2026-09-11
+    :func:`_supply_bookkeeping` reads a versionless file as this build's
+    version rather than refusing it -- which is what makes "say nothing"
+    an answer this function can give at all. Before that, a versionless
+    profile never reached the warning, because it never loaded.
+    ``tests/test_newer_format_warns.py`` pins both halves.
+
+    A *newer* file is different: it may be carrying a measurement that
+    silently did not survive the read.
     """
     if not isinstance(found, int) or isinstance(found, bool):
         return
