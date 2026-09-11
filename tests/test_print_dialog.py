@@ -104,6 +104,12 @@ class _StubSession:
     ])
     fail_printer: str | None = None
     _pass_index: int = 0
+    # Carried because the dialog reads it, and a double that leaves a field
+    # off the state dict is how B36 stayed invisible: every test double
+    # faithfully reproduces the gap in the seam it is standing in for. The
+    # dialog indexes this rather than `.get(..., 0)`ing it, so a stub that
+    # drops it fails here instead of silently deciding it is zero.
+    _sheet_cursor: int = 0
     _finished: bool = False
     _last_error: str | None = None
     _test_sheet_pending: bool = False
@@ -134,6 +140,9 @@ class _StubSession:
     def resume(self, sheets_completed: int) -> None:
         self.resumed_with = sheets_completed
         self._pass_index = 1
+        # What the real `resume` does with the answer: it assigns the
+        # cursor absolutely. A resumed run mid-pass has fed paper already.
+        self._sheet_cursor = sheets_completed
 
     @classmethod
     def load(cls, plan, profile, backend, session_id, ask_sheets_printed=None):
@@ -157,7 +166,11 @@ class _StubSession:
 
     @property
     def state(self) -> dict:
-        return {"pass_index": self._pass_index, "test_sheet_pending": self._test_sheet_pending}
+        return {
+            "pass_index": self._pass_index,
+            "sheet_cursor": self._sheet_cursor,
+            "test_sheet_pending": self._test_sheet_pending,
+        }
 
     @staticmethod
     def list_resumable():

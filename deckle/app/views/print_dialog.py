@@ -130,6 +130,45 @@ def suggested_resume_count(summary: SessionSummary) -> int:
     return summary.sheet_cursor
 
 
+def pass_needs_reloading_first(state: dict) -> bool:
+    """Whether a pass is about to start that the operator has not loaded for.
+
+    ``_drive`` used to detect the reload moment by watching ``pass_index``
+    change *inside its own loop*, and that misses the commonest jobs there
+    are. ``PrintSession.start`` submits chunks until the front pass is
+    exhausted and then advances the pass itself, so on any plan whose
+    fronts fit in one chunk -- ``DEFAULT_CHUNK_SIZE`` is 10 -- the session
+    has already crossed from pass 0 to pass 1 before ``_drive`` takes its
+    first reading. The transition it is watching for has happened, the
+    comparison is ``1 != 1``, and the backs go through the machine with
+    nobody asked to turn the paper over.
+
+    A 40-page folio book is exactly ten sheets. Every "Signature N" reprint
+    is four to eight. Those are not edge cases; they are what this program
+    is for, and the failure is the one the whole manual-duplex design
+    exists to prevent -- backs printed on paper that was never turned.
+
+    So the question is not "did the pass index change while I was
+    watching?" but "is the next thing submitted the first chunk of a pass,
+    and is that pass one the operator has to load paper for?". That is
+    answerable from the state alone:
+
+    * ``sheet_cursor == 0`` -- nothing of this pass has been submitted, so
+      whatever the operator did last, they have not fed paper for this one.
+    * ``pass_index > 0`` -- pass 0's instruction is *"load paper face down
+      ... and print pass 1 (fronts)"*, which is advice about a run that has
+      already started by the time anything here can say it. Showing it
+      after the fronts are in the spooler would be worse than silence.
+
+    Pure and Qt-free, like the prompts above it, so the rule is testable
+    without a printer or a display.
+
+    :param state: ``PrintSession.state`` -- the persisted snapshot.
+    :returns: whether to show the reload instruction before going on.
+    """
+    return state["pass_index"] > 0 and state["sheet_cursor"] == 0
+
+
 def resume_count_prompt(summary: SessionSummary) -> str:
     """What the operator reads when an interrupted job is resumed.
 
@@ -713,6 +752,18 @@ class PrintDialog:
             self._show_offline_error("Cannot resume this print run", exc.detail)
             return
         self._session = session
+        # Before `resume`, not after, and not left to `_drive`: `resume`
+        # submits the first chunk itself, so by the time `_drive` sees the
+        # session the paper is already moving. The operator's own answer is
+        # the cursor that pass is about to start from -- zero means nothing
+        # of it has come out, so the stack in the tray is the previous
+        # pass's and has not been turned over.
+        if pass_needs_reloading_first(
+            {"pass_index": session.state["pass_index"], "sheet_cursor": count}
+        ):
+            instruction = session.reload_instruction
+            if instruction:
+                self._confirm_reload(instruction)
         session.resume(count)
         self._drive(session)
 
@@ -739,6 +790,16 @@ class PrintDialog:
                 session.confirm_test_sheet()
             else:
                 return
+
+        # Before the loop, because the loop cannot see a pass boundary the
+        # session crossed before `_drive` was called -- which is what
+        # `start()` does on any plan whose fronts fit in one chunk, and
+        # what `confirm_test_sheet()` just above may have done. See
+        # :func:`pass_needs_reloading_first`.
+        if pass_needs_reloading_first(session.state):
+            instruction = session.reload_instruction
+            if instruction:
+                self._confirm_reload(instruction)
 
         prior_pass_index = session.state["pass_index"]
         while not session.finished and session.last_error is None:
