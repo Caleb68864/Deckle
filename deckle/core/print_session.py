@@ -277,7 +277,9 @@ class _SessionState:
         )
 
 
-def _check_state(session_id: str, data: dict, plan: SheetPlan) -> None:
+def _check_state(
+    session_id: str, data: dict, plan: SheetPlan, profile: PrinterProfile
+) -> None:
     """Refuse a state file that would drive the printer somewhere real.
 
     The fourth reader of stored data to get this check, and the only one
@@ -302,6 +304,9 @@ def _check_state(session_id: str, data: dict, plan: SheetPlan) -> None:
     :param session_id: the session being loaded, for the message.
     :param data: the decoded state file.
     :param plan: the plan being resumed onto.
+    :param profile: the profile being resumed under. Needed for the
+        ``pass_index`` bound, which is ``plan_passes``' answer and not a
+        constant kept here.
     :returns: nothing.
     :raises StaleSessionError: the state cannot drive this plan.
     """
@@ -336,8 +341,28 @@ def _check_state(session_id: str, data: dict, plan: SheetPlan) -> None:
             f"this session's position ({data['sheet_cursor']}) is outside its "
             f"own list of {len(data['sheets'])} sheet(s)"
         )
-    if data["pass_index"] < 0:
-        refuse(f"this session's pass number ({data['pass_index']}) is negative")
+    # Bounded from *both* ends, like `sheet_cursor` above. Only the lower
+    # bound was checked, and the upper one is the one that hangs the
+    # program: `_current_pass()` returns `None` for a pass_index past the
+    # end, `_submit_chunk()` returns immediately on `None`, and neither
+    # `finished` nor `last_error` is ever set -- so `PrintDialog._drive`'s
+    # `while not session.finished and session.last_error is None` spins
+    # forever, on the GUI thread, with the window unresponsive and no way
+    # to cancel. Measured: 200,000 iterations with no state change.
+    #
+    # The bound is asked of `plan_passes` rather than written down as 2.
+    # Two is the answer today for every built-in profile, but it is
+    # `plan_passes`' answer to give: a constant here would be the pass
+    # count maintained in a second place, and the first sign it had drifted
+    # would be this function refusing a legitimate session -- or, worse,
+    # admitting the one it exists to refuse. `sheets` is validated against
+    # the plan just above, so the call is safe by the time it happens.
+    passes = len(plan_passes(plan, profile, sheets=data["sheets"]))
+    if not 0 <= data["pass_index"] < passes:
+        refuse(
+            f"this session's pass number ({data['pass_index']}) is not one of "
+            f"the {passes} pass(es) this document has"
+        )
     if data["copies"] < 1:
         refuse(f"this session asks for {data['copies']} copies")
     if data["dpi"] <= 0:
@@ -574,7 +599,7 @@ class PrintSession:
                 ),
             )
 
-        _check_state(session_id, data, plan)
+        _check_state(session_id, data, plan, profile)
         state = _SessionState.from_json(data)
 
         current_hash = _hash_plan(plan)
