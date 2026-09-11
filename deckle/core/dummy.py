@@ -107,7 +107,7 @@ def make_numbered_pdf(
 ) -> None:
     """Write a PDF of ``pages`` pages, each carrying its own number.
 
-    Run the result through ``deckle export`` with the scheme you want to
+    Run the result through ``deckle-cli export`` with the scheme you want to
     check, print it on scrap, fold it, and read the numbers. An eight-page
     folio should put 8 and 1 on the outside of the sheet and 4 and 5 at
     the centre; anything else is an ordering defect, and it takes about

@@ -261,8 +261,17 @@ class LayoutWarning:
         "sheet_orientation",
         "signature_padding",
         "creep_advisory",
-        "landscape_imageable_unverified",
         "grain_direction",
+        # Emitted by `loader.load_image_dir` and, until 2026-09-11, absent
+        # from this list -- so the one kind a *user* sees most often was
+        # the one the contract did not admit. Its opposite number,
+        # `landscape_imageable_unverified`, was declared here and emitted
+        # by nothing: it was specified for a v2 that would compare a
+        # portrait-measured `imageable_area_pt` against landscape paper,
+        # and a `PrinterProfile` holds one border for both orientations,
+        # so no code here can produce it. Declaring it cost a reader the
+        # belief that Deckle warns about something it cannot see.
+        "skipped_non_image_files",
     ]
     detail: str
 

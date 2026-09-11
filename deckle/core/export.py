@@ -250,7 +250,7 @@ def _place_output_page(
     # numbers the remedy needs -- which file, which page was asked for, how
     # many it has -- rather than surfacing pikepdf's `IndexError:
     # Accessing nonexistent PDF page number` as a traceback out of
-    # `deckle export`.
+    # `deckle-cli export`.
     page_count = len(src_pdf.pages)
     if not 0 <= ref.page_index < page_count:
         raise ValueError(

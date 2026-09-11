@@ -264,8 +264,16 @@ class PassExport:
     :ivar back_offset_pt: the profile's measured back-side correction, which
         applies to the back pass and is inert on the front.
     :ivar reload_instruction: what the person at the printer has to do
-        before feeding this pass. It travels with the file because whoever
-        prints it may never have seen Deckle.
+        before feeding this pass.
+
+        **It does not travel with the file**, and this entry used to say it
+        did. ``export`` writes viewer preferences into the PDF and no prose;
+        the instruction reaches a *screen* -- the CLI prints it after
+        ``wrote <path>`` and the app puts it in the status bar -- so the
+        person who receives ``book-back.pdf`` at a copy shop gets the sheet
+        order and the half turn baked into the pages and no account of how
+        to reload. Said plainly here because a field documented as travelling
+        with a file is one a caller stops feeling responsible for passing on.
     """
 
     side: Literal["front", "back"]

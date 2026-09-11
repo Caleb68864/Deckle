@@ -603,12 +603,29 @@ lands on, which edge feeds first, whether the operator must reverse the output
 stack, and which edge the operator flips on. From those, two decisions follow
 automatically:
 
-| Profile says | Effect on pass 2 |
-|---|---|
-| `reverse_stack: true` | Sheets are fed in **reverse** order |
-| `reverse_stack: false` | Sheets are fed in the **same** order |
-| `flip_axis: long` | Back faces are **rotated 180°** |
-| `flip_axis: short` | No rotation |
+| `reverse_stack` | Ejects | Sheets fed |
+|---|---|---|
+| `true` | **face down**, so the stack comes out inverted | in **reverse** order |
+| `false` | **face up**, keeping the order it printed | in the **same** order |
+
+The second decision needs the **paper** as well as the profile. The sheet has to
+turn about the edge that is vertical on it, because the spine runs head to tail
+under every scheme Deckle imposes — and which *named* edge that is depends on
+the orientation. A portrait sheet's vertical edge is its long one; a landscape
+sheet's is its short one. So `flip_axis` alone cannot decide the half turn:
+
+| Paper | `flip_axis` | Back faces |
+|---|---|---|
+| portrait | `long` | not rotated |
+| portrait | `short` | rotated 180° |
+| landscape | `long` | rotated 180° |
+| landscape | `short` | not rotated |
+
+`flip_axis` is a *measured* fact about the machine — which named edge the
+operator physically turns the stack about. It is compared against the job's own
+geometry, never read alone. A rule reading it alone is right for exactly one
+orientation and silently upside down for the other, which is a whole run of
+ruined paper with nothing on screen to suggest it.
 
 Deckle turns that into a sentence before you touch the stack — for example:
 *"After pass 1 finishes, reverse the printed stack (flip the whole stack over)

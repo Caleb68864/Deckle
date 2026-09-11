@@ -12,7 +12,7 @@ float without a word.
 Each one produced a confidently wrong result rather than an error:
 
 - ``binding_edge: "middle"`` is outside ``Literal["left", "right"]``, and
-  imposed a book bound on the *right* while ``deckle info`` reported no
+  imposed a book bound on the *right* while ``deckle-cli info`` reported no
   warnings.
 - ``flip_axis: "diagonal"`` is outside ``Literal["long", "short"]``, and
   planned the back pass as though the operator flips about the sheet's

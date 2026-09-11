@@ -112,7 +112,7 @@ def info_report(
     plan: SheetPlan,
     warnings: Iterable,
 ) -> dict:
-    """What ``deckle info --json`` prints.
+    """What ``deckle-cli info --json`` prints.
 
     :param source: the path the user named.
     :param source_kind: ``"pdf"``, ``"images"`` or ``"project"``.
@@ -171,7 +171,7 @@ def _sheet_instruction(sheet) -> dict:
 
 
 def schedule_report(source: str, schedule: Schedule) -> dict:
-    """What ``deckle schedule --json`` prints.
+    """What ``deckle-cli schedule --json`` prints.
 
     :param source: the path the user named.
     :param schedule: the schedule built from the plan.
@@ -286,14 +286,14 @@ def profile_report(
     origin: str,
     path: str | None = None,
 ) -> dict:
-    """What ``deckle profile show --json`` prints."""
+    """What ``deckle-cli profile show --json`` prints."""
     return _document(
         "profile", **profile_entry(name, profile, origin, path=path)
     )
 
 
 def profile_list_report(entries: Sequence[dict]) -> dict:
-    """What ``deckle profile list --json`` prints.
+    """What ``deckle-cli profile list --json`` prints.
 
     :param entries: rows built by :func:`profile_entry` -- the CLI
         builds them, being the layer that knows which files exist and
@@ -313,7 +313,7 @@ def print_plan_report(
     profile_origin: str,
     outputs: Sequence[str | None] | None = None,
 ) -> dict:
-    """What ``deckle print --json`` prints: the manual-duplex run's plan.
+    """What ``deckle-cli print --json`` prints: the manual-duplex run's plan.
 
     Every field comes from ``plan_passes`` -- the sheet order, the half
     turn, the reload wording. A second implementation of the ordering

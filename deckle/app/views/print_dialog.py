@@ -37,20 +37,42 @@ from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 def select_preselected_printer(
     printer_names: Sequence[str],
     profile_loader: Callable[[str], PrinterProfile],
+    recorded: str | None = None,
 ) -> str | None:
-    """The printer name to preselect: the first with a saved profile.
+    """The printer name to preselect: the one the project names, then the
+    first with a saved profile.
 
     Falls back to the first available printer (if any) when none of them
     has a saved ``PrinterProfile`` yet. Pure and Qt-free so it is directly
     unit-testable.
 
+    ``recorded`` outranks a calibration because it is the more specific
+    answer to the same question. A saved profile says *this printer has
+    been measured*; the project says *this book is for that printer*, which
+    the user typed, about this document. ``deckle-cli impose --printer`` has
+    stored it since the beginning -- "printer name to record in the
+    project", written into the ``.deckle`` and read back by
+    ``load_project`` -- and **nothing read it**. Opening such a project and
+    pressing Print preselected a different machine, and with it a different
+    calibration: a different reload instruction and a different measured
+    back offset, for a printer the user did not choose.
+
+    A recorded name that is not currently installed is ignored rather than
+    reported here: this function chooses among what exists, and a project
+    made on another machine naming a printer this one does not have is
+    ordinary rather than an error.
+
     :param printer_names: the printers to choose among, in the order Qt
         reported them.
     :param profile_loader: called with a printer name; raising means "no
         saved profile".
+    :param recorded: the printer the project was made for
+        (``Project.printer``), or ``None``.
     :returns: the printer to preselect, or ``None`` when there are no
         printers at all.
     """
+    if recorded and recorded in printer_names:
+        return recorded
     for name in printer_names:
         try:
             profile_loader(name)
@@ -128,6 +150,45 @@ def suggested_resume_count(summary: SessionSummary) -> int:
         argument.
     """
     return summary.sheet_cursor
+
+
+def pass_needs_reloading_first(state: dict) -> bool:
+    """Whether a pass is about to start that the operator has not loaded for.
+
+    ``_drive`` used to detect the reload moment by watching ``pass_index``
+    change *inside its own loop*, and that misses the commonest jobs there
+    are. ``PrintSession.start`` submits chunks until the front pass is
+    exhausted and then advances the pass itself, so on any plan whose
+    fronts fit in one chunk -- ``DEFAULT_CHUNK_SIZE`` is 10 -- the session
+    has already crossed from pass 0 to pass 1 before ``_drive`` takes its
+    first reading. The transition it is watching for has happened, the
+    comparison is ``1 != 1``, and the backs go through the machine with
+    nobody asked to turn the paper over.
+
+    A 40-page folio book is exactly ten sheets. Every "Signature N" reprint
+    is four to eight. Those are not edge cases; they are what this program
+    is for, and the failure is the one the whole manual-duplex design
+    exists to prevent -- backs printed on paper that was never turned.
+
+    So the question is not "did the pass index change while I was
+    watching?" but "is the next thing submitted the first chunk of a pass,
+    and is that pass one the operator has to load paper for?". That is
+    answerable from the state alone:
+
+    * ``sheet_cursor == 0`` -- nothing of this pass has been submitted, so
+      whatever the operator did last, they have not fed paper for this one.
+    * ``pass_index > 0`` -- pass 0's instruction is *"load paper face down
+      ... and print pass 1 (fronts)"*, which is advice about a run that has
+      already started by the time anything here can say it. Showing it
+      after the fronts are in the spooler would be worse than silence.
+
+    Pure and Qt-free, like the prompts above it, so the rule is testable
+    without a printer or a display.
+
+    :param state: ``PrintSession.state`` -- the persisted snapshot.
+    :returns: whether to show the reload instruction before going on.
+    """
+    return state["pass_index"] > 0 and state["sheet_cursor"] == 0
 
 
 def resume_count_prompt(summary: SessionSummary) -> str:
@@ -390,6 +451,7 @@ class PrintDialog:
         parent=None,
         *,
         printer_names: Sequence[str] | None = None,
+        recorded_printer: str | None = None,
         profile_loader: Callable[[str], PrinterProfile] = PrinterProfile.load,
         builtin_presets: dict[str, PrinterProfile] | None = None,
         session_cls: type = PrintSession,
@@ -445,7 +507,9 @@ class PrintDialog:
         self.printer_combo = QComboBox(self.widget)
         names = list(printer_names) if printer_names is not None else _available_printer_names()
         self.printer_combo.addItems(names)
-        preselected = select_preselected_printer(names, self._profile_loader)
+        preselected = select_preselected_printer(
+            names, self._profile_loader, recorded_printer
+        )
         if preselected is not None:
             self.printer_combo.setCurrentIndex(names.index(preselected))
         printer_row.addWidget(self.printer_combo)
@@ -713,6 +777,18 @@ class PrintDialog:
             self._show_offline_error("Cannot resume this print run", exc.detail)
             return
         self._session = session
+        # Before `resume`, not after, and not left to `_drive`: `resume`
+        # submits the first chunk itself, so by the time `_drive` sees the
+        # session the paper is already moving. The operator's own answer is
+        # the cursor that pass is about to start from -- zero means nothing
+        # of it has come out, so the stack in the tray is the previous
+        # pass's and has not been turned over.
+        if pass_needs_reloading_first(
+            {"pass_index": session.state["pass_index"], "sheet_cursor": count}
+        ):
+            instruction = session.reload_instruction
+            if instruction:
+                self._confirm_reload(instruction)
         session.resume(count)
         self._drive(session)
 
@@ -739,6 +815,16 @@ class PrintDialog:
                 session.confirm_test_sheet()
             else:
                 return
+
+        # Before the loop, because the loop cannot see a pass boundary the
+        # session crossed before `_drive` was called -- which is what
+        # `start()` does on any plan whose fronts fit in one chunk, and
+        # what `confirm_test_sheet()` just above may have done. See
+        # :func:`pass_needs_reloading_first`.
+        if pass_needs_reloading_first(session.state):
+            instruction = session.reload_instruction
+            if instruction:
+                self._confirm_reload(instruction)
 
         prior_pass_index = session.state["pass_index"]
         while not session.finished and session.last_error is None:

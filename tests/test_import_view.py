@@ -214,3 +214,68 @@ def test_a_password_protected_pdf_keeps_its_specific_message(tmp_path):
 
     assert worker.error is not None
     assert "password-protected" in worker.error
+
+
+# -- what the import left behind -----------------------------------------
+
+
+def test_a_folder_of_scans_with_junk_in_it_produces_a_message(tmp_path):
+    """The two ends of the advisory, tied together without Qt.
+
+    ``load_and_apply_import`` returns its warnings, and the GUI's caller
+    read neither of its arguments for the life of the app. This asserts
+    the real loader, over a real folder, produces something
+    ``import_advisory_message`` renders -- so the wording cannot go green
+    against a hand-made warning the loader never actually emits.
+    """
+    from PIL import Image
+
+    from deckle.app.views.import_view import (
+        import_advisory_message,
+        load_and_apply_import,
+    )
+
+    scans = tmp_path / "scans"
+    scans.mkdir()
+    for i in range(3):
+        Image.new("RGB", (600, 800), "white").save(
+            str(scans / f"page{i:02d}.png"), dpi=(300, 300)
+        )
+    for junk in ("notes.txt", "Thumbs.db", "readme.md"):
+        (scans / junk).write_text("not an image")
+
+    state = _state()
+    pages, warnings = load_and_apply_import(state, str(scans))
+
+    assert len(pages) == 3, "the probe did not reach the state this test is about"
+    assert warnings, (
+        "the loader no longer warns about skipped files, so this test can "
+        "no longer say anything about whether the GUI shows the warning"
+    )
+
+    message = import_advisory_message(warnings)
+    assert "3 file(s)" in message
+    assert "notes.txt" in message
+    assert "page00.png" not in message, "it names what was left out, not what came in"
+
+
+def test_a_clean_import_has_nothing_to_say():
+    """An empty advisory is what clears the status bar, so it has to be
+    empty rather than the word "None" or a bare pair of brackets."""
+    from deckle.app.views.import_view import import_advisory_message
+
+    assert import_advisory_message([]) == ""
+
+
+def test_an_advisory_the_renderer_does_not_recognise_is_still_shown():
+    """``detail`` is the field every ``LayoutWarning`` carries, but the
+    return type is a plain list and the renderer must not silently drop
+    something it does not recognise -- an advisory nobody can read beats
+    an advisory nobody is shown."""
+    from deckle.app.views.import_view import import_advisory_message
+
+    class Odd:
+        def __str__(self):
+            return "something the loader said"
+
+    assert import_advisory_message([Odd()]) == "something the loader said"

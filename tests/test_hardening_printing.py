@@ -311,10 +311,17 @@ class _FakeWindow:
         self._printers = []
         self._printer_thread = None
         self._printer_query = None
-        # _apply_printers consults the document to decide what the status
-        # bar should say: with nothing loaded, "no printers" is not the
-        # user's next step, importing is. The double has to model that.
-        self.state = SimpleNamespace(project=SimpleNamespace(pages=list(pages)))
+        # _apply_printers consults the document twice: for what the status
+        # bar should say (with nothing loaded, "no printers" is not the
+        # user's next step, importing is) and for `printer`, the name
+        # `deckle-cli impose --printer` records, which decides which
+        # printer's calibration the preview draws against. The double has to
+        # model both. `printer=None` is the real default for a fresh
+        # project, and it is spelled out rather than left off: a double that
+        # omits a field the code reads is how B36 stayed invisible.
+        self.state = SimpleNamespace(
+            project=SimpleNamespace(pages=list(pages), printer=None)
+        )
         #: Set by _apply_printers, read by _refresh_status_message. The
         #: status bar has one writer so that a later import cannot leave a
         #: stale "import something" instruction on screen.

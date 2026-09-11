@@ -39,6 +39,10 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MESSAGE = "Cannot import /scans/book.pdf: it is not a PDF."
+ADVISORY = (
+    "4 file(s) in '/scans' were not imported because they are not images: "
+    "Thumbs.db, notes.txt, readme.md, scan.tiffx"
+)
 
 PROBE = '''
 import json, os, sys
@@ -57,6 +61,7 @@ am.MainWindow.refresh_printers = (
 )
 
 message = sys.argv[1]
+ADVISORY = sys.argv[2]
 report = {}
 window = am.MainWindow()
 
@@ -96,6 +101,23 @@ report["failure_over_printer_fault"] = window.status_bar.currentMessage()
 window.import_view.imported.emit([], [])
 report["after_a_success"] = window.status_bar.currentMessage()
 
+# An import that SUCCEEDED while leaving files behind. `imported` carries
+# the loader's advisories and `_on_imported` read neither argument, so this
+# is the case that reached the user on the command line and nowhere else.
+from deckle.core.models import LayoutWarning
+
+advisory = LayoutWarning(
+    sheet_index=0,
+    kind="skipped_non_image_files",
+    detail=ADVISORY,
+)
+window.import_view.imported.emit([], [advisory])
+report["after_an_advisory"] = window.status_bar.currentMessage()
+window._refresh_status_message()
+report["advisory_after_a_refresh"] = window.status_bar.currentMessage()
+window.import_view.imported.emit([], [])
+report["after_a_clean_import"] = window.status_bar.currentMessage()
+
 print(json.dumps(report))
 sys.stdout.flush()
 # Leave without unwinding, like the other probes: the offscreen platform
@@ -125,7 +147,7 @@ def report(tmp_path_factory):
     env["DECKLE_EXPORT_CACHE_DIR"] = str(workdir / "export-cache")
 
     result = subprocess.run(
-        [sys.executable, "-u", "-c", PROBE, MESSAGE],
+        [sys.executable, "-u", "-c", PROBE, MESSAGE, ADVISORY],
         capture_output=True,
         text=True,
         env=env,
@@ -195,3 +217,37 @@ def test_a_successful_import_clears_it(report):
     error about a file the user has since replaced is worse than silence,
     and the printer fault underneath it has to come back."""
     assert report["after_a_success"] == report["no_printers_message"]
+
+
+# -- the import that succeeded and still had something to say -------------
+
+
+def test_an_import_that_left_files_behind_says_so(report):
+    """The other half of ``imported``, which nothing read.
+
+    ``ImportView`` emits ``(pages, warnings)`` and
+    ``load_and_apply_import`` documents the second one as being there "so
+    a caller can report what it just added". ``_on_imported`` took both
+    and read neither, so a folder of scans containing four files Deckle
+    will not take imported three pages and said nothing at all -- while
+    ``deckle-cli`` printed the same advisory for the same folder.
+
+    It is not cosmetic: those are pages the user believes they scanned,
+    and the plan, the preview and the exported PDF are all consistent
+    around the gap. The way to find out is to count the printed book.
+    """
+    assert report["after_an_advisory"] == ADVISORY
+
+
+def test_the_advisory_survives_the_next_status_refresh(report):
+    """Same race as the failure above: printer enumeration finishes on a
+    background thread and ends in ``_refresh_status_message``, so this has
+    to be state the refresh reads rather than a message written past it."""
+    assert report["advisory_after_a_refresh"] == ADVISORY
+
+
+def test_an_import_with_nothing_to_report_clears_the_advisory(report):
+    """And the printer fault underneath comes back, exactly as it does
+    after a refusal. An advisory about a folder the user has since
+    replaced is worse than silence."""
+    assert report["after_a_clean_import"] == report["no_printers_message"]

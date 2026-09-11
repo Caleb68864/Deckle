@@ -171,10 +171,51 @@ def test_layout_warning_new_kinds():
         "sheet_orientation",
         "signature_padding",
         "creep_advisory",
-        "landscape_imageable_unverified",
+        "skipped_non_image_files",
     ):
         warning = LayoutWarning(sheet_index=0, kind=kind, detail="x")
         assert warning.kind == kind
+
+
+def test_every_declared_warning_kind_has_something_that_emits_it():
+    """B31, both halves. A `Literal` is a contract about what this program
+    can tell you, and it had drifted in both directions: it declared
+    `landscape_imageable_unverified`, which nothing could produce, and
+    omitted `skipped_non_image_files`, which the image-folder loader emits
+    on the most ordinary import there is.
+
+    Searched with a text scan over `deckle/` for `kind="<name>"`, which is
+    how every one of them is constructed -- there is no registry and no
+    dynamic kind, and this test asserts that premise by requiring at least
+    one emitter per kind rather than trusting the search.
+    """
+    import os
+    import re
+    import typing
+
+    root = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deckle"
+    )
+    emitted: set[str] = set()
+    for folder, _dirs, files in os.walk(root):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(folder, name), encoding="utf-8") as handle:
+                emitted.update(re.findall(r'kind="([a-z_]+)"', handle.read()))
+
+    declared = set(typing.get_args(typing.get_type_hints(LayoutWarning)["kind"]))
+    assert declared, "no declared kinds were found; this test read nothing"
+    assert "clipped_by_page" in emitted, (
+        "the text scan found no emitter for a kind that certainly has one, "
+        "so the search is broken rather than the code"
+    )
+
+    assert declared <= emitted, (
+        "declared and emitted by nothing: "
+        f"{sorted(declared - emitted)} -- a contract promising a warning "
+        "this program cannot produce"
+    )
 
 
 def test_layout_settings_top_binding_edge_not_supported():

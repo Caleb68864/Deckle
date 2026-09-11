@@ -108,18 +108,35 @@ instruction from it, in plain words, before you touch the stack.
 <details>
 <summary><b>Why the reload is the hard part</b></summary>
 
-Two independent facts about your printer decide what pass 2 must look like:
+Two independent facts about your printer decide what pass 2 must look like.
 
-| Printer behaviour | Consequence for pass 2 |
-|---|---|
-| Ejects **face down**, so the stack comes out reversed | Feed the backs **as printed** — the reversal already happened |
-| Ejects **face up**, so the stack keeps its order | Feed the backs **reversed** |
-| You flip each sheet on its **long** edge | Back sides need a 180° rotation |
-| You flip each sheet on its **short** edge | No rotation |
+**Which order the backs are fed in**, from how the printer ejects:
 
-Get any of these wrong and every back lands on the wrong front, or upside
-down, and you find out after the whole run. Deckle decides it from the profile
-and tells you what to do in a sentence.
+| `reverse_stack` | Ejects | Sheets fed |
+|---|---|---|
+| `true` | **face down**, so the stack comes out inverted | in **reverse** order |
+| `false` | **face up**, keeping the order it printed | in the **same** order |
+
+**Whether the back faces are turned a half turn**, from the edge you flip each
+sheet about — and this one is *not* a property of the printer alone. The sheet
+has to turn about the edge that is **vertical on the paper**, because the spine
+runs head to tail under every scheme Deckle imposes. Which *named* edge that is
+depends on the orientation, so `flip_axis` on its own cannot answer it:
+
+| Paper | `flip_axis` | Back faces |
+|---|---|---|
+| portrait | `long` | not rotated |
+| portrait | `short` | rotated 180° |
+| landscape | `long` | rotated 180° |
+| landscape | `short` | not rotated |
+
+A portrait sheet's vertical edge is its long one; a landscape sheet's is its
+short one. A rule reading `flip_axis` alone is right for exactly one orientation
+and silently upside down for the other.
+
+Get any of this wrong and every back lands on the wrong front, or upside down,
+and you find out after the whole run. Deckle decides it from the profile and the
+paper together, and tells you what to do in a sentence.
 
 </details>
 

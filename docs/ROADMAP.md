@@ -36,6 +36,31 @@ nothing else. Start at that directory's `index.md`; read its
 > §4 is now closed. Suite on Linux: **1720 passed, 22 skipped, 1 xfailed**.
 > `tests/test_preview_paint.py` segfaults at Qt teardown *after* passing;
 > that is pre-existing and unrelated.
+>
+> **W1, the half-wired sweep, 2026-09-11.** Five passes looking for things
+> that are declared and only half-connected. Six fixes landed; **B31 is
+> closed**, and §5's "an *every emitted warning kind is declared* test"
+> with it. Suite on Linux: **2412 passed, 22 skipped**, up from 2366.
+>
+> The worst of it was not in this file. **`PrintDialog._drive` detected the
+> reload moment by watching `pass_index` change inside its own loop, and
+> `PrintSession.start()` crosses that boundary before `_drive` ever looks
+> when the front pass fits in one chunk** — so every job of ten sheets or
+> fewer printed its backs with nobody asked to turn the paper over. A
+> 40-page folio book is exactly ten sheets and every signature reprint is
+> four to eight. Measured against a real session, not inferred: 2, 4, 8 and
+> 10 sheets all got zero reload prompts.
+>
+> Also closed: the GUI dropped every import advisory (`_on_imported` read
+> neither of its arguments, so a folder of scans with four unreadable files
+> in it imported silently); `Project.printer` was written by
+> `impose --printer`, persisted, round-tripped and read by nothing; and the
+> README's and GUIDE's reload tables both taught the **pre-fix** rotation
+> rule, which is upside down for portrait paper. Those tables are now
+> parsed and checked against `plan_passes` itself.
+>
+> Full findings, including what was checked and found correctly wired, are
+> in `vault/w1-half-wired-findings.md` (gitignored).
 
 Each item carries an ID so it can be referred to in that conversation.
 Sizes: **S** under a day, **M** a few days, **L** a week or more, or gated on
@@ -119,7 +144,7 @@ expensive thing.
 | **B28** | Saved-file `version` fields are written but never read for `.deckle` and profiles; `print_session` checks version *after* the state check so a newer file is misreported. `printer` is not type-checked on load. | `core/project_io.py:487-564`, `core/profiles.py:145-160` | S |
 | **B29** | Paper thickness in `pt` shows 0 decimals; a caliper is 0.2-0.5 pt so it displays "0" and the next nudge writes 0. Typing a thickness never refreshes the gathering suggestion or resets the stock combo to Custom. | `layout_panel.py:1439, 1714` | S |
 | **B30** | Printer list is enumerated exactly once at startup; the module docstring claims a refresh on menu open that does not exist. | `app/main.py:583` | S |
-| **B31** | `loader` emits warning kind `skipped_non_image_files`, which is not in `LayoutWarning.kind`'s Literal; `landscape_imageable_unverified` is declared and never emitted. Declared-but-not-honoured values, the shape the decisions log has caught five times. | `core/loader.py:552`, `core/models.py:237-248` | S |
+| **B31** ✅ | **Closed 2026-09-11 (W1).** `skipped_non_image_files` is declared and `landscape_imageable_unverified` removed — nothing could emit it, because a `PrinterProfile` holds one `imageable_area_pt` for both orientations. Guarded rather than corrected: `test_models.py` scans `deckle/` for every `kind="..."` construction and requires an emitter per declared member. Original finding: `loader` emits warning kind `skipped_non_image_files`, which is not in `LayoutWarning.kind`'s Literal; `landscape_imageable_unverified` is declared and never emitted. | `core/loader.py:552`, `core/models.py:237-248` | S |
 | **B32** | `actual_margins_pt` ignores `crop_pt`; only tests call it, which is exactly when it would mislead. `_blank_thumbnail` ignores `rotate_deg`; `ink_bbox` cache key omits dpi. | `core/layout.py:559-626`, `core/render.py:355-374, 420` | S |
 | **B33** | Whole-file SHA-256 is computed while holding the pdfium lock, blocking every preview during a big import; every image's PDF bytes are held in memory before merging (~2.5 GB for 500 scans). | `core/loader.py:335-378, 576-579` | S |
 | **B34** | `write_text_atomic` replaces the target with a `mkstemp` file (mode 0600), tightening a shared file to owner-only on every save; no directory fsync. Profile filenames use the raw printer name, so `\\server\printer` becomes a UNC path. | `core/paths.py:253-264`, `core/profiles.py:174` | S |
@@ -235,8 +260,9 @@ for that reason. Kept for the record.
 - Two overlapping imports; import during shutdown (B13).
 - ~~Cancelled resume-count prompt (B14).~~ ✅ Done 2026-09-08, with its twin: `0` must still resume.
 - Schedule numbering with skipped pages or two sources (B7); `signature_lengths` + creep (B8); `sheets_per_signature <= 0` under `balanced` (B18).
-- A parity test over the GUI and CLI paper-preset tables (M5); an "every emitted warning kind is declared" test (B31).
-- No CLI test exercises `--crop`, `--crop-even`, `--trim`, `--binding-edge`, `--blank-mode`, `--grain`, `--signatures`, `--back-offset`, or `impose --printer`.
+- A parity test over the GUI and CLI paper-preset tables (M5). ~~An "every emitted warning kind is declared" test (B31).~~ ✅ Done 2026-09-11 (W1) — `tests/test_models.py` walks `deckle/` for `kind="..."` and requires an emitter for every declared member, in both directions.
+- No CLI test exercises `--crop`, `--crop-even`, `--trim`, `--binding-edge`, `--blank-mode`, `--grain`, `--signatures`, or `--back-offset`. ~~`impose --printer`~~ ✅ Done 2026-09-11 (W1) — `tests/test_recorded_printer.py` runs the real CLI, reads the `.deckle` back, and asserts the dialog preselects the recorded printer. It had no test because it had no *consumer*: the name was stored and read by nothing.
+- **No test drove `PrintDialog._drive` against a real `PrintSession`** until W1; every one of them injected a stub whose `start()` leaves `pass_index` at 0, which the real one does not do. That is what hid the missing reload prompt. Any new dialog test that needs a session boundary should use the real class, as `tests/test_reload_prompt.py` does.
 - `list_resumable` with a valid-JSON, missing-keys file; `_delete_state` failing; profile with a missing field or a path separator in the name; `write_text_atomic` preserving mode (B27, B28, B34).
 
 ---
