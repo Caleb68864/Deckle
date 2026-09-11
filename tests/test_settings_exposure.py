@@ -75,6 +75,17 @@ EXEMPT: dict[str, str] = {
     # free-text box for `back_offset_y_pt` would be the half-wired
     # control this instruction exists to remove.
     "--back-offset": "calibration; needs the measuring wizard, not a text box",
+    "--flip-axis": "calibration; see --back-offset",
+    "--output-face": "calibration; see --back-offset",
+    "--feed-edge": "calibration; see --back-offset",
+    "--reverse-stack": "calibration; see --back-offset",
+    "--no-reverse-stack": "calibration; see --back-offset",
+    "--imageable-area": "calibration; see --back-offset",
+    # Managing the profile store rather than describing a printer.
+    "--from": "which built-in a new profile starts from; the app picks one",
+    "--force": "guard on overwriting a hand-measured calibration, not a setting",
+    # Shown, just not on the layout panel.
+    "--version": "Help > About Deckle shows the build and its log path",
     # CLI-only renderings.
     "--rule": "a printed ruler for checking the printer, not a document setting",
     "--dpi": "resolution of the CLI's composite image; the app draws on screen",
@@ -206,21 +217,50 @@ def _control_row_fields() -> list[str]:
     return [name for name in _layout_fields() if name not in NOT_A_CONTROL_ROW]
 
 
-def _cli_flags() -> set[str]:
-    parser = build_parser()
-    subs: dict = {}
-    for group in parser._subparsers._group_actions:  # noqa: SLF001
-        subs.update(getattr(group, "choices", {}) or {})
-    assert subs, "build_parser() exposed no subcommands"
+def _walk(parser, flags: set[str], depth: int = 0) -> None:
+    """Collect ``--flags`` from ``parser`` and every subparser beneath it.
 
-    flags = {
-        flag
-        for sub in subs.values()
-        for action in sub._actions  # noqa: SLF001
-        for flag in action.option_strings
-        if flag.startswith("--") and flag != "--help"
-    }
+    Recursive because ``profile`` has subcommands of its own -- ``list``,
+    ``show`` and ``set`` -- and the first version of this walker stopped
+    one level down. It therefore audited 33 flags and silently missed the
+    eight on ``profile set``, which are the whole printer calibration:
+    ``--flip-axis``, ``--output-face``, ``--feed-edge``,
+    ``--reverse-stack``, ``--back-offset``, ``--imageable-area``,
+    ``--from`` and ``--force``. An audit that cannot see the settings
+    furthest from the GUI is worse than no audit, so the shape of the
+    parser is followed rather than assumed.
+    """
+    assert depth < 5, "subparser nesting deeper than expected; walker may loop"
+    for action in parser._actions:  # noqa: SLF001
+        flags.update(
+            flag
+            for flag in action.option_strings
+            if flag.startswith("--") and flag != "--help"
+        )
+        # `choices` is a subparser map only on a subparsers action; on an
+        # ordinary argument it is the list of permitted VALUES
+        # (`--flip-axis {long,short}`), which has no parsers in it.
+        choices = getattr(action, "choices", None)
+        if not isinstance(choices, dict):
+            continue
+        for sub in choices.values():
+            if hasattr(sub, "_actions"):
+                _walk(sub, flags, depth + 1)
+
+
+def _cli_flags() -> set[str]:
+    flags: set[str] = set()
+    _walk(build_parser(), flags)
+
     assert flags, "build_parser() exposed no --flags"
+    # The premise of the recursion, asserted rather than trusted: if
+    # `profile set` ever stops being a nested subparser this number
+    # collapses and every "accounted for" verdict below weakens without
+    # anything failing.
+    assert "--flip-axis" in flags, (
+        "the walker is no longer reaching `profile set`, so the printer "
+        "calibration flags are being audited as though they did not exist"
+    )
     return flags
 
 
