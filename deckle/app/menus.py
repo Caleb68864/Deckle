@@ -45,6 +45,20 @@ class MenuItem:
         window-wide letter competes with every text field on the left.
         The menu entry is the same ``QAction`` either way, so the key is
         still written next to the command where someone can find it.
+    :ivar gate: what has to be true before this command can be used, or
+        ``""`` for one that is always available. One of :data:`GATES`.
+        The window greys the entry out otherwise.
+
+        This lives on the entry rather than in the window because it had
+        already drifted the other way round: ``_sync_document_actions``
+        named four commands in a tuple in its own body and
+        ``_sync_print_action`` named a fifth in its, so the set of
+        commands needing a document was written down in three places --
+        twice by hand, once here -- and the lookup that read them
+        tolerated a name it did not recognise. A rename here, or a typo
+        there, left the command permanently enabled with nothing failing.
+        That is the same shape as B11, B12 and B29: one list of controls
+        maintained in several places.
     """
 
     label: str = ""
@@ -52,6 +66,7 @@ class MenuItem:
     shortcuts: tuple[str, ...] = ()
     submenu: str = ""
     scope: str = ""
+    gate: str = ""
 
     @property
     def is_separator(self) -> bool:
@@ -74,6 +89,26 @@ class Menu:
 SEPARATOR = MenuItem()
 
 
+#: Every condition :attr:`MenuItem.gate` may name.
+#:
+#: Closed deliberately. :func:`actions_gated_by` refuses anything outside
+#: this set rather than returning an empty list, because "no entry carries
+#: that gate" and "the caller misspelled the gate" are indistinguishable
+#: from the outside, and the second one silently disables nothing -- which
+#: is exactly how the hand-written tuples failed.
+GATES: frozenset[str] = frozenset(
+    {
+        # There is a document with pages in it.
+        "document",
+        # ...and a printer to send it to.
+        "document+printer",
+        # There is something on the undo / redo stack.
+        "undo",
+        "redo",
+    }
+)
+
+
 #: The whole menu bar. Order is the order on screen.
 #:
 #: The groupings follow the job rather than the class layout: File is the
@@ -89,12 +124,18 @@ MENUS: tuple[Menu, ...] = (
             SEPARATOR,
             MenuItem("&Open project...", "open_project_dialog", ("Ctrl+O",)),
             MenuItem("&Recent projects", submenu="_recent_menu"),
-            MenuItem("&Save project", "save_project", ("Ctrl+S",)),
-            MenuItem("Save project &as...", "save_project_as", ("Ctrl+Shift+S",)),
+            MenuItem("&Save project", "save_project", ("Ctrl+S",), gate="document"),
+            MenuItem(
+                "Save project &as...", "save_project_as", ("Ctrl+Shift+S",),
+                gate="document",
+            ),
             SEPARATOR,
-            MenuItem("Save &PDF...", "save_pdf", ("Ctrl+E",)),
-            MenuItem("Save one &pass as PDF...", "export_single_pass"),
-            MenuItem("P&rint...", "print_document", ("Ctrl+P",)),
+            MenuItem("Save &PDF...", "save_pdf", ("Ctrl+E",), gate="document"),
+            MenuItem("Save one &pass as PDF...", "export_single_pass", gate="document"),
+            MenuItem(
+                "P&rint...", "print_document", ("Ctrl+P",),
+                gate="document+printer",
+            ),
             SEPARATOR,
             MenuItem("&Quit", "quit", ("Ctrl+Q",)),
         ),
@@ -102,8 +143,8 @@ MENUS: tuple[Menu, ...] = (
     Menu(
         "&Edit",
         (
-            MenuItem("&Undo", "undo", ("Ctrl+Z",)),
-            MenuItem("&Redo", "redo", ("Ctrl+Y", "Ctrl+Shift+Z")),
+            MenuItem("&Undo", "undo", ("Ctrl+Z",), gate="undo"),
+            MenuItem("&Redo", "redo", ("Ctrl+Y", "Ctrl+Shift+Z"), gate="redo"),
             SEPARATOR,
             # The grid keys. They appear here so they are discoverable -- a
             # shortcut nobody can find is a shortcut for the person who
@@ -153,6 +194,36 @@ def action_names(menus: tuple[Menu, ...] = MENUS) -> list[str]:
             if item.action and item.action not in names:
                 names.append(item.action)
     return names
+
+
+def actions_gated_by(gate: str, menus: tuple[Menu, ...] = MENUS) -> list[str]:
+    """Every command that is only available while ``gate`` holds.
+
+    This is the single place the window asks "which entries go grey when
+    there is no document?". Before it existed the answer was a tuple of
+    string literals inside ``MainWindow._sync_document_actions`` and
+    another inside ``_sync_print_action``, neither of which the menu
+    description knew about; renaming an entry here left the command
+    enabled forever and reddened nothing.
+
+    :param gate: one of :data:`GATES`.
+    :param menus: the menus to read, defaulting to :data:`MENUS`.
+    :returns: the method names carrying that gate, in menu order.
+    :raises ValueError: ``gate`` is not one of :data:`GATES`. Deliberately
+        fatal rather than an empty list: a caller that misspells a gate
+        would otherwise disable nothing, silently, which is the exact
+        failure this function replaced.
+    """
+    if gate not in GATES:
+        raise ValueError(
+            f"unknown menu gate {gate!r}; known gates are {sorted(GATES)}"
+        )
+    return [
+        item.action
+        for menu in menus
+        for item in menu.items
+        if item.action and item.gate == gate
+    ]
 
 
 def submenu_names(menus: tuple[Menu, ...] = MENUS) -> list[str]:
