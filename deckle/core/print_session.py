@@ -194,7 +194,16 @@ class SessionSummary:
     :ivar pass_index: which pass was in progress -- ``0`` fronts, ``1``
         backs.
     :ivar sheet_cursor: how far into that pass the session had submitted.
-    :ivar state_path: the state file on disk.
+
+    **There is deliberately no ``state_path``.** There was one: written by
+    :meth:`PrintSession.list_resumable` from the path it had just read,
+    carried through the resume picker, and read by nothing.
+    :meth:`PrintSession.load` takes ``session_id`` and re-derives the path
+    from it -- which is the right source, because it is the same
+    derivation that *wrote* the file, and two spellings of where a
+    session lives is one more than can be kept in agreement. A summary
+    carrying a path nobody resumes from is an invitation to resume from
+    it.
     """
 
     session_id: str
@@ -202,7 +211,6 @@ class SessionSummary:
     started_at: float
     pass_index: int
     sheet_cursor: int
-    state_path: str
 
 
 @dataclass(frozen=True)
@@ -237,6 +245,19 @@ class UnrecordedSheets:
     error: str
 
 
+#: Fields a state file written by an older build may legitimately lack.
+#:
+#: Every other field is required, and a file missing one is refused --
+#: that guard is what turns a truncated or hand-edited file into a clear
+#: refusal instead of a ``KeyError`` at the print dialog. But an
+#: **additive** field is a different thing entirely: the file is missing
+#: it because Deckle changed, not because anything is wrong with the file.
+#: Refusing there would tell an operator with a half-finished job and a
+#: stopped printer that their session is invalid, over a field they never
+#: knew existed and whose absence means exactly what the default means.
+_OPTIONAL_STATE_FIELDS = frozenset({"chunk_size"})
+
+
 @dataclass
 class _SessionState:
     """The full on-disk representation of a session's progress."""
@@ -254,6 +275,15 @@ class _SessionState:
     test_sheet_pending: bool
     dpi: int
     copies: int
+    #: Sheets per submitted chunk. Persisted since 2026-09-11: it is a
+    #: constructor bound, ``load`` reset it to the default, and so a
+    #: non-default value **silently did not survive a resume**. The bound
+    #: itself is live and doing work -- it is what limits how much paper a
+    #: mid-run failure can put in question -- so a session resumed at a
+    #: different chunk size would re-chunk the remainder of a run whose
+    #: earlier chunks were sized differently, which is precisely the thing
+    #: the bound exists to keep predictable.
+    chunk_size: int = DEFAULT_CHUNK_SIZE
 
     def to_json(self) -> dict:
         return asdict(self)
@@ -272,6 +302,10 @@ class _SessionState:
             sheets=list(data["sheets"]),
             test_first=data["test_first"],
             test_sheet_pending=data["test_sheet_pending"],
+            # `.get`, unlike every line around it, and deliberately: a file
+            # written before this field existed is missing it because
+            # Deckle changed. See `_OPTIONAL_STATE_FIELDS`.
+            chunk_size=data.get("chunk_size", DEFAULT_CHUNK_SIZE),
             dpi=data["dpi"],
             copies=data["copies"],
         )
@@ -318,14 +352,18 @@ def _check_state(
         )
 
     known = {f.name for f in dataclasses.fields(_SessionState)}
-    missing = sorted(known - set(data))
+    missing = sorted(known - set(data) - _OPTIONAL_STATE_FIELDS)
     if missing:
         refuse(
             "this session's saved state is missing "
             + ", ".join(repr(name) for name in missing)
         )
     try:
-        check_values(_SessionState, {k: data[k] for k in known}, subject="session field")
+        check_values(
+            _SessionState,
+            {k: data[k] for k in known if k in data},
+            subject="session field",
+        )
     except StoredValueError as exc:
         refuse(str(exc))
 
@@ -367,6 +405,14 @@ def _check_state(
         refuse(f"this session asks for {data['copies']} copies")
     if data["dpi"] <= 0:
         refuse(f"this session asks for {data['dpi']} dpi")
+    # Absent is fine -- an older file -- but present and unusable is not.
+    # A `chunk_size` of 0 makes `remaining[:0]` empty on a non-empty pass,
+    # so `_submit_chunk` advances the pass without submitting anything and
+    # the job "completes" having printed nothing.
+    if "chunk_size" in data and data["chunk_size"] < 1:
+        refuse(
+            f"this session submits {data['chunk_size']} sheet(s) per chunk"
+        )
 
 
 class PrintSession:
@@ -394,7 +440,12 @@ class PrintSession:
     :param dpi: rasterization resolution handed to the backend.
     :param copies: copies per submitted chunk.
     :param chunk_size: sheets submitted per chunk. Chunking is what bounds
-        the blast radius of a mid-run failure to one chunk.
+        the blast radius of a mid-run failure to one chunk. **Persisted,
+        and restored by :meth:`load`** -- it used to be reset to the
+        default on resume, so a non-default value did not survive one. No
+        production caller sets it today; the suite does, extensively, and
+        a bound that accepts a value and quietly discards it is worse than
+        no bound at all.
     :param ask_sheets_printed: asked how many sheets of a failed chunk
         actually came out, when the backend reports that some did. Given an
         :class:`UnrecordedSheets`; returns the count, or ``None`` to decline
@@ -460,6 +511,7 @@ class PrintSession:
             test_sheet_pending=False,
             dpi=dpi,
             copies=copies,
+            chunk_size=chunk_size,
         )
         self._finished = False
         self._last_error: str | None = None
@@ -646,7 +698,11 @@ class PrintSession:
         session.printer_name = state.printer_name
         session.dpi = state.dpi
         session.copies = state.copies
-        session.chunk_size = DEFAULT_CHUNK_SIZE
+        # From the state file, not the default. Resetting it here is what
+        # made `chunk_size` a bound you could set and silently not get
+        # back: a session started at 3 resumed at 10, re-chunking the
+        # remainder of a run whose earlier chunks were sized differently.
+        session.chunk_size = state.chunk_size
         session.ask_sheets_printed = ask_sheets_printed
         session._passes = plan_passes(plan, profile, sheets=state.sheets)
         session._state = state
@@ -685,7 +741,6 @@ class PrintSession:
                     started_at=data["started_at"],
                     pass_index=data["pass_index"],
                     sheet_cursor=data["sheet_cursor"],
-                    state_path=str(path),
                 )
             except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
                 # Skipping is right -- one corrupt file must not hide every

@@ -508,7 +508,7 @@ def test_the_resume_prompt_says_what_the_number_it_shows_means(backend, failing_
     text = resume_count_prompt(
         SessionSummary(
             session_id="abc", printer_name="P", started_at=0.0,
-            pass_index=1, sheet_cursor=7, state_path="/tmp/abc.json",
+            pass_index=1, sheet_cursor=7,
         )
     )
 

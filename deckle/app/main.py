@@ -22,6 +22,7 @@ menu entry, a ``clicked`` signal or a test reaches for.
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
@@ -70,7 +71,7 @@ from deckle.app.views.print_dialog import (
 )
 from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
-from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
+from deckle.core.profiles import BUILTIN_PRESETS, NewerProfileAdvisory, PrinterProfile
 
 LETTER_PT = (612.0, 792.0)
 
@@ -904,14 +905,26 @@ class MainWindow:
         self._refresh_status_message()
         # Enumeration is the first moment the window knows which printer
         # it is drawing for. Until this call existed, it never found out.
-        self.set_printer_profile(
-            profile_for_printers(
+        # The advisory is caught here rather than left to Python's default
+        # filter, which prints a bare warning naming a line inside Deckle
+        # to a console the desktop user does not have. It outranks the
+        # printer-count message for the same reason the import advisory
+        # outranks "imported 12 pages": one is a receipt, the other is news
+        # about whether what is on screen is what was measured.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            profile = profile_for_printers(
                 self._printers,
                 self.profile_loader,
                 recorded_printer=self.state.project.printer,
                 imageable_areas=self._imageable_areas,
             )
-        )
+        for warning in caught:
+            if issubclass(warning.category, NewerProfileAdvisory):
+                self._printer_message = str(warning.message)
+                log_event("profile_newer_format", detail=self._printer_message)
+                self._refresh_status_message()
+        self.set_printer_profile(profile)
 
     def set_printer_profile(self, profile: PrinterProfile) -> None:
         """Draw the preview and the margins against ``profile``.

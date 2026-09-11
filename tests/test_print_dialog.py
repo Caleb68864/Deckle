@@ -274,7 +274,6 @@ def test_reopening_with_interrupted_session_offers_resume_and_prompts_sheet_coun
         started_at=0.0,
         pass_index=0,
         sheet_cursor=3,
-        state_path="/tmp/abc123.json",
     )
     prompted = []
 
@@ -312,7 +311,6 @@ def test_cancelling_the_sheet_count_abandons_the_resume():
         started_at=0.0,
         pass_index=0,
         sheet_cursor=3,
-        state_path="/tmp/abc123.json",
     )
     loaded = []
 
@@ -344,7 +342,6 @@ def test_zero_sheets_is_a_real_answer_and_still_resumes():
         started_at=0.0,
         pass_index=0,
         sheet_cursor=3,
-        state_path="/tmp/abc123.json",
     )
 
     dialog = _make_dialog(
@@ -383,7 +380,6 @@ def test_the_real_resume_dialog_opens_on_the_count_already_recorded(monkeypatch)
         started_at=0.0,
         pass_index=1,
         sheet_cursor=10,
-        state_path="/tmp/abc123.json",
     )
     dialog = _make_dialog()
 
@@ -407,7 +403,6 @@ def test_cancel_is_still_not_an_answer_even_with_a_pre_filled_count(monkeypatch)
         started_at=0.0,
         pass_index=1,
         sheet_cursor=10,
-        state_path="/tmp/abc123.json",
     )
 
     assert _make_dialog()._default_ask_resume_count(summary) is None
@@ -485,7 +480,6 @@ def test_the_prompt_asks_the_same_question_the_resume_prompt_asks():
         started_at=0.0,
         pass_index=0,
         sheet_cursor=3,
-        state_path="/tmp/abc123.json",
     )
 
     assert "How many sheets came out?" in dialog_mod.resume_count_prompt(summary)
@@ -524,7 +518,6 @@ def test_the_dialog_hands_the_question_to_a_resumed_session_too():
         started_at=0.0,
         pass_index=0,
         sheet_cursor=3,
-        state_path="/tmp/abc123.json",
     )
 
     dialog = _make_dialog(
@@ -589,7 +582,6 @@ def test_resume_is_refused_and_explained_when_the_plan_has_changed():
         started_at=0.0,
         pass_index=0,
         sheet_cursor=3,
-        state_path="/tmp/abc123.json",
     )
     shown: list[tuple[str, str]] = []
 

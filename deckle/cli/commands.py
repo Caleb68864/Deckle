@@ -49,6 +49,7 @@ from deckle.core.paths import atomic_output, write_text_atomic
 from deckle.core.printing import pass_export, plan_passes
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile, saved_profiles
 from deckle.core.project_io import (
+    NewerFormatAdvisory,
     PathOutsideRootsAdvisory,
     SourceChangedWarning,
     SourceMissingError,
@@ -175,6 +176,11 @@ def _load_project_or_report(path: str) -> Project | None:
             project = load_project(path, allowed_roots=(os.getcwd(),))
         for warning in caught:
             if issubclass(warning.category, PathOutsideRootsAdvisory):
+                print(f"note: {warning.message}", file=sys.stderr)
+            elif issubclass(warning.category, NewerFormatAdvisory):
+                # stderr, not stdout: `--json` promises stdout carries the
+                # JSON document and nothing else, and a note that broke
+                # that would break every script that parses it.
                 print(f"note: {warning.message}", file=sys.stderr)
         return project
     except SourceMissingError as exc:

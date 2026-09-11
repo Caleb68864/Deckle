@@ -24,8 +24,34 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, unquote
 
+import warnings
+
 from deckle.core.paths import config_dir, write_text_atomic
 from deckle.core.schema import check_values
+
+PROFILE_VERSION = 1
+"""The profile shape this build writes and understands.
+
+Read, since 2026-09-11. It was written from the beginning and acted on by
+nothing, so a profile from a newer build was parsed hopefully -- see
+:class:`NewerProfileAdvisory`.
+"""
+
+
+class NewerProfileAdvisory(UserWarning):
+    """A stored profile written by a build newer than this one.
+
+    **A warning, and never a refusal.** The owner's decision, 2026-09-11,
+    closing the standing Watch in ``docs/decisions.md``.
+
+    A profile is the most expensive data Deckle holds -- it exists because
+    somebody printed a target and measured it with a ruler. Refusing to
+    read one because it came from a newer build would send that person
+    back to the printer with a stack of paper to reprint, to recover a
+    measurement that is sitting in a file this build can very nearly read
+    in full. ``load`` is already tolerant of unknown keys, so what it
+    cannot honour it drops; what was missing was saying so.
+    """
 
 
 @dataclass(frozen=True)
@@ -148,6 +174,10 @@ class PrinterProfile:
         :raises deckle.core.schema.StoredValueError: a stored value is not
             one this build can honour. A ``ValueError``, so a caller with
             a ``ValueError`` branch already reports it cleanly.
+        :raises NewerProfileAdvisory: never raised -- emitted through
+            :mod:`warnings` when ``version`` exceeds
+            :data:`PROFILE_VERSION`. A calibration is too expensive to
+            refuse over a version number.
         """
         path = _profile_path(name)
         if not path.exists():
@@ -159,6 +189,7 @@ class PrinterProfile:
             if legacy.exists():
                 path = legacy
         data = json.loads(path.read_text(encoding="utf-8"))
+        _warn_if_newer_profile(name, data.get("version"))
         known = {field.name for field in dataclasses.fields(cls)}
         kwargs = {key: value for key, value in data.items() if key in known}
         check_values(cls, kwargs, subject="printer profile field")
@@ -173,6 +204,37 @@ class PrinterProfile:
             for key, value in kwargs.items()
         }
         return cls(**kwargs)
+
+
+def newer_profile_message(name: str, found: int) -> str:
+    """What to tell someone whose calibration came from a newer Deckle.
+
+    :param name: the printer the profile belongs to.
+    :param found: the version stored in the file.
+    :returns: one user-facing sentence.
+    """
+    return (
+        f"the calibration for {name!r} was saved by a newer version of "
+        f"Deckle (profile format {found}; this build reads "
+        f"{PROFILE_VERSION}). It has been loaded, but any setting this "
+        "build does not understand was ignored -- check the reload "
+        "instruction before printing a long run."
+    )
+
+
+def _warn_if_newer_profile(name: str, found: object) -> None:
+    """Emit :class:`NewerProfileAdvisory` for a profile from the future.
+
+    Older and versionless profiles say nothing. ``load`` has defaulted
+    missing fields from the start -- ``tests/.../B28`` pins a versionless
+    profile loading -- so an older file is not a surprise. A newer one may
+    be carrying a measurement that silently did not survive the read.
+    """
+    if not isinstance(found, int) or isinstance(found, bool):
+        return
+    if found <= PROFILE_VERSION:
+        return
+    warnings.warn(newer_profile_message(name, found), NewerProfileAdvisory, stacklevel=3)
 
 
 def _config_dir() -> Path:

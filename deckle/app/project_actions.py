@@ -43,6 +43,7 @@ from deckle.core.export import clear_sheet_cache
 from deckle.core.models import Project
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.project_io import (
+    NewerFormatAdvisory,
     PathOutsideRootsAdvisory,
     SourceChangedWarning,
     SourceMissingError,
@@ -287,10 +288,18 @@ def open_project(window, path: str) -> bool:
             # on. The containment check still runs; only its rendering
             # changes.
             project = load_project(path, allowed_roots=(os.path.dirname(path),))
+        newer_format: str | None = None
         for warning in caught:
             if issubclass(warning.category, PathOutsideRootsAdvisory):
                 log_event("project_source_outside_roots", path=path,
                           detail=str(warning.message))
+            elif issubclass(warning.category, NewerFormatAdvisory):
+                # Shown, not merely logged. A warning that reaches only a
+                # log is the defect the W1 sweep found in the import path:
+                # every advisory computed, none of them on screen, and a
+                # book four pages short with nothing to suggest it.
+                newer_format = str(warning.message)
+                log_event("project_newer_format", path=path, detail=newer_format)
     except SourceMissingError as exc:
         window.status_bar.showMessage(
             f"Cannot open {os.path.basename(path)}: a source file is "
@@ -357,8 +366,15 @@ def open_project(window, path: str) -> bool:
     if recovered:
         window.state.mark_unsaved()
     window._sync_title()
+    # The advisory outranks the page count. "Opened book.deckle -- 48
+    # page(s)" is a receipt for something the user watched happen; "this
+    # was written by a newer Deckle and some settings were ignored" is
+    # news, and it is news about whether the thing on screen is the book
+    # they saved.
     window.status_bar.showMessage(
-        f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s)."
+        newer_format
+        if newer_format
+        else f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s)."
     )
     log_event("project_opened", path=path, pages=len(project.pages))
     return True
