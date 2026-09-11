@@ -421,7 +421,7 @@ Not released. Expect breaking changes.
 | **Packaging** | Windows only, unsigned. No installer. |
 | **macOS** | Unsupported. |
 
-The test suite is **2,318 passing, 22 skipped** at `9aa6926` — verified by
+The test suite is **2,363 passing, 22 skipped** at `2fa2c1b` — verified by
 running `python -m pytest -q` at the repository root (on Linux, with
 `QT_QPA_PLATFORM=offscreen`, after `python -m pip install -e ".[dev]"`; see
 [Installing](#installing)). Fourteen of the skips are packaging-audit tests
@@ -437,7 +437,7 @@ updates. Two things about it *are* enforced, by `tests/test_docs_are_current.py`
 the paragraph may not advertise more tests than the repository actually
 collects, and the four skip counts must sum to the total. The previous
 version of this paragraph claimed the number itself was "checked rather than
-remembered", which was untrue and left it 598 tests stale.
+remembered", which was untrue and left it 643 tests stale.
 
 ---
 
