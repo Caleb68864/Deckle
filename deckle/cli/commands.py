@@ -14,7 +14,7 @@ well as reporting it, and the operation is what decides where it belongs.
 Three imports are deliberately function-local rather than at the top of
 this module: :mod:`deckle.core.render` pulls in ``pypdfium2``, and ``PIL``
 and :mod:`deckle.core.dummy` are similarly heavy. Hoisting them would make
-every ``deckle info`` pay for the rasteriser.
+every ``deckle-cli info`` pay for the rasteriser.
 """
 
 from __future__ import annotations
@@ -314,7 +314,7 @@ def _resolve_input(args: argparse.Namespace) -> tuple[list, LayoutSettings] | No
 
     A ``.deckle`` carries its own layout, and that layout wins. It is the
     one the user set up, previewed and saved; silently overriding it from
-    flag defaults would mean ``deckle export project.deckle`` produced a
+    flag defaults would mean ``deckle-cli export project.deckle`` produced a
     different book from the one the project describes. Flags typed
     alongside a project are reported as ignored rather than quietly
     dropped -- and rather than applied, which would be worse.
@@ -879,9 +879,16 @@ def _cmd_profile_list(args: argparse.Namespace) -> int:
                 f" -- {path}"
             )
     else:
+        # Not "calibrate a printer in the desktop app": there is no
+        # calibration path in the app, and both README and GUIDE say the
+        # wizard is not built. Sending someone to look for a screen that
+        # does not exist is worse than telling them the measuring is
+        # theirs to do.
         print(
-            "saved profiles: none. Calibrate a printer in the desktop app, or "
-            "start from a built-in with `deckle profile set NAME --from PRESET`."
+            "saved profiles: none. Measure your printer with a proof sheet "
+            "and record it with `deckle-cli profile set NAME --back-offset "
+            "X,Y`, or start from a built-in with `deckle-cli profile set "
+            "NAME --from PRESET`."
         )
     print("built-in profiles -- generic stand-ins, not measured:")
     for name, profile, _path, _error in builtin:

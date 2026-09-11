@@ -247,7 +247,7 @@ def remove(state: AppState, indices: Sequence[int]) -> None:
 def parse_page_range(text: str, page_count: int) -> list[int]:
     """A ``1-6, 309-312`` range as 0-based page indices.
 
-    The same grammar ``deckle export --sheets`` and ``deckle export
+    The same grammar ``deckle-cli export --sheets`` and ``deckle-cli export
     --pages`` accept -- numbers and inclusive ranges, comma-separated --
     and 1-based for the same reason ``--pages`` is: a person types what
     their PDF viewer shows.

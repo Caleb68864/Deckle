@@ -24,7 +24,7 @@ raise, and the asymmetry is the point: saving is an explicit user action,
 and swallowing its failure would leave someone believing their settings
 were remembered.
 
-**The CLI does not read this file.** ``deckle export book.pdf`` must
+**The CLI does not read this file.** ``deckle-cli export book.pdf`` must
 produce the same book on two machines; a machine-local default silently
 changing the paper and the fold scheme of every headless run would make
 that untrue, and would make the golden-fixture regression depend on a

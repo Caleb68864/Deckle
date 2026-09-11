@@ -457,7 +457,7 @@ def _read_pdf_pages(path: str) -> list[SourcePage]:
     """
     # The path a `SourceRef` records is written into `.deckle` files and
     # resolved by whoever opens one next, from whatever directory they
-    # happen to be in. Stored as typed, `deckle impose ./book.pdf` recorded
+    # happen to be in. Stored as typed, `deckle-cli impose ./book.pdf` recorded
     # `./book.pdf`, and the project then failed to open from anywhere but
     # the directory it was made in -- reported as "a source file is
     # missing", naming a file that had not moved.

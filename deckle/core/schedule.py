@@ -404,7 +404,12 @@ def _printer_lines(schedule: Schedule) -> list[str]:
     lines.append(f"    so its {edge.lower()} edge is the vertical one. Turning it")
     lines.append("    about the other edge lands every back upside down.")
     lines.append("")
-    lines.append("  Print sheet 0 on its own first -- deckle export --sheets 0.")
+    # `deckle-cli`, not `deckle`: the second is the desktop app's console
+    # script, which hands its argv to QApplication and silently ignores
+    # anything it does not recognise -- so this line, printed on every
+    # binding schedule a binder takes to the printer, told them to open a
+    # window that prints nothing and never returns.
+    lines.append("  Print sheet 0 on its own first -- deckle-cli export --sheets 0.")
     lines.append("    Check the back is upright and the spine margin falls on")
     lines.append("    the bound edge before committing the rest of the stack.")
     lines.append("    Add --rule to print a measurable ruler on it: if the")

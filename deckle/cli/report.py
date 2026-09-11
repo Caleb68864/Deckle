@@ -7,7 +7,7 @@ do both live in :mod:`deckle.cli.commands`, beside the operation they
 wrap.
 
 The split that matters to a user is which stream a line goes to.
-Warnings, notes and errors go to **stderr** so ``deckle export`` keeps a
+Warnings, notes and errors go to **stderr** so ``deckle-cli export`` keeps a
 clean stdout for scripting; the one thing a command has to say about what
 it did -- ``wrote out.pdf`` -- goes to stdout. Keeping both in one module
 is what makes that rule checkable by reading it.
@@ -205,10 +205,10 @@ def _report_write_failure(out_path: str, exc: OSError) -> None:
 def _emit_warnings(pages, plan) -> None:
     """Print every layout warning to stderr, and record them.
 
-    Warnings go to **stderr** so ``deckle export`` keeps a clean stdout for
+    Warnings go to **stderr** so ``deckle-cli export`` keeps a clean stdout for
     scripting, and they never change the exit code -- a warning is advice,
     not a failure. But they must be said out loud somewhere: until this
-    existed only ``deckle info`` printed them, so
+    existed only ``deckle-cli info`` printed them, so
     ``export --fold-scheme folio`` onto portrait paper emitted the
     ``sheet_orientation`` warning, squeezed two pages onto every portrait
     sheet, and told the user nothing at all.
