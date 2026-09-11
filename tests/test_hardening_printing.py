@@ -676,6 +676,65 @@ def test_a_second_pass_does_not_inherit_the_first_passs_bookkeeping(monkeypatch)
     assert backend.unsubmitted_sheets == []
 
 
+def test_nothing_in_deckle_submits_a_whole_pass():
+    """``submit_pass`` has no production caller, and must not gain one.
+
+    This is ``test_nothing_in_deckle_calls_this_yet``'s shape (see
+    ``tests/test_duplex_submission.py``) pointed at the other unreached
+    submission path -- but the two are unreached for opposite reasons,
+    and only this one is a trap. ``submit_duplex`` is a capability Deckle
+    does not offer yet. ``submit_pass`` is a capability Deckle
+    deliberately stopped using: ``PrintSession`` chunks the pass itself
+    so the resume cursor advances per chunk, and a resume then lands on a
+    sheet instead of on a whole pass. Somebody simplifying
+    ``PrintSession._submit_sheets`` would reach for this method, and an
+    interrupted 25-sheet pass would resume by reprinting all 25.
+
+    The accounting attributes and the tests above are why it is kept
+    rather than deleted. If this ever fails, that trade needs revisiting
+    -- it is not a licence to add the caller.
+    """
+    import os
+    import re
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    scanned = 0
+    definitions: list[str] = []
+    callers: list[str] = []
+    for folder, _, names in os.walk(os.path.join(root, "deckle")):
+        for name in names:
+            if not name.endswith(".py"):
+                continue
+            scanned += 1
+            path = os.path.join(folder, name)
+            with open(path, encoding="utf-8") as handle:
+                for number, line in enumerate(handle, start=1):
+                    # A comment mentioning the method is prose, not a call
+                    # -- the sibling guard's first draft matched exactly
+                    # that and had to be taught the difference.
+                    code = line.split("#", 1)[0]
+                    if not re.search(r"\bsubmit_pass\s*\(", code):
+                        continue
+                    if "def " in code:
+                        definitions.append(f"{path}:{number}")
+                    else:
+                        callers.append(f"{path}:{number}")
+
+    # Premise: a scan that reached nothing would report "no callers" and
+    # mean "I did not look". Both halves are asserted, so a wrong root or
+    # a renamed method fails here rather than passing quietly.
+    assert scanned > 20, f"the scan only reached {scanned} modules; wrong root?"
+    assert len(definitions) == 1, (
+        f"expected exactly one `def submit_pass(`, found {definitions}"
+    )
+
+    assert callers == [], (
+        "submit_pass now has a caller -- the session chunks the pass itself "
+        "so that resume lands on a sheet rather than reprinting a whole "
+        f"pass; revisit that before keeping this: {callers}"
+    )
+
+
 def test_an_offline_printer_error_text_reaches_the_diagnostic_log(monkeypatch, tmp_path):
     """Offline, out of paper and driver rejection all arrive as the same
     Qt exception; the distinction lives entirely in the message."""
