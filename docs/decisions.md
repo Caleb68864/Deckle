@@ -1234,3 +1234,40 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
 - Surfaces: **`abspath`, not `realpath`.** Joining against the cwd is the fix; resolving symlinks as well would file scans under a symlinked `~/Books` as `/mnt/volume-3/...`, which is the same file only until the mount point changes, and is not the name the user chose. `project_io._path_within_roots` still uses `realpath` on both sides, where "is this the same file" is the actual question. The call is in `_read_pdf_pages` and nowhere else: `os.path.abspath("")` is the current working directory and `BLANK_SOURCE_PATH` is `""`, so the same line applied to an inserted blank would turn every blank into a reference to whatever folder Deckle was launched from, and `is_blank_page` tests for equality with `""` -- `load_project` would then start demanding those folders exist as files. **No migration.** A `.deckle` already holding `./book.pdf` keeps holding it and keeps working where it worked before; rewriting stored paths on load would be `load_project` silently editing the document, and on save would change a file the user did not ask to change. The next impose or Save writes an absolute path, and that is the whole migration.
 - Watch: **The store trades a bound for durability, and that was a judgement call, not a bug fix.** The 2 GB budget was red-team advisory A-7 -- "heavy image import otherwise accumulates silently in temp" -- and it is now gone; the store grows with the number of *distinct* image folders imported. That is deliberate: a stale gigabyte in `~/.local/share/deckle/imported` is recoverable by hand, and a saved project whose only source has been deleted is not. Content-addressing answers the repeat that would actually pile up -- the same book imported again after a cancelled job, or to start a second project from it, normalises to identical bytes and reuses the one file already there -- and dedupe is "leave the existing file alone", never "overwrite it with the same thing", because another project is already referencing it. The roadmap's own open question asked something narrower (B26, ROADMAP §6: spool the normalised PDF *beside the project*?) and its spec recommended that branch; it was **not** taken here, because at import time there is no project path, its desktop half means `save_project` rewriting `SourceRef.path` for every page during a save, and it puts a file the user did not create into the user's own folder -- a product decision that is still open and now a portability feature rather than a data-loss bug. `evict_lru_files` is untouched and still bounds the *export* cache, which references nothing.
 - Commit: (this commit)
+
+## 2026-09-21 — F2 Phase 1: the calibration state space enumerates to four questions, and the spec's own premise was stale
+- Context: sub-spec-13 refuses to be implemented as written until the state
+  space is enumerated, and gates on "more than five questions, or any axis not
+  independently determinable — stop and escalate". `docs/spikes/calibration-state-space.md`
+  is that enumeration, committed before any wizard code so the table cannot be
+  reshaped to fit whatever the implementation turned out to do.
+- Result: **four questions** (`output_face`, `feed_edge`, `stack_order`,
+  `back_orientation`), all independently determinable. **The gate passes**;
+  Phases 2-5 may proceed. Recorded explicitly because "nothing happened" at a
+  decision point is a result the next reader needs stated, not inferred.
+- **The finding that matters: both the F2 spec and sub-spec-13 describe a rule
+  the code has not used since 2026-08-06.** They state
+  `rotate_backs = profile.flip_axis == "long"` (F2 spec lines 131, 267, 389).
+  `printing.py:243` is `profile.flip_axis != duplex_flip_edge(plan.paper_pt)`,
+  and that module's docstring says in terms that the old rule "is right for
+  exactly one orientation and silently upside down for the other".
+- Consequence for the wizard, which is why this is a decision and not a typo:
+  "were the backs upright?" **cannot be converted into `flip_axis` without
+  knowing which orientation the sheet was printed in.** The answer record
+  therefore carries `orientation` as a fifth field. That widens the *record*,
+  not the question count — the operator judges nothing extra, and
+  `calibration_sheet.py` already prints both orientations and asks which one is
+  in their hand (question G).
+- `reverse_stack` stays a question rather than being derived from
+  `(output_face, feed_edge)`. The two shipped presets are two data points
+  fitting four combinations; `down+bottom` and `up+top` have never been
+  observed. Deriving from that would be the same unsupported-claim error the
+  sub-spec opens by rejecting. The 2026-09-10 entry above put it best: *"Two
+  agreeing derivations from an unverified premise are still one unverified
+  premise."*
+- Watch: two things flip this, both needing a printer and both landing in Phase
+  5 — if `reverse_stack` is not a function of `(output_face, feed_edge)` then
+  `profiles.py:61-74` is wrong; if the operator's named flip edge does not
+  coincide with the geometric one then `flip_axis` is misnamed. Neither blocks
+  Phases 2-4.
+- Commit: this commit.
