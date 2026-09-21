@@ -21,7 +21,10 @@ them: it is described (:mod:`~deckle.core.models`), loaded off disk
 the printed target whose whole value is that it does not use the pass
 planner. :mod:`~deckle.core.calibration` is its other half, turning what
 the operator read off that target back into a
-:class:`~deckle.core.profiles.PrinterProfile`. :mod:`~deckle.core.report` describes
+:class:`~deckle.core.profiles.PrinterProfile`, and
+:mod:`~deckle.core.calibration_flow` holds the wizard's judgements --
+which readings are explicable, and what the two orientations together
+mean -- with no Qt in them. :mod:`~deckle.core.report` describes
 any of that as JSON for the CLI's ``--json`` flags, and the two log
 modules sit underneath all of it.
 
@@ -50,6 +53,7 @@ modules sit underneath all of it.
    core.profiles
    core.calibration_sheet
    core.calibration
+   core.calibration_flow
    core.print_session
    core.schedule
    core.report

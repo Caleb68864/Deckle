@@ -472,7 +472,8 @@ deckle/core/    models, loader, layout, signatures, marks, export, render,
                 pdfium_lock, plan_digest, schedule, project_io, defaults,
                 outputs, printing, profiles, print_session, paper, paths,
                 locate, schema, recent, dummy, calibration_sheet,
-                calibration, about, report, session_log, diagnostics
+                calibration, calibration_flow, about, report, session_log,
+                diagnostics
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli/     headless entry point, imports only deckle.core
 ```

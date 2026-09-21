@@ -1354,3 +1354,42 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
   though noting that the right answer was not a new shape for `build_test_plan`
   but no such function at all.
 - Commit: this commit.
+
+## 2026-09-21 — F2 Phase 4a: the wizard's judgements, split out of the Qt it has not got yet
+- Phase 4 of the F2 spec is a six-screen `QWizard` with every collaborator
+  injected. Built the judgements first as `deckle/core/calibration_flow.py`,
+  the same split `print_session` has against `print_dialog`: the screens are
+  Qt, the decisions are not, and the decisions are where the bugs are.
+- **Two more places the spec is stale**, both found by reading the shipped
+  sheet rather than the spec:
+  1. Its screen 4 asks *"What letter is on its back? A / B / C / D"*. The
+     shipped sheet numbers its backs 1-4 (`page_plan` emits FRONT 1..n then
+     BACK 1..n, and the cover's question D says "the BACK number"). A wizard
+     asking for letters would be asking about a sheet nobody has.
+  2. Its screens 1 and 3 submit through `QtPrintBackend` using
+     `build_test_plan`, which Phase 3 established must not exist. The wizard
+     hands the operator the document and its own printing instructions
+     instead.
+- **The escalation survives and is the load-bearing part.** Back 1 on front 1
+  means preserved order, back 4 means reversed, and 2 or 3 mean Deckle's
+  two-state model cannot express what the printer did.
+  `stack_order_from_back_number` raises `UnexplainableResult` rather than
+  rounding to the nearer of the two. `back_number_choices()` deliberately
+  offers all four, because a picker listing only 1 and 4 forces an operator
+  whose printer did something else to enter a lie -- and the escalation would
+  then never fire.
+- **New, and not in the spec: `reconcile`.** The sheet is printed in both
+  orientations, so there are two independent readings of one machine. They
+  must derive the same profile; a difference means a sheet was misread, and
+  this refuses to choose which.
+- The counter-intuitive part, which caught me while writing the tests: a
+  printer with `flip_axis="long"` lands its backs **upright on portrait and
+  inverted on landscape**. So one machine yields two *opposite* reports, and
+  writing the same answer for both -- the obvious thing to write -- describes
+  two different printers. My first draft of the agreement test did exactly
+  that and failed correctly. Both tests now carry the explanation, because
+  anybody editing them will reach for the same wrong intuition.
+- Watch: `reconcile` compares derived profiles, never raw answers. If a future
+  change compares answers instead it will report every correct calibration as
+  a disagreement.
+- Commit: this commit. The Qt shell is next and still unbuilt.
