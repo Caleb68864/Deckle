@@ -269,3 +269,115 @@ def _sheet_plan(paper_pt: tuple[float, float]):
         paper_pt=paper_pt,
         warnings=[],
     )
+
+
+# -- the bridge to the printed half -------------------------------------
+#
+# `calibration_sheet` and `calibration` are deliberately kept apart: the sheet
+# may not import `profiles`, and a guard in `tests/test_calibration_sheet.py`
+# enforces it, because a target produced by the code it checks is evidence of
+# nothing. The cost of that independence is silent drift -- the sheet could
+# stop asking a question and nothing above would fail. These tests are the
+# bridge, walked in both directions against the real rendered PDF.
+
+
+def _cover_text(path) -> str:
+    """The cover page's text, with runs of whitespace collapsed.
+
+    The sheet aligns its columns with runs of spaces and the extractor decides
+    its own spacing, so comparing raw text would assert a fact about pdfium
+    rather than about the questions.
+    """
+    import re as _re
+
+    import pypdfium2 as pdfium
+
+    document = pdfium.PdfDocument(str(path))
+    try:
+        raw = document[0].get_textpage().get_text_range()
+    finally:
+        document.close()
+    return _re.sub(r"[ \t]+", " ", raw)
+
+
+@pytest.fixture(scope="module")
+def covers(tmp_path_factory):
+    """The cover page of both real orientations, rendered once.
+
+    Rendered here rather than read from `docs/calibration/`: the committed
+    artifacts have their own currency guard, and a bridge test should track the
+    generator rather than a file that might be stale.
+    """
+    from deckle.core.calibration_sheet import make_calibration_pdf
+
+    out = tmp_path_factory.mktemp("calibration")
+    covers = {}
+    for orientation, landscape in (("portrait", False), ("landscape", True)):
+        path = out / f"{orientation}.pdf"
+        make_calibration_pdf(str(path), landscape=landscape)
+        covers[orientation] = _cover_text(path)
+    return covers
+
+
+def test_every_answer_this_module_needs_is_asked_for_on_paper(covers):
+    """Forward direction: no answer key is uncollectable.
+
+    A key here with no question on the sheet would be one the wizard must
+    invent, and inventing one is how a calibration becomes a preset wearing
+    `calibration_version=1`.
+    """
+    from deckle.core.calibration import SHEET_MARKERS
+
+    for orientation, cover in covers.items():
+        for key in ANSWER_KEYS:
+            assert key in SHEET_MARKERS, f"{key} has no declared sheet marker"
+            assert SHEET_MARKERS[key] in cover, (
+                f"the {orientation} sheet does not ask for {key} "
+                f"(looked for {SHEET_MARKERS[key]!r})"
+            )
+
+
+def test_the_paper_asks_for_nothing_this_module_cannot_consume(covers):
+    """Reverse direction, and the one that catches a sixth question.
+
+    Every `-> field` marker the sheet prints must be one some answer key
+    resolves, or be a measurement this module takes as a parameter rather than
+    an answer. A new marker appearing on the cover fails here rather than
+    being quietly collected and dropped.
+    """
+    import re
+
+    from deckle.core.calibration import SHEET_MARKERS
+
+    # The two the sheet resolves that are not answers: they are passed to
+    # `derive_profile` as `back_offset_pt`, measured with a ruler rather than
+    # chosen from a domain.
+    measured = {"back_offset_x_pt", "back_offset_y_pt"}
+    answered = {marker.removeprefix("-> ") for marker in SHEET_MARKERS.values()}
+
+    for orientation, cover in covers.items():
+        # Only `-> field` markers, not question D's `front 1 -> back ____`
+        # blanks: every profile field this sheet resolves is snake_case, and
+        # the grid's blanks are single words. Keying on the underscore is what
+        # separates a marker from a fill-in.
+        printed = {
+            token for token in re.findall(r"->\s*([a-z][a-z0-9_]*)", cover)
+            if "_" in token
+        }
+        unexpected = printed - answered - measured
+        assert not unexpected, (
+            f"the {orientation} sheet asks for {sorted(unexpected)}, which "
+            "nothing in this module consumes"
+        )
+
+
+def test_the_sheet_and_the_derivation_agree_on_the_orientation_question(covers):
+    """The fifth key exists because of Finding C; the sheet must carry it.
+
+    If the sheet ever stopped naming its own orientation, `back_orientation`
+    would become unreadable -- not merely unvalidated -- because the same
+    observation means opposite things on the two papers.
+    """
+    for cover in covers.values():
+        assert "PORTRAIT" in cover and "LANDSCAPE" in cover
+        assert "portrait file AND the landscape file" in cover

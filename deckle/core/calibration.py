@@ -85,6 +85,42 @@ ANSWER_VALUES: dict[str, tuple[str, ...]] = {
     "orientation": ("portrait", "landscape"),
 }
 
+#: What the printed sheet must say for each answer to be collectable, keyed by
+#: answer.
+#:
+#: The sheet and this module are **deliberately kept apart**:
+#: :mod:`deckle.core.calibration_sheet` may not import
+#: :mod:`deckle.core.profiles`, and a guard in
+#: ``tests/test_calibration_sheet.py`` enforces that, because a target produced
+#: by the code it is printed to check is evidence of nothing. So neither module
+#: imports the other, and the cost of that independence is that they can drift
+#: apart silently -- the sheet could stop asking a question, or start asking a
+#: sixth, and every test here would still pass.
+#:
+#: This table is the bridge, and ``tests/test_calibration.py`` walks it in both
+#: directions against the real rendered PDF: every answer this module needs is
+#: asked for on paper, and the paper asks for nothing this module cannot
+#: consume. It is data rather than an import, so it costs the independence
+#: nothing.
+#:
+#: Compared against the sheet with whitespace collapsed, because a PDF text
+#: extractor decides its own spacing and the sheet aligns its columns with runs
+#: of spaces. Matching those exactly would make this table assert a fact about
+#: pdfium rather than about the questions.
+#:
+#: The values are the marker the sheet prints beside each question -- the
+#: profile *field* the question resolves, which is the sheet's own vocabulary
+#: (its questions are lettered A-G and point at field names with ``->``).
+#: ``orientation`` is the exception: it is answered by circling a word rather
+#: than by resolving a field, so its marker is that word.
+SHEET_MARKERS: dict[str, str] = {
+    "output_face": "-> output_face",
+    "feed_edge": "-> feed_edge",
+    "stack_order": "-> reverse_stack",
+    "back_orientation": "-> flip_axis",
+    "orientation": "PORTRAIT / LANDSCAPE",
+}
+
 #: Which named edge is the sheet's vertical one, by orientation.
 #:
 #: The same fact :func:`deckle.core.printing.duplex_flip_edge` computes from a

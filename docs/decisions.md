@@ -1314,3 +1314,43 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
   makes the editor write 1, that distinction is gone and nothing downstream
   can recover it.
 - Commit: this commit.
+
+## 2026-09-21 — F2 Phase 3: the spec asked for a test plan the codebase is right to refuse
+- Phase 3 of the F2 spec says to build `calibration_source_pdf` and
+  `build_test_plan` in `deckle/core/calibration.py`, the latter so "the
+  calibration print travels the ordinary `export`/`QtPrintBackend` path and
+  exercises it end to end", citing SS-13's frozen contract.
+- **Both were superseded on 2026-09-11 by `deckle/core/calibration_sheet.py`,
+  which refuses that shape deliberately** and carries a load-bearing guard
+  enforcing the refusal
+  (`test_the_calibration_sheet_never_routes_through_the_imposition_path`,
+  checked on imports *and* on every name called).
+- The reasoning in the guard is better than the spec's: a target produced by
+  `plan_passes` makes the operator's report a statement that Deckle agrees with
+  itself. The clause the spec offers as a benefit — "it flows through the
+  ordinary print path" — is the defect. **So Phase 3 was not implemented as
+  written, and `build_test_plan` was not built.**
+- The shipped sheet is also better than the spec's page table: it prints both
+  orientations (the spec's single 8-page document cannot answer `flip_axis`
+  at all, per Finding C), carries a cover with the results grid, and asks what
+  the operator *sees* rather than whether they agree.
+- **What was actually missing, and is what Phase 3 delivered:** nothing
+  connected the sheet's printed questions to `ANSWER_KEYS`. The two modules are
+  kept apart on purpose — the sheet may not import `profiles` — so the cost of
+  that independence is silent drift. `SHEET_MARKERS` plus two bridge tests walk
+  it in both directions against the real rendered PDF: every answer is asked
+  for on paper, and the paper asks for nothing `derive_profile` cannot consume.
+- Both bridge tests were **verified able to fail** before being kept: removing
+  question B's marker from the sheet fails the forward test by name, and adding
+  a sixth question (`-> paper_weight_gsm`) fails the reverse one. The sheet was
+  restored byte-identical afterwards.
+- The reverse test keys on the underscore in a snake_case field name, which is
+  what separates a `-> feed_edge` marker from question D's `front 1 -> back ____`
+  fill-in blanks. Cover text is compared with whitespace collapsed: the sheet
+  aligns columns with runs of spaces and pdfium decides its own spacing, so
+  exact matching would assert a fact about the extractor.
+- `docs/specs/deckle-mvp/sub-spec-13-calibration-wizard.md` records the
+  supersession in its Interface Contracts section, as the F2 spec instructs —
+  though noting that the right answer was not a new shape for `build_test_plan`
+  but no such function at all.
+- Commit: this commit.

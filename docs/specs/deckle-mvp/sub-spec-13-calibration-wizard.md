@@ -135,11 +135,29 @@ git add -A && git commit -m "feat(SS-13): calibration wizard and profile derivat
 - Shape: `derive_profile(answers: Mapping[str, str]) -> PrinterProfile`. **Pure** — no Qt,
   no I/O. Total over the enumerated answer space.
 
-### build_test_plan
+### build_test_plan — **superseded 2026-09-21, and not built**
 - Direction: SS-13 → SS-08 (submitted like any other plan)
 - Owner: SS-13
-- Shape: `build_test_plan() -> SheetPlan`. A synthetic 4-sheet plan; it flows through the
-  ordinary print path, which also exercises that path end to end.
+- Original shape: `build_test_plan() -> SheetPlan`. A synthetic 4-sheet plan; it flows
+  through the ordinary print path, which also exercises that path end to end.
+- **Superseded by `deckle/core/calibration_sheet.py` (2026-09-11), which refuses this
+  shape on purpose.** The clause above — "it flows through the ordinary print path" —
+  is the defect, not the feature. A target produced by `plan_passes` makes the
+  operator's report a statement that Deckle agrees with itself: the probe replicates
+  its own subject and the paper proves nothing. The sheet therefore emits pages in
+  plain sequential order, applies no reversal and no rotation, and imports none of
+  `printing`, `print_session`, `profiles`, `layout`, `signatures`, `export`, `marks`
+  or `models`. `tests/test_calibration_sheet.py::test_the_calibration_sheet_never_routes_through_the_imposition_path`
+  is the load-bearing guard, checked on the module's imports *and* on every name it
+  calls.
+- `docs/specs/2026-09-04-roadmap/F2-calibration-spike.md` §3.2 also predates this and
+  should be read with the same correction: it proposed superseding the zero-argument
+  form with a source-backed one, where the right answer turned out to be that the
+  function should not exist.
+- What F2 Phase 3 delivered instead: `deckle.core.calibration.SHEET_MARKERS` plus the
+  bridge tests in `tests/test_calibration.py`, which walk the sheet's printed questions
+  against `ANSWER_KEYS` in both directions. Independence is what makes the sheet
+  evidence; the cost is silent drift, and the bridge is what pays it.
 
 ## Verification Commands
 
