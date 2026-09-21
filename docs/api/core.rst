@@ -19,7 +19,9 @@ them: it is described (:mod:`~deckle.core.models`), loaded off disk
 :mod:`~deckle.core.calibration_sheet` sits beside
 :mod:`~deckle.core.profiles` and deliberately *outside* that chain: it is
 the printed target whose whole value is that it does not use the pass
-planner. :mod:`~deckle.core.report` describes
+planner. :mod:`~deckle.core.calibration` is its other half, turning what
+the operator read off that target back into a
+:class:`~deckle.core.profiles.PrinterProfile`. :mod:`~deckle.core.report` describes
 any of that as JSON for the CLI's ``--json`` flags, and the two log
 modules sit underneath all of it.
 
@@ -47,6 +49,7 @@ modules sit underneath all of it.
    core.recent
    core.profiles
    core.calibration_sheet
+   core.calibration
    core.print_session
    core.schedule
    core.report

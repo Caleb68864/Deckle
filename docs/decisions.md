@@ -1271,3 +1271,46 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
   coincide with the geometric one then `flip_axis` is misnamed. Neither blocks
   Phases 2-4.
 - Commit: this commit.
+
+## 2026-09-21 — F2 Phase 2: `derive_profile` implements the flip rule the spec got backwards
+- Built `deckle/core/calibration.py` (the pure half of the wizard) and
+  `tests/test_calibration.py`, test first and watched red.
+- **Deviation from the F2 spec, taken deliberately.** Its §2.3 body derives
+  `flip_axis = "long" if back_orientation == "inverted" else "short"`, with the
+  stated reason "because `plan_passes` reads `rotate_backs = flip_axis ==
+  "long"`". That rule was replaced on 2026-08-06 by
+  `flip_axis != duplex_flip_edge(plan.paper_pt)`, so the spec's formula is
+  correct for landscape and **exactly backwards for portrait**.
+- Demonstrated rather than argued. Operator reports the backs came out
+  inverted, so a half turn is wanted:
+
+      portrait  ours: flip_axis=short -> rotate_backs=True   (correct)
+                spec: flip_axis=long  -> rotate_backs=False  (every back upside down)
+      landscape ours: flip_axis=long  -> rotate_backs=True   (correct)
+                spec: flip_axis=long  -> rotate_backs=True   (correct by luck)
+
+  `printing.py`'s own docstring names this failure: "a whole run of ruined
+  paper that nothing on screen reports".
+- Consequence: `ANSWER_KEYS` has five entries, not four. `orientation` is what
+  makes `back_orientation` convertible at all. It widens the record, not the
+  question count -- `calibration_sheet` already prints both orientations and
+  asks which one the operator holds (its question G).
+- The exhaustive test iterates all 32 combinations (16 states x 2
+  orientations), asserts the produced profiles cover exactly the 16-row cross
+  product of the four `Literal` domains, and asserts each is reached **exactly
+  twice** -- once per orientation from opposite readings. That count is the
+  flip rule stated as an invariant; a collision or a gap would break it.
+- The round-trip test is the one that carries the weight: derive from what the
+  operator saw, hand the profile to the real `plan_passes` for the same paper,
+  and assert it asks for a half turn exactly when they saw one needed. The
+  spec's formula fails it on portrait.
+- `_VERTICAL_EDGE` maps the operator's word ("portrait") rather than importing
+  `duplex_flip_edge`, because this module is handed an orientation and not a
+  paper size -- the sheet's cover says PORTRAIT/LANDSCAPE and never quotes
+  millimetres. The round-trip test pins the two against each other so they
+  cannot drift.
+- Watch: `calibration_version=1` is the only thing separating a measured
+  profile from one typed into F1's editor, which writes 0. If a future change
+  makes the editor write 1, that distinction is gone and nothing downstream
+  can recover it.
+- Commit: this commit.
