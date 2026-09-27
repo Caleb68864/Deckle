@@ -64,6 +64,12 @@ from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView, import_advisory_message
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
+from deckle.app.views.cards_view import CardsView
+from deckle.app.views.card_layout_panel import CardLayoutPanel
+from deckle.core.card_layout import impose_cards
+from deckle.core.cards import card_output_problems, project_has_content
+from deckle.core.planning import impose_project
+from deckle.core.models import CardDeck, CardSettings, SheetPlan
 from deckle.app.views.print_dialog import (
     PrintDialog,
     resolve_profile,
@@ -88,6 +94,16 @@ which is the app telling the operator that paper came out. Save PDF and
 Save project were gated on pages from the start; Print needs both, and
 this is the half that was missing.
 """
+
+def _project_output_ready(project) -> bool:
+    if getattr(project, "kind", "book") != "cards": return bool(project.pages)
+    if project.card_deck is None or card_output_problems(project.card_deck): return False
+    try:
+        impose_project(project)
+        return True
+    except (ValueError, TypeError):
+        return False
+
 
 NO_DOCUMENT_MESSAGE = "Import a PDF or a folder of images to begin."
 """The first thing Deckle says when it opens with nothing loaded.
@@ -408,6 +424,11 @@ class MainWindow:
 
         self.layout_panel = LayoutPanel(self.state, controls, profile=self.profile)
         controls_layout.addWidget(self.layout_panel.widget)
+        self.cards_view = CardsView(self.state, controls, on_change=self._on_pages_changed)
+        controls_layout.addWidget(self.cards_view.widget)
+        self.card_layout_panel = CardLayoutPanel(self.state, controls, on_change=self._on_pages_changed)
+        controls_layout.addWidget(self.card_layout_panel.widget)
+        self._sync_kind_views()
 
         controls_layout.addStretch(1)
 
@@ -471,6 +492,7 @@ class MainWindow:
         # pane and the column grows a horizontal scrollbar, which is the
         # one kind of scrolling a settings form should never need.
         controls_scroll.setMinimumWidth(420)
+        self.controls_scroll = controls_scroll
         self.splitter.addWidget(controls_scroll)
 
         # -- right: what you get -----------------------------------------
@@ -481,7 +503,7 @@ class MainWindow:
         output.setOrientation(_qt_vertical())
 
         self.preview_view = PreviewView(
-            recompute_plan(self.state.project),
+            self._plan_for_project(self.state.project),
             self.profile,
             output,
             layout_settings=self.state.project.layout,
@@ -502,6 +524,7 @@ class MainWindow:
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
         self.splitter.setChildrenCollapsible(False)
+        self._sync_card_workspace_layout()
 
         self.window.setCentralWidget(central)
         self.window.resize(1280, 860)
@@ -512,6 +535,8 @@ class MainWindow:
         output.setSizes([620, 240])
         self.status_bar = QStatusBar(self.window)
         self.window.setStatusBar(self.status_bar)
+        self.cards_view.on_advisory = self.status_bar.showMessage
+        self.cards_view.on_selected = self.preview_view.set_selected_card
 
         self.import_view.imported.connect(self._on_imported)
         # `failed` was emitted and connected to nothing, so the one thing a
@@ -592,6 +617,101 @@ class MainWindow:
             self._offer_unsaved_recovery()
         self.refresh_printers()
 
+    def _plan_for_project(self, project):
+        self._output_problem = ""
+        try:
+            plan = impose_project(project)
+            if project.kind == "cards":
+                self._output_problem = " ".join(card_output_problems(project.card_deck))
+            return plan
+        except (ValueError, TypeError) as exc:
+            self._output_problem = str(exc)
+            return SheetPlan([], project.layout.paper, [])
+
+    def _output_is_ready(self) -> bool:
+        project = self.state.project
+        if project.kind == "cards":
+            if project.card_deck is None or card_output_problems(project.card_deck): return False
+            try: self._plan_for_project(project)
+            except Exception: return False
+            return not self._output_problem
+        return bool(project.pages)
+
+    def _sync_kind_views(self) -> None:
+        cards = self.state.project.kind == "cards"
+        for name in ("cards_view", "card_layout_panel", "import_view", "layout_panel", "arrange_view"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                target = widget.widget if hasattr(widget, "widget") else None
+                if target is not None: target.setVisible((name in ("cards_view", "card_layout_panel")) == cards)
+        controls_scroll = getattr(self, "controls_scroll", None)
+        splitter = getattr(self, "splitter", None)
+        window = getattr(self, "window", None)
+        if controls_scroll is not None and splitter is not None and window is not None:
+            if cards:
+                # Card controls contain several full-width import, pairing,
+                # and print-geometry controls. Give that workspace room and
+                # keep a useful preview pane beside it at normal window sizes.
+                controls_scroll.setMinimumWidth(520)
+                window.setMinimumWidth(1040)
+                if window.width() < 1040:
+                    window.resize(1040, max(700, window.height()))
+                width = max(splitter.width(), window.width())
+                splitter.setSizes([560, max(480, width - 560)])
+            else:
+                controls_scroll.setMinimumWidth(420)
+                window.setMinimumWidth(840)
+                width = max(splitter.width(), window.width())
+                splitter.setSizes([440, max(400, width - 440)])
+        self._sync_card_workspace_layout()
+        for name, action in self.menu_actions.items():
+            if name in {"import_pdf", "import_images", "rotate_selection", "skip_selection", "insert_blank", "insert_blank_at_choice"}:
+                action.setVisible(not cards)
+
+    def new_book_project(self) -> None:
+        if not self._confirm_discard("creating a new book project"): return
+        project_actions.flush_outgoing_state(self)
+        self.state = AppState(default_project(), project_path=None)
+        self.import_view.state = self.state; self.arrange_view.state = self.state
+        self.layout_panel.state = self.state; self.cards_view.state = self.state
+        self.card_layout_panel.state = self.state
+        self._sync_kind_views(); self.cards_view.refresh(); self._on_pages_changed(); self._sync_title()
+
+    def new_card_deck(self) -> None:
+        if not self._confirm_discard("creating a new card deck"):
+            return
+        project_actions.flush_outgoing_state(self)
+        layout = self.state.project.layout
+        deck = CardDeck((), (), CardSettings())
+        self.state = AppState(Project([], layout, None, "cards", deck), project_path=None)
+        self.import_view.state = self.state
+        self.arrange_view.state = self.state
+        self.layout_panel.state = self.state
+        self.cards_view.state = self.state
+        self.card_layout_panel.state = self.state
+        self.state.mark_unsaved()
+        self._sync_kind_views()
+        self.cards_view.refresh(); self.card_layout_panel.refresh()
+        self._on_pages_changed()
+        self._sync_title()
+
+    def offer_project_type_choice(self) -> None:
+        """Offer a deck or book at startup when the workspace is empty."""
+        project = self.state.project
+        if project.kind == "cards" or project_has_content(project) or self.state.dirty:
+            return
+        from PySide6.QtWidgets import QMessageBox
+
+        prompt = QMessageBox(self.window)
+        prompt.setWindowTitle("Start a project")
+        prompt.setText("What kind of project would you like to make?")
+        prompt.addButton("Book project", QMessageBox.ButtonRole.AcceptRole)
+        card_button = prompt.addButton("Trading card deck", QMessageBox.ButtonRole.ActionRole)
+        prompt.addButton("Decide later", QMessageBox.ButtonRole.RejectRole)
+        prompt.exec()
+        if prompt.clickedButton() is card_button:
+            self.new_card_deck()
+
     def _sync_document_actions(self) -> None:
         """Enable the document actions only when there is a document.
 
@@ -609,12 +729,16 @@ class MainWindow:
         a name it could not find. A rename in either direction turned the
         gating into a no-op that nothing detected.
         """
-        has_pages = bool(self.state.project.pages)
-        self.save_pdf_button.setEnabled(has_pages)
+        has_pages = project_has_content(self.state.project)
+        output_ready = _project_output_ready(self.state.project)
+        self.save_pdf_button.setEnabled(output_ready)
         # The menu entries are the same commands as the buttons, so they
         # have to be unavailable at the same moments -- a greyed button
         # beside a live menu item is the app disagreeing with itself.
         self._set_gated_actions("document", has_pages)
+        for action_name in ("save_pdf", "export_single_pass"):
+            action = self.menu_actions.get(action_name)
+            if action is not None: action.setEnabled(output_ready)
         # Opening is always available; saving needs something to save.
         self.save_project_button.setEnabled(has_pages)
         self.save_project_button.setToolTip(
@@ -622,6 +746,9 @@ class MainWindow:
         )
         self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
         self.layout_panel.set_document_loaded(has_pages)
+        if hasattr(self, "_sync_kind_views"): self._sync_kind_views()
+        self.cards_view.refresh() if hasattr(self, "cards_view") else None
+        self.card_layout_panel.refresh() if hasattr(self, "card_layout_panel") else None
         self._sync_print_action()
 
     def _set_gated_actions(self, gate: str, enabled: bool) -> None:
@@ -666,8 +793,8 @@ class MainWindow:
             whatever is imported.
         """
         has_printers = bool(self._printers)
-        has_pages = bool(self.state.project.pages)
-        enabled = has_printers and has_pages
+        has_pages = project_has_content(self.state.project)
+        enabled = has_printers and has_pages and _project_output_ready(self.state.project)
         self.print_button.setEnabled(enabled)
         self._set_gated_actions("document+printer", enabled)
         if enabled:
@@ -742,7 +869,7 @@ class MainWindow:
         # already carried out.
         self._refresh_status_message()
         self._sync_title()
-        self.preview_view.on_layout_changed(recompute_plan(self.state.project))
+        self.preview_view.on_layout_changed(self._plan_for_project(self.state.project))
 
     def _on_pages_changed(self) -> None:
         """Re-impose after the document itself changed.
@@ -755,13 +882,35 @@ class MainWindow:
         *the preview's* plan -- deliberately, so that what you save is what
         you saw -- the edit reached neither the screen nor the paper.
         """
-        self.preview_view.on_layout_changed(
-            recompute_plan(self.state.project), self.state.project.layout
-        )
+        plan = self._plan_for_project(self.state.project)
+        self.preview_view.on_layout_changed(plan, self.state.project.layout)
+        if self.state.project.kind == "cards":
+            self.cards_view.refresh()
+            self.card_layout_panel.refresh()
+        self._sync_card_workspace_layout()
         self._sync_document_actions()
         self._refresh_status_message()
         self._sync_history_actions()
         self._sync_title()
+
+    def _sync_card_workspace_layout(self) -> None:
+        """Give setup controls the full pane while a card sheet is unavailable.
+
+        An empty or unpaired deck has no useful sheet preview. Hiding that
+        blank pane gives the front/back and layout controls the available
+        width. Once every active card has a back and a sheet can be planned,
+        restore the preview beside a wide settings pane.
+        """
+        output = getattr(self, "output_splitter", None)
+        splitter = getattr(self, "splitter", None)
+        if output is None or splitter is None:
+            return
+        cards = self.state.project.kind == "cards"
+        show_output = not cards or self._output_is_ready()
+        output.setVisible(show_output)
+        if cards and show_output:
+            width = max(splitter.width(), self.window.width())
+            splitter.setSizes([600, max(440, width - 600)])
 
     def _on_page_selected(self, page_index: int) -> None:
         """Follow the arrange grid's selection in the preview.
@@ -805,8 +954,10 @@ class MainWindow:
             self.status_bar.showMessage(self._import_message)
         elif self._printer_message:
             self.status_bar.showMessage(self._printer_message)
-        elif not self.state.project.pages:
+        elif not project_has_content(self.state.project):
             self.status_bar.showMessage(NO_DOCUMENT_MESSAGE)
+        elif getattr(self.state.project, "kind", "book") == "cards" and getattr(self, "_output_problem", None):
+            self.status_bar.showMessage(self._output_problem)
         else:
             self.status_bar.clearMessage()
 
@@ -898,7 +1049,7 @@ class MainWindow:
             # imported anything yet. Routine "no printers installed",
             # though, is not news on an empty Deckle.
             self._printer_message = (
-                message if (no_printers_message or self.state.project.pages) else ""
+                message if (no_printers_message or project_has_content(self.state.project)) else ""
             )
         # After `_printer_message`, which the tooltip reads.
         self._sync_print_action()
@@ -964,12 +1115,12 @@ class MainWindow:
             # slot is reached some other way.
             self.status_bar.showMessage(NO_PRINTERS_MESSAGE)
             return
-        if not self.state.project.pages:
+        if not self._output_is_ready():
             # Defensive in the same way, and for a defect that was real
             # rather than hypothetical: the button used not to be disabled
             # here at all, and a plan of zero sheets reached a dialog that
             # ran both empty passes and said "Print job complete."
-            self.status_bar.showMessage(NOTHING_TO_PRINT_MESSAGE)
+            self.status_bar.showMessage(self._output_problem or NOTHING_TO_PRINT_MESSAGE)
             return
         plan = self.preview_view.plan
         self.print_dialog = PrintDialog(
@@ -1150,7 +1301,7 @@ class MainWindow:
 
         :returns: whether to ask before discarding.
         """
-        return self.state.dirty and bool(self.state.project.pages)
+        return self.state.dirty and project_has_content(self.state.project)
 
     def _confirm_discard(self, action: str) -> bool:
         """Ask about unsaved work, and act on the answer.
@@ -1247,6 +1398,17 @@ class MainWindow:
         :param path: the dropped source.
         :returns: nothing. Cancelling imports nothing at all.
         """
+        if self.state.project.kind == "cards":
+            from PySide6.QtWidgets import QMessageBox
+            folder=os.path.isdir(path)
+            prompt="Import this folder as front cards? Choose No to import its images as backs." if folder else "Add this image as a front? Choose No to import it as a back."
+            choice=QMessageBox.question(self.window,"Import dropped image",prompt,QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No|QMessageBox.StandardButton.Cancel)
+            function=__import__("deckle.core.card_import",fromlist=["import_card_folder","import_card_images"])
+            importer=function.import_card_folder if folder else function.import_card_images
+            args=(path,) if folder else ([path],)
+            if choice==QMessageBox.StandardButton.Yes: self.cards_view._start_import(importer,args,True)
+            elif choice==QMessageBox.StandardButton.No: self.cards_view._start_import(importer,args,False)
+            return
         if not self.state.project.pages:
             self.import_view.import_path(path, append=False)
             return
@@ -1289,7 +1451,7 @@ class MainWindow:
         :returns: the suggested filename. See
             :func:`deckle.app.exporting.suggested_export_name`.
         """
-        return exporting.suggested_export_name(self.state.project.pages)
+        return exporting.suggested_export_name(self.state.project.pages, card_project=self.state.project.kind == "cards", project_path=self.state.project_path)
 
     def _install_shortcuts(self) -> None:
         """Bind Ctrl+Z / Ctrl+Y (and Ctrl+Shift+Z) to the history.
@@ -1563,11 +1725,14 @@ def main(argv: list[str] | None = None) -> int:
     """
     import sys
 
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(argv if argv is not None else sys.argv)
     main_window = MainWindow()
     main_window.show()
+    # Let the window become visible before the optional first action prompt.
+    QTimer.singleShot(0, main_window.offer_project_type_choice)
     return app.exec()
 
 

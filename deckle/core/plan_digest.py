@@ -104,7 +104,15 @@ def output_page_key(page: OutputPage) -> str:
         f"{placement.scale_x}:{placement.scale_y}:{placement.tx}:"
         f"{placement.ty}:{placement.rotate_deg}"
     )
-    return f"{ref_key}|{placement_key}|{page.is_filler}|{page.crop_pt}"
+    card = page.card
+    if card is None:
+        return f"{ref_key}|{placement_key}|{page.is_filler}|{page.crop_pt}"
+    card_key = (
+        f"card[{len(card.card_id.encode('utf-8'))}]:{card.card_id}:"
+        f"{card.copy_index}:{card.trim_rect_pt}:{card.art_rect_pt}:"
+        f"{card.bleed_rect_pt}:{card.black_border}"
+    )
+    return f"{ref_key}|{placement_key}|{page.is_filler}|{page.crop_pt}|{card_key}"
 
 
 def plan_digest(plan: SheetPlan) -> str:

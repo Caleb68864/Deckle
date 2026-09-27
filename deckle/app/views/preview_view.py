@@ -96,6 +96,7 @@ def clipping_warnings_for_sheet(
     sheet: Sheet,
     paper_pt: tuple[float, float],
     imageable_area_pt: tuple[float, float, float, float],
+    back_offset_pt: tuple[float, float] = (0.0, 0.0),
 ) -> list[LayoutWarning]:
     """Front/back clipping warnings for one sheet, page-box vs imageable-area
     kept strictly separate.
@@ -121,7 +122,16 @@ def clipping_warnings_for_sheet(
         if side is None:
             continue
         for output_page in side.pages:
-            bbox = _output_page_bbox(output_page)
+            if output_page.card is not None:
+                x, y, w, h = (
+                    output_page.card.bleed_rect_pt
+                    if output_page.card.black_border
+                    else output_page.card.trim_rect_pt
+                )
+                dx, dy = back_offset_pt if side_name == "back" else (0.0, 0.0)
+                bbox = (x + dx, y + dy, x + w + dx, y + h + dy)
+            else:
+                bbox = _output_page_bbox(output_page)
             if bbox is None:
                 continue
 
@@ -149,6 +159,20 @@ def clipping_warnings_for_sheet(
                         ),
                     )
                 )
+        if any(page.card is not None for page in side.pages) and side.marks:
+            # Marks are stroked, not dimensionless: include half the
+            # card-mark pen width around every vector segment.
+            pad=0.125
+            mark_bounds=(
+                min(min(mark.x0,mark.x1) for mark in side.marks)-pad,
+                min(min(mark.y0,mark.y1) for mark in side.marks)-pad,
+                max(max(mark.x0,mark.x1) for mark in side.marks)+pad,
+                max(max(mark.y0,mark.y1) for mark in side.marks)+pad,
+            )
+            if _escapes(mark_bounds,paper_rect):
+                warnings.append(LayoutWarning(sheet.index,"cut_marks_by_page",f"sheet {sheet.index} {side_name}: cut marks extend past the physical page edge"))
+            elif _escapes(mark_bounds,imageable_rect):
+                warnings.append(LayoutWarning(sheet.index,"cut_marks_by_imageable_area",f"sheet {sheet.index} {side_name}: cut marks fall outside the printer's imageable area"))
     return warnings
 
 
@@ -169,7 +193,10 @@ def warnings_for_plan(plan: SheetPlan, profile: PrinterProfile) -> dict[int, lis
     for warning in plan.warnings:
         by_sheet.setdefault(warning.sheet_index, []).append(warning)
     for sheet in plan.sheets:
-        for warning in clipping_warnings_for_sheet(sheet, plan.paper_pt, profile.imageable_area_pt):
+        for warning in clipping_warnings_for_sheet(
+            sheet, plan.paper_pt, profile.imageable_area_pt,
+            (profile.back_offset_x_pt, profile.back_offset_y_pt),
+        ):
             by_sheet.setdefault(warning.sheet_index, []).append(warning)
     return by_sheet
 
@@ -476,6 +503,7 @@ class PreviewWorker:
     ) -> None:
         self.plan = plan
         self.profile = profile
+        self.selected_card_id: str | None = None
         self.sheet_index = sheet_index
         self.side = side
         # Spread mode renders both sides in one background pass, so the two
@@ -556,6 +584,11 @@ class PreviewView:
         toolbar = QHBoxLayout()
         self.front_button = QPushButton("Front", self.widget)
         self.back_button = QPushButton("Back", self.widget)
+        self.front_button.setToolTip("Front, viewed directly")
+        self.back_button.setToolTip("Back, viewed directly; positions are reversed for duplex")
+        self.correction_label = QLabel("Before printer correction", self.widget)
+        self.orientation_label = QLabel("Front — viewed directly", self.widget)
+        self.guide_legend = QLabel("", self.widget)
         self.sheet_spinbox = QSpinBox(self.widget)
         self.sheet_spinbox.setMinimum(0)
         self.sheet_spinbox.setMaximum(max(0, len(plan.sheets) - 1))
@@ -572,6 +605,9 @@ class PreviewView:
 
         toolbar.addWidget(self.front_button)
         toolbar.addWidget(self.back_button)
+        toolbar.addWidget(self.correction_label)
+        toolbar.addWidget(self.orientation_label)
+        toolbar.addWidget(self.guide_legend)
         toolbar.addWidget(self.first_button)
         toolbar.addWidget(self.sheet_spinbox)
         toolbar.addWidget(self.last_button)
@@ -646,6 +682,7 @@ class PreviewView:
 
     def _set_side(self, side: Literal["front", "back"]) -> None:
         self.side = side
+        self.orientation_label.setText("Front — viewed directly" if side=="front" else "Back — viewed directly; positions reversed for duplex")
         if self._spread:
             # Picking a specific side is an explicit exit from spread mode.
             self.both_button.setChecked(False)
@@ -654,6 +691,7 @@ class PreviewView:
 
     def _set_spread(self, on: bool) -> None:
         self._spread = bool(on)
+        self.orientation_label.setText("Front and back viewed directly; back positions reversed for duplex" if on else ("Front — viewed directly" if self.side=="front" else "Back — viewed directly; positions reversed for duplex"))
         self.front_button.setEnabled(not self._spread)
         self.back_button.setEnabled(not self._spread)
         self.refresh()
@@ -779,10 +817,25 @@ class PreviewView:
         :returns: nothing.
         """
         self.plan = plan
+        has_cards = any(
+            page.card is not None
+            for sheet in plan.sheets
+            for side in (sheet.front, sheet.back) if side is not None
+            for page in side.pages
+        )
+        self.guide_legend.setText(
+            "Green: cut edge · dashed: black bleed · red: printer area · yellow: selected card" if has_cards else ""
+        )
         if settings is not None:
             self.layout_settings = settings
         self.sheet_spinbox.setMaximum(max(0, len(plan.sheets) - 1))
         self._refresh_sheet_counter()
+        self.refresh()
+
+    def set_selected_card(self, card_id: str | None) -> None:
+        """Highlight the selected entry on either physical side."""
+        if self.selected_card_id == card_id:return
+        self.selected_card_id=card_id
         self.refresh()
 
     # -- rendering -----------------------------------------------------------
@@ -799,6 +852,13 @@ class PreviewView:
         """
         if self._worker is not None:
             self._worker.cancel.set()
+
+        if not self.plan.sheets:
+            self.warning_label.setText("No printable sheet is available yet.")
+            self.image_label.clear()
+            self._source_pixmap = None
+            self._refresh_sheet_counter()
+            return
 
         sides = ("front", "back") if self._spread else (self.side,)
         worker = PreviewWorker(
@@ -918,6 +978,12 @@ class PreviewView:
 
         painter = QPainter(pixmap)
         try:
+            sheet = next(
+                (s for s in self.plan.sheets if s.index == frame.sheet_index), None
+            )
+            side = sheet.front if (sheet and frame.side == "front") else (
+                sheet.back if sheet else None
+            )
             imageable = QPen(QColor(220, 40, 40))
             imageable.setWidth(2)
             painter.setPen(imageable)
@@ -927,17 +993,30 @@ class PreviewView:
                 )
             )
 
-            if self.layout_settings is not None:
+            card_pages = [p for p in side.pages if p.card is not None] if side is not None else []
+            if card_pages:
+                trim_pen = QPen(QColor(20, 150, 70))
+                trim_pen.setWidth(2)
+                bleed_pen = QPen(QColor(20, 20, 20))
+                bleed_pen.setWidth(1)
+                bleed_pen.setStyle(Qt.PenStyle.DashLine)
+                for output_page in card_pages:
+                    decoration = output_page.card
+                    bx, by, bw, bh = decoration.bleed_rect_pt
+                    x, y, w, h = decoration.trim_rect_pt
+                    painter.setPen(bleed_pen)
+                    painter.drawRect(to_image_rect((bx, by, bx + bw, by + bh)))
+                    painter.setPen(trim_pen)
+                    painter.drawRect(to_image_rect((x, y, x + w, y + h)))
+                    if decoration.card_id==self.selected_card_id:
+                        selected=QPen(QColor(230,150,0)); selected.setWidth(4)
+                        painter.setPen(selected)
+                        painter.drawRect(to_image_rect((x,y,x+w,y+h)))
+            elif self.layout_settings is not None and not card_pages:
                 box = QPen(QColor(40, 110, 230))
                 box.setWidth(2)
                 box.setStyle(Qt.PenStyle.DashLine)
                 is_recto = frame.side == "front"
-                sheet = next(
-                    (s for s in self.plan.sheets if s.index == frame.sheet_index), None
-                )
-                side = sheet.front if (sheet and frame.side == "front") else (
-                    sheet.back if sheet else None
-                )
                 if side is not None:
                     guides = content_box_guides_for_side(
                         self.layout_settings, side, is_recto=is_recto

@@ -712,7 +712,12 @@ class QtPrintBackend:
                 dpi,
                 "front",
                 False,
-                rule=True,
+                rule=not any(
+                    page.card is not None
+                    for face in (plan.sheets[sheet_index].front, plan.sheets[sheet_index].back)
+                    if face is not None
+                    for page in face.pages
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - reported as PrintResult.error
             log_exception(

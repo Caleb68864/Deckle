@@ -119,6 +119,8 @@ MENUS: tuple[Menu, ...] = (
     Menu(
         "&File",
         (
+            MenuItem("New &book project", "new_book_project", ("Ctrl+N",)),
+            MenuItem("New card &deck", "new_card_deck", ("Ctrl+Shift+N",)),
             MenuItem("Import &PDF...", "import_pdf", ("Ctrl+I",)),
             MenuItem("Import &Images...", "import_images", ("Ctrl+Shift+I",)),
             SEPARATOR,

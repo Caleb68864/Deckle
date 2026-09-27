@@ -31,9 +31,10 @@ import json
 import os
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 from deckle.core.diagnostics import log_exception
 from deckle.core.loader import apply_page_selection
@@ -42,6 +43,7 @@ from deckle.core.models import (
 )
 from deckle.core.paths import data_dir, evict_oldest_files
 from deckle.core.project_io import save_project
+from deckle.core.cards import project_source_pages
 
 DEFAULT_UNDO_DEPTH = 50
 DEFAULT_AUTOSAVE_DELAY_S = 0.5
@@ -182,6 +184,23 @@ def unsaved_autosave_path(pages: Sequence[SourcePage]) -> str | None:
     return str(data_dir(UNSAVED_AUTOSAVE_DIR) / f"{key}.deckle.autosave")
 
 
+def unsaved_project_autosave_path(project: Project, recovery_id: str | None = None) -> str | None:
+    """Stable never-saved recovery path for either a book or card deck."""
+    sources = project_source_pages(project)
+    key = unsaved_autosave_key(sources)
+    if project.kind == "cards":
+        # Card decks are distinct user documents even when they have no
+        # assets yet or happen to reuse the same imported images.
+        if recovery_id is None:
+            if key is None: return None
+            recovery_id = key
+        card_key = hashlib.sha256(("cards\n" + recovery_id).encode("utf-8")).hexdigest()[:UNSAVED_AUTOSAVE_KEY_CHARS]
+        return str(data_dir(UNSAVED_AUTOSAVE_DIR) / f"{card_key}.deckle.autosave")
+    if key is None: return None
+    if project.kind == "book": return unsaved_autosave_path(sources)
+    return None
+
+
 @dataclass(frozen=True)
 class UnsavedAutosave:
     """One never-saved project waiting to be recovered.
@@ -196,6 +215,7 @@ class UnsavedAutosave:
     modified_at: float
     page_count: int
     first_source: str
+    kind: Literal["pages", "cards"] = "pages"
 
 
 def unsaved_autosave_offers(now: float | None = None) -> list[UnsavedAutosave]:
@@ -243,17 +263,30 @@ def unsaved_autosave_offers(now: float | None = None) -> list[UnsavedAutosave]:
             continue
         # A stored page is flat -- `path` sits beside `rotate_deg`, not
         # under a nested `ref` -- see `project_io._page_to_dict`.
-        first_source = ""
-        for page in stored:
-            if isinstance(page, dict) and page.get("path"):
-                first_source = str(page["path"])
-                break
+        is_cards = payload.get("kind") == "cards" and isinstance(payload.get("card_deck"), dict)
+        if is_cards:
+            deck_data = payload["card_deck"]
+            rows = deck_data.get("cards", [])
+            page_count = sum(1 for row in rows if isinstance(row, dict))
+            first_source = ""
+            for asset in deck_data.get("assets", []):
+                if isinstance(asset, dict) and asset.get("original_path"):
+                    first_source = str(asset["original_path"])
+                    break
+        else:
+            page_count = len(stored)
+            first_source = ""
+            for page in stored:
+                if isinstance(page, dict) and page.get("path"):
+                    first_source = str(page["path"])
+                    break
         offers.append(
             UnsavedAutosave(
                 path=entry.path,
                 modified_at=modified_at,
-                page_count=len(stored),
+                page_count=page_count,
                 first_source=first_source,
+                kind="cards" if is_cards else "pages",
             )
         )
     offers.sort(key=lambda offer: offer.modified_at, reverse=True)
@@ -269,9 +302,12 @@ def unsaved_autosave_label(offer: UnsavedAutosave) -> str:
     :param offer: the session to describe.
     :returns: the label.
     """
-    name = os.path.basename(offer.first_source) or "Untitled"
+    name = os.path.basename(offer.first_source) or ("Card deck" if offer.kind == "cards" else "Untitled")
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(offer.modified_at))
-    return f"{name} -- {offer.page_count} page(s), {when}"
+    if offer.kind == "cards":
+        return f"{name} -- {offer.page_count} card entr{'y' if offer.page_count == 1 else 'ies'}, {when}"
+    kind = "card(s)" if offer.first_source.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp")) else "page(s)"
+    return f"{name} -- {offer.page_count} {kind}, {when}"
 
 
 def make_blank_page(paper_pt: tuple[float, float]) -> SourcePage:
@@ -481,9 +517,13 @@ class AppState:
         undo_depth: int = DEFAULT_UNDO_DEPTH,
         autosave_delay_s: float = DEFAULT_AUTOSAVE_DELAY_S,
         timer_factory: Callable[..., threading.Timer] = threading.Timer,
+        *,
+        recovery_path: str | None = None,
     ) -> None:
         self._project = project
         self.project_path = project_path
+        self._unsaved_recovery_id = uuid.uuid4().hex if project.kind == "cards" else None
+        self._unsaved_recovery_path = recovery_path
         # What was last written to the user's own file, held by identity.
         # `Project` is frozen, so undo restores the very object that was
         # saved -- which means undoing back to the saved state clears the
@@ -534,7 +574,13 @@ class AppState:
         """
         if self.project_path is not None:
             return autosave_path_for(self.project_path)
-        return unsaved_autosave_path(self._project.pages)
+        if self._project.kind == "cards":
+            if self._unsaved_recovery_path is None:
+                self._unsaved_recovery_path = unsaved_project_autosave_path(
+                    self._project, self._unsaved_recovery_id
+                )
+            return self._unsaved_recovery_path
+        return unsaved_project_autosave_path(self._project)
 
     def discard_unsaved_autosave(
         self, pages: Sequence[SourcePage] | None = None
@@ -551,17 +597,20 @@ class AppState:
         :returns: nothing, and never raises -- a recovery file that will
             not delete must not turn a successful save into an error.
         """
-        path = unsaved_autosave_path(
-            self._project.pages if pages is None else pages
-        )
+        if self._project.kind == "cards" and pages is None:
+            path = self._unsaved_recovery_path
+        else:
+            path = (unsaved_project_autosave_path(self._project) if pages is None
+                    else unsaved_autosave_path(pages))
         if path is None:
             return
         try:
             os.remove(path)
         except FileNotFoundError:
-            return
+            pass
         except OSError as exc:
             log_exception("unsaved_autosave_discard_failed", exc, path=path)
+        self._unsaved_recovery_path = None
 
     @property
     def dirty(self) -> bool:
@@ -607,6 +656,7 @@ class AppState:
         """
         with self._lock:
             self._saved_project = None
+        self._schedule_autosave()
 
     @property
     def can_undo(self) -> bool:

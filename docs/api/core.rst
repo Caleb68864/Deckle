@@ -32,6 +32,11 @@ modules sit underneath all of it.
    :maxdepth: 1
 
    core.models
+   core.cards
+   core.card_import
+   core.card_pairing
+   core.card_layout
+   core.planning
    core.loader
    core.layout
    core.signatures

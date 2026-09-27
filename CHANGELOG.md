@@ -14,6 +14,13 @@ see the README. The calibration wizard is not built; its printed half,
 
 ### Added
 
+- **Trading card sheets** — New card-deck workspace with folder-imported
+  fronts, shared or individually paired backs, filename/order pairing,
+  per-face rotation, copies and skips, configurable card size and sheet
+  layout, black trim border with outside bleed allowance, cut marks, PDF
+  preview/export, project persistence, CLI info/export, and printer-profile
+  duplex passes. Physical front/back alignment has not yet been verified on
+  paper.
 - Project scaffold: repository layout, packaging metadata, and the core
   pure-data models (`Placement`, `SourceRef`, `SourcePage`, `OutputPage`,
   `Sheet`, `SheetPlan`, `LayoutSettings`, `LayoutWarning`, `Project`).

@@ -15,6 +15,8 @@ requires neither PySide6 nor a display server.
    app.state
    app.menus
    app.main
+   app.views.cards_view
+   app.views.card_layout_panel
    app.backend
    app.printer_capabilities
    app.printer_query

@@ -237,6 +237,20 @@ def _place_output_page(
         # exactly as ``add_blank_page`` created it.
         return
 
+    decoration = output_page.card
+    if decoration is not None:
+        bx, by, bw, bh = decoration.bleed_rect_pt
+        ax, ay, aw, ah = decoration.art_rect_pt
+        underlay = bytearray(b"q\n")
+        if decoration.black_border:
+            underlay.extend(
+                f"0 g\n{bx:g} {by:g} {bw:g} {bh:g} re f\n".encode("ascii")
+            )
+        underlay.extend(
+            f"1 g\n{ax:g} {ay:g} {aw:g} {ah:g} re f\nQ\n".encode("ascii")
+        )
+        dest_page.contents_add(bytes(underlay))
+
     ref = output_page.source_ref
     src_pdf = source_cache.get(ref.path)
     if src_pdf is None:
@@ -333,6 +347,10 @@ def _place_output_page(
             allow_shrink=allow_shrink,
             allow_expand=allow_expand,
         )
+    if decoration is not None:
+        ax, ay, aw, ah = decoration.art_rect_pt
+        clip = f"q\n{ax:g} {ay:g} {aw:g} {ah:g} re W n\n".encode("ascii")
+        content_stream = clip + content_stream + b"Q\n"
     dest_page.contents_add(content_stream)
 
 
@@ -396,7 +414,9 @@ def face_page_index(sheet: Sheet, side: str) -> int | None:
 _DASHED_MARK_KINDS = frozenset({"fold_line"})
 
 
-def _draw_marks(dest_page: pikepdf.Page, marks: Sequence[Mark]) -> None:
+def _draw_marks(
+    dest_page: pikepdf.Page, marks: Sequence[Mark], *, cut_line_width: float = 0.5
+) -> None:
     """Draw ``marks`` as vector line segments via ``ContentStreamBuilder``.
 
     Appended in its own balanced ``q...Q`` block after every page placement
@@ -410,7 +430,7 @@ def _draw_marks(dest_page: pikepdf.Page, marks: Sequence[Mark]) -> None:
     builder = ContentStreamBuilder()
     for mark in marks:
         builder.push()
-        builder.set_line_width(0.5)
+        builder.set_line_width(cut_line_width if mark.kind == "cut_line" else 0.5)
         if mark.kind in _DASHED_MARK_KINDS:
             builder.set_dashes([3, 3])
         else:
@@ -650,6 +670,13 @@ def export(
     # Before `_check_writable` and the scratch file, so the "raises before
     # any bytes are written" promise above still holds.
     selected = _select_sheets(plan, sheets)
+    if rule and any(
+        page.card is not None
+        for sheet in selected
+        for face in (sheet.front, sheet.back) if face is not None
+        for page in face.pages
+    ):
+        raise ValueError("the proof ruler cannot be drawn over trading-card artwork")
 
     _check_writable(out_path)
 
@@ -864,7 +891,11 @@ def _export_batched(
                 if face is not None:
                     for output_page in face.pages:
                         _place_output_page(out, dest_page, output_page, source_cache)
-                    _draw_marks(dest_page, face.marks)
+                    has_card = any(page.card is not None for page in face.pages)
+                    _draw_marks(
+                        dest_page, face.marks,
+                        cut_line_width=0.25 if has_card else 0.5,
+                    )
                 if rule:
                     _draw_proof_rule(dest_page, plan.paper_pt)
                 if _is_back_face(sheet, side, position):

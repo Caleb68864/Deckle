@@ -30,12 +30,15 @@ from dataclasses import asdict
 from typing import Any, Callable
 
 from deckle.core.models import (
-    BLANK_SOURCE_PATH, is_blank_page, LayoutSettings, Project, SourcePage, SourceRef
+    BLANK_SOURCE_PATH, is_blank_page, LayoutSettings, Project, SourcePage, SourceRef,
+    CardAsset, CardDeck, CardEntry, CardFace, CardSettings,
 )
+from deckle.core.cards import project_source_pages, validate_card_deck
 from deckle.core.paths import write_text_atomic
 from deckle.core.schema import check_values, describe, describes
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+BOOK_FORMAT_VERSION = 1
 
 
 class NewerFormatAdvisory(UserWarning):
@@ -432,6 +435,79 @@ _layout_to_dict = layout_to_dict
 _layout_from_dict = layout_from_dict
 
 
+class UnknownCardFieldsWarning(UserWarning):
+    """A card project has fields this build does not currently use."""
+
+
+def _face_to_dict(face):
+    return None if face is None else {"asset_id": face.asset_id, "rotate_deg": face.rotate_deg}
+
+
+def _card_deck_to_dict(deck: CardDeck) -> dict[str, Any]:
+    return {
+        "assets": [{"id": a.id, "label": a.label, "original_path": a.original_path,
+                    "original_sha256": a.original_sha256, "page": _page_to_dict(a.page)} for a in deck.assets],
+        "cards": [{"id": c.id, "front": _face_to_dict(c.front), "back": _face_to_dict(c.back),
+                   "copies": c.copies, "skipped": c.skipped} for c in deck.cards],
+        "settings": asdict(deck.settings), "back_mode": deck.back_mode,
+        "shared_back": _face_to_dict(deck.shared_back),
+    }
+
+
+def _card_deck_from_dict(data: Any) -> CardDeck:
+    if not isinstance(data, dict):
+        raise ValueError("'card_deck' must be an object")
+    allowed = {"assets", "cards", "settings", "back_mode", "shared_back"}
+    unknown = set(data) - allowed
+    if unknown:
+        warnings.warn("unknown card deck fields were ignored: " + ", ".join(sorted(unknown)), UnknownCardFieldsWarning, stacklevel=3)
+    for required in ("assets", "cards", "settings"):
+        if required not in data:
+            raise KeyError(f"card_deck.{required}")
+    def face(value, subject):
+        if value is None: return None
+        if not isinstance(value, dict) or "asset_id" not in value:
+            raise ValueError(f"{subject} must be null or an image face object")
+        extra = set(value) - {"asset_id", "rotate_deg"}
+        if extra: warnings.warn(f"unknown {subject} fields ignored: {', '.join(sorted(extra))}", UnknownCardFieldsWarning, stacklevel=3)
+        return CardFace(value["asset_id"], value.get("rotate_deg", 0))
+    raw_assets, raw_cards, raw_settings = data["assets"], data["cards"], data["settings"]
+    if not isinstance(raw_assets, list) or not isinstance(raw_cards, list) or not isinstance(raw_settings, dict):
+        raise ValueError("card assets and cards must be lists and settings must be an object")
+    assets = []
+    for i, value in enumerate(raw_assets):
+        if not isinstance(value, dict): raise ValueError(f"card asset {i} must be an object")
+        required = {"id", "label", "original_path", "original_sha256", "page"}
+        if required - set(value): raise KeyError(f"card asset {i}: {', '.join(sorted(required-set(value)))}")
+        extra = set(value) - required
+        if extra: warnings.warn(f"unknown card asset {i} fields ignored: {', '.join(sorted(extra))}", UnknownCardFieldsWarning, stacklevel=3)
+        page_data = value["page"]
+        if not isinstance(page_data, dict): raise ValueError(f"card asset {i} page must be an object")
+        missing = set(_PAGE_FIELD_TYPES) - set(page_data)
+        if missing: raise KeyError(f"card asset {i} page: {', '.join(sorted(missing))}")
+        _check_page_entry(i, page_data)
+        assets.append(CardAsset(value["id"], value["label"], value["original_path"], value["original_sha256"], _page_from_dict(page_data)))
+    cards = []
+    for i, value in enumerate(raw_cards):
+        if not isinstance(value, dict): raise ValueError(f"card entry {i} must be an object")
+        required = {"id", "front"}
+        if required - set(value): raise KeyError(f"card entry {i}: {', '.join(sorted(required-set(value)))}")
+        extra = set(value) - {"id", "front", "back", "copies", "skipped"}
+        if extra: warnings.warn(f"unknown card entry {i} fields ignored: {', '.join(sorted(extra))}", UnknownCardFieldsWarning, stacklevel=3)
+        cards.append(CardEntry(value["id"], face(value["front"], f"card {i} front"),
+                               face(value.get("back"), f"card {i} back"),
+                               value.get("copies", 1), value.get("skipped", False)))
+    settings_names = {f.name for f in dataclasses.fields(CardSettings)}
+    unknown_settings = set(raw_settings) - settings_names
+    if unknown_settings:
+        warnings.warn("unknown card settings ignored: " + ", ".join(sorted(unknown_settings)), UnknownCardFieldsWarning, stacklevel=3)
+    settings = {name: raw_settings[name] for name in settings_names if name in raw_settings}
+    result = CardDeck(tuple(assets), tuple(cards), CardSettings(**settings),
+                      data.get("back_mode", "individual"), face(data.get("shared_back"), "shared back"))
+    validate_card_deck(result)
+    return result
+
+
 def save_project(project: Project, path: str) -> None:
     """Write ``project`` to ``path`` as a ``.deckle`` JSON file.
 
@@ -454,12 +530,21 @@ def save_project(project: Project, path: str) -> None:
         message, and it names the path the user typed. The previous
         contents of ``path`` are still there.
     """
+    if project.kind == "cards":
+        if project.card_deck is None or project.pages:
+            raise ValueError("card projects must contain a card deck and no book pages")
+        validate_card_deck(project.card_deck)
+    elif project.kind != "book" or project.card_deck is not None:
+        raise ValueError("project kind and content do not match")
     payload = {
-        "version": FORMAT_VERSION,
+        "version": 2 if project.kind == "cards" else BOOK_FORMAT_VERSION,
         "pages": [_page_to_dict(p) for p in project.pages],
         "layout": layout_to_dict(project.layout),
         "printer": project.printer,
     }
+    if project.kind == "cards":
+        payload["kind"] = "cards"
+        payload["card_deck"] = _card_deck_to_dict(project.card_deck)
     buffer = io.StringIO()
     json.dump(payload, buffer, indent=2)
     write_text_atomic(path, buffer.getvalue())
@@ -589,6 +674,13 @@ def load_project(
 
     _warn_if_newer_format(path, payload.get("version"))
 
+    kind = payload.get("kind", "book")
+    if kind not in ("book", "cards"):
+        raise ValueError(f"unknown project kind {kind!r}")
+    if kind == "cards" and (not isinstance(payload.get("version"), int) or isinstance(payload.get("version"), bool) or payload.get("version") < 2):
+        raise ValueError("card projects require project format version 2")
+    if kind == "book" and "card_deck" in payload:
+        raise ValueError("card_deck is present without kind=cards")
     stored_pages = payload["pages"]
     if not isinstance(stored_pages, list):
         raise ValueError(
@@ -613,12 +705,16 @@ def load_project(
         )
 
     pages = [_page_from_dict(p) for p in stored_pages]
-
+    if kind == "cards" and pages:
+        raise ValueError("card projects cannot contain book pages")
+    card_deck = _card_deck_from_dict(payload.get("card_deck")) if kind == "cards" else None
+    if kind == "cards" and "card_deck" not in payload:
+        raise KeyError("card_deck")
     project_dir = os.path.dirname(os.path.realpath(path))
     roots = (project_dir, *(allowed_roots or ()))
 
     checked: set[str] = set()
-    for page in pages:
+    for page in (pages if kind == "book" else project_source_pages(Project([], layout_from_dict(stored_layout), None, "cards", card_deck))):
         ref = page.ref
         if is_blank_page(page):
             # A blank the user inserted references no file. Both checks
@@ -652,4 +748,4 @@ def load_project(
 
     layout = layout_from_dict(payload["layout"])
     printer = payload.get("printer")
-    return Project(pages=pages, layout=layout, printer=printer)
+    return Project(pages=pages, layout=layout, printer=printer, kind=kind, card_deck=card_deck)

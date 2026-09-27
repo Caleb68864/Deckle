@@ -41,6 +41,7 @@ from deckle.core import recent
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import clear_sheet_cache
 from deckle.core.models import Project
+from deckle.core.cards import project_has_content, project_source_pages
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.project_io import (
     NewerFormatAdvisory,
@@ -209,18 +210,24 @@ def offer_unsaved_recovery(window) -> None:
         )
         return
     clear_sheet_cache()
-    # `project_path=None` deliberately: the work is still unsaved, and
-    # the new `AppState` re-derives the same key from the same sources,
-    # so continuing to edit keeps writing to the same file.
-    window.state = AppState(project, project_path=None)
+    # `project_path=None` deliberately: the work is still unsaved. Retain
+    # the actual recovery file identity because card decks can have no
+    # sources yet or can share sources with another unsaved deck.
+    window.state = AppState(project, project_path=None, recovery_path=chosen.path)
+    window.state.mark_unsaved()
     window.import_view.state = window.state
     window.arrange_view.state = window.state
     window.layout_panel.state = window.state
+    if hasattr(window, "cards_view"): window.cards_view.state = window.state
+    if hasattr(window, "card_layout_panel"): window.card_layout_panel.state = window.state
     window.arrange_view.refresh()
     window.layout_panel.refresh_from_project()
+    if hasattr(window, "cards_view"): window.cards_view.refresh()
+    if hasattr(window, "card_layout_panel"): window.card_layout_panel.refresh()
+    if hasattr(window, "_sync_kind_views"): window._sync_kind_views()
     window._on_pages_changed()
     window.status_bar.showMessage(
-        f"Recovered {len(project.pages)} unsaved page(s)."
+        (f"Recovered {len(project.card_deck.cards)} unsaved card(s)." if project.kind == "cards" else f"Recovered {len(project.pages)} unsaved page(s).")
     )
     log_event(
         "unsaved_autosave_recovered",
@@ -355,8 +362,13 @@ def open_project(window, path: str) -> bool:
     window.import_view.state = window.state
     window.arrange_view.state = window.state
     window.layout_panel.state = window.state
+    if hasattr(window, "cards_view"): window.cards_view.state = window.state
+    if hasattr(window, "card_layout_panel"): window.card_layout_panel.state = window.state
     window.arrange_view.refresh()
     window.layout_panel.refresh_from_project()
+    if hasattr(window, "cards_view"): window.cards_view.refresh()
+    if hasattr(window, "card_layout_panel"): window.card_layout_panel.refresh()
+    if hasattr(window, "_sync_kind_views"): window._sync_kind_views()
     window._on_pages_changed()
     # A project just read off disk is not modified. A recovered
     # autosave is: that work exists nowhere but in memory until the
@@ -374,7 +386,7 @@ def open_project(window, path: str) -> bool:
     window.status_bar.showMessage(
         newer_format
         if newer_format
-        else f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s)."
+        else (f"Opened {os.path.basename(path)} -- {len(project.card_deck.cards)} card(s)." if project.kind == "cards" else f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s).")
     )
     log_event("project_opened", path=path, pages=len(project.pages))
     return True
@@ -409,7 +421,7 @@ def save_project(window) -> bool:
         because both leave the work unsaved -- and this answer is what
         the close prompt uses to decide whether it may proceed.
     """
-    if not window.state.project.pages:
+    if not project_has_content(window.state.project):
         window.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
         return False
     if window.state.project_path is None:
@@ -425,15 +437,20 @@ def save_project_as(window) -> bool:
     """
     from PySide6.QtWidgets import QFileDialog
 
-    if not window.state.project.pages:
+    if not project_has_content(window.state.project):
         window.status_bar.showMessage(NOTHING_TO_SAVE_MESSAGE)
         return False
 
-    source = window.state.project.pages[0].ref.path
-    suggested = window.state.project_path or os.path.join(
-        os.path.dirname(source) or os.getcwd(),
-        os.path.splitext(os.path.basename(source))[0] + ".deckle",
-    )
+    sources = project_source_pages(window.state.project)
+    if window.state.project_path:
+        suggested = window.state.project_path
+    elif window.state.project.kind == "cards":
+        source = sources[0].ref.path if sources else os.getcwd()
+        stem = os.path.splitext(os.path.basename(source))[0] if sources else "cards"
+        suggested = os.path.join(os.path.dirname(source) or os.getcwd(), stem + "-cards.deckle")
+    else:
+        source = sources[0].ref.path
+        suggested = os.path.join(os.path.dirname(source) or os.getcwd(), os.path.splitext(os.path.basename(source))[0] + ".deckle")
     path, _ = QFileDialog.getSaveFileName(
         window.window, "Save project", suggested, "Deckle projects (*.deckle)"
     )
@@ -482,5 +499,5 @@ def write_project(window, path: str) -> bool:
     window._refresh_recent_menu()
     window._sync_title()
     window.status_bar.showMessage(f"Saved project to {path}")
-    log_event("project_saved", path=path, pages=len(window.state.project.pages))
+    log_event("project_saved", path=path, pages=len(window.state.project.pages), cards=len(window.state.project.card_deck.cards) if window.state.project.card_deck else 0)
     return True

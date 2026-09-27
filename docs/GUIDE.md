@@ -582,6 +582,60 @@ spine range the schedule gives.
 Deckle splits a double-sided job into two passes and tells you what to do in
 between. This is the part no comparable tool does at all.
 
+### Trading card sheets
+
+On a fresh launch, choose **Trading card deck** when asked what kind of
+project to start, or use **File → New card deck** at any time. While the deck
+is empty or missing backs, the blank sheet preview stays hidden so the card
+controls can use the full workspace width. Once the deck is ready to print,
+the preview returns beside a wide settings pane. Then import a folder of front
+images. Images
+are copied into Deckle's local asset store as single-page snapshots; the
+original filenames remain visible for pairing. Add one shared back image or
+switch to individual backs and import multiple images. In individual mode,
+**Match by filename** proposes pairs using matching normalized names, while
+**Match by order** pairs the two imported lists in natural filename order.
+Review the unmatched and ambiguous counts, then assign or change any face by
+double-clicking its row. The same back image may be assigned to several
+cards. Copies, skip, reordering, and 90° face rotation are available in the
+card table.
+
+The default finished card is 2.5 × 3.5 inches (180 × 252 pt). Set the sheet
+size, card dimensions, margins, gaps, fit mode, and border in the card layout
+panel. **Black border** draws a black band just inside the cut and black
+allowance outside it. The width inside the cut remains part of the card; the
+outside allowance may reduce how many cards fit on a sheet. For example, a
+9 pt inside border and 3 pt outside allowance leaves the finished dimensions
+unchanged and supplies extra black under small translation errors. It cannot
+correct printer skew, scaling, inaccurate cuts, or ink-free margins. Turning
+the border off preserves its settings but suppresses both black regions.
+
+```text
+          black beyond cut (bleed)
+       ┌─────────────────────────┐
+       │   ┌─────────────────┐   │
+       │   │ artwork clipped │   │
+       │   │ inside the trim │   │
+       │   └─────────────────┘   │
+       └─────────────────────────┘
+           ↑ black inside cut
+             cut follows trim
+```
+
+Cut marks are printed on the front sides only. Export produces a canonical
+PDF with each sheet's front followed by its matched back. The profile-based
+Print flow produces the printer's front/back passes and uses Deckle's
+existing reload and registration correction settings. Print at **100% / actual
+size**, turn off viewer or driver fit-to-page, and proof one sheet before a
+full run. Physical duplex alignment has not been tested for this feature yet.
+Card projects use the newer project format; older Deckle builds cannot safely
+edit them. The `.deckle` file stores references, pairing, settings, and
+original labels; imported artwork remains in the local Deckle asset store, so
+keep that store with the project when moving it to another computer. Older
+Deckle builds do not understand card projects: they show no card entries and
+may discard the deck data if they save the project again. Open card projects
+only with a build that supports this format.
+
 ```mermaid
 flowchart TD
     A["Load paper as instructed"] --> B["Pass 1 — every front"]

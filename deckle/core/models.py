@@ -154,6 +154,66 @@ class OutputPage:
     the export cache key.
     """
 
+    card: "CardDecoration | None" = None
+
+
+@dataclass(frozen=True)
+class CardAsset:
+    id: str
+    label: str
+    original_path: str
+    original_sha256: str
+    page: SourcePage
+
+
+@dataclass(frozen=True)
+class CardFace:
+    asset_id: str
+    rotate_deg: int = 0
+
+
+@dataclass(frozen=True)
+class CardEntry:
+    id: str
+    front: CardFace
+    back: CardFace | None = None
+    copies: int = 1
+    skipped: bool = False
+
+
+@dataclass(frozen=True)
+class CardSettings:
+    width_pt: float = 180.0
+    height_pt: float = 252.0
+    margin_x_pt: float = 18.0
+    margin_y_pt: float = 18.0
+    gap_x_pt: float = 0.0
+    gap_y_pt: float = 0.0
+    border_enabled: bool = True
+    border_width_pt: float = 9.0
+    bleed_pt: float = 3.0
+    fit: Literal["contain", "cover"] = "contain"
+    cut_marks: bool = False
+
+
+@dataclass(frozen=True)
+class CardDeck:
+    assets: tuple[CardAsset, ...]
+    cards: tuple[CardEntry, ...]
+    settings: CardSettings
+    back_mode: Literal["shared", "individual"] = "individual"
+    shared_back: CardFace | None = None
+
+
+@dataclass(frozen=True)
+class CardDecoration:
+    card_id: str
+    copy_index: int
+    trim_rect_pt: tuple[float, float, float, float]
+    art_rect_pt: tuple[float, float, float, float]
+    bleed_rect_pt: tuple[float, float, float, float]
+    black_border: bool
+
 
 @dataclass(frozen=True)
 class Mark:
@@ -558,3 +618,5 @@ class Project:
     pages: list[SourcePage]
     layout: LayoutSettings
     printer: str | None
+    kind: Literal["book", "cards"] = "book"
+    card_deck: CardDeck | None = None

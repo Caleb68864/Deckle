@@ -808,9 +808,15 @@ class PrintDialog:
             self._show_offline_error(printer_name, result.error)
             return
         log_event("proof_requested", printer=printer_name, sheet=sheet_index)
+        has_cards = any(
+            page.card is not None
+            for face in (self.plan.sheets[sheet_index].front, self.plan.sheets[sheet_index].back)
+            if face is not None for page in face.pages
+        )
         self.status_label.setText(
-            f"Proof of sheet {sheet_index} sent -- "
-            f"{proof_rule_advice(self.plan.paper_pt[0])}"
+            f"Card test sheet {sheet_index} sent at actual size; no ruler drawn over the artwork."
+            if has_cards else
+            f"Proof of sheet {sheet_index} sent -- {proof_rule_advice(self.plan.paper_pt[0])}"
         )
 
     # -- resume -----------------------------------------------------------

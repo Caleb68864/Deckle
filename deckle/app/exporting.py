@@ -28,6 +28,16 @@ from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import export
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.printing import pass_export
+from deckle.core.cards import project_has_content, project_source_pages, card_output_problems
+
+def _output_ready(window) -> bool:
+    project = window.state.project
+    if not project_has_content(project): return False
+    if getattr(project, "kind", "book") != "cards": return True
+    checker = getattr(window, "_output_is_ready", None)
+    if checker is not None: return bool(checker())
+    return not card_output_problems(project.card_deck)
+
 
 NOTHING_TO_EXPORT_MESSAGE = "Nothing to export yet -- import a PDF or images first."
 """Why Save PDF is unavailable. Shown as the button's tooltip.
@@ -38,7 +48,7 @@ explanation. Same class of problem deserves the same affordance.
 """
 
 
-def suggested_export_name(pages) -> str:
+def suggested_export_name(pages, *, card_project: bool = False, project_path: str | None = None) -> str:
     """A default filename derived from the first imported source.
 
     ``book.pdf`` imposed becomes ``book-deckle.pdf`` -- never the source
@@ -48,13 +58,16 @@ def suggested_export_name(pages) -> str:
     :returns: the suggested filename, or ``"deckle-output.pdf"`` when
         nothing has been imported yet.
     """
+    if card_project:
+        stem=os.path.splitext(os.path.basename(project_path))[0] if project_path else ""
+        return f"{stem}-cards.pdf" if stem else "cards.pdf"
     if not pages:
         return "deckle-output.pdf"
     stem = os.path.splitext(os.path.basename(pages[0].ref.path))[0]
     return f"{stem}-deckle.pdf"
 
 
-def suggested_pass_export_name(source_name: str, side: str) -> str:
+def suggested_pass_export_name(source_name: str, side: str, *, card_project: bool = False) -> str:
     """The filename for a one-pass export of ``source_name``.
 
     ``book-deckle.pdf`` becomes ``book-deckle-front.pdf``. The side is in
@@ -67,19 +80,21 @@ def suggested_pass_export_name(source_name: str, side: str) -> str:
     :returns: the suggested filename.
     """
     stem, ext = os.path.splitext(source_name)
+    if card_project:return f"{stem}-{side}s{ext or '.pdf'}"
     return f"{stem}-{side}{ext or '.pdf'}"
 
 
 def save_pdf_as(window) -> None:
     from PySide6.QtWidgets import QFileDialog
 
-    if not window.state.project.pages:
+    if not _output_ready(window):
         # Defensive: the button is disabled in this state. Never open a
         # save dialog for a document that does not exist.
         window.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
         return
 
-    start_dir = os.path.dirname(window.state.project.pages[0].ref.path) or os.getcwd()
+    sources = project_source_pages(window.state.project)
+    start_dir = os.path.dirname(sources[0].ref.path) or os.getcwd() if sources else os.getcwd()
     path, _ = QFileDialog.getSaveFileName(
         window.window,
         "Save imposed PDF",
@@ -94,8 +109,9 @@ def save_pdf_as(window) -> None:
     # Check the destination before doing any work, and say the same
     # thing the CLI says -- one document, two front ends, one
     # explanation. `deckle.core.outputs` owns the wording.
-    source = window.state.project.pages[0].ref.path
-    problem = output_path_problem(path, source)
+    sources = project_source_pages(window.state.project)
+    problems = [output_path_problem(path, source.ref.path) for source in sources]
+    problem = next((p for p in problems if p is not None), None)
     if problem is not None:
         window.status_bar.showMessage(problem)
         log_event("output_path_rejected", path=path, detail=problem)
@@ -147,7 +163,7 @@ def export_single_pass(window) -> None:
     """
     from PySide6.QtWidgets import QFileDialog
 
-    if not window.state.project.pages:
+    if not _output_ready(window):
         window.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
         return
 
@@ -162,8 +178,9 @@ def export_single_pass(window) -> None:
     # B16 was about.
     export_pass = pass_export(plan, window.profile, side)
 
-    start_dir = os.path.dirname(window.state.project.pages[0].ref.path) or os.getcwd()
-    suggested = suggested_pass_export_name(window.suggested_export_name(), side)
+    sources = project_source_pages(window.state.project)
+    start_dir = os.path.dirname(sources[0].ref.path) or os.getcwd() if sources else os.getcwd()
+    suggested = suggested_pass_export_name(window.suggested_export_name(), side, card_project=window.state.project.kind=="cards")
     path, _ = QFileDialog.getSaveFileName(
         window.window,
         f"Save {side} pass",
@@ -175,8 +192,9 @@ def export_single_pass(window) -> None:
     if not path.lower().endswith(".pdf"):
         path += ".pdf"
 
-    source = window.state.project.pages[0].ref.path
-    problem = output_path_problem(path, source)
+    sources = project_source_pages(window.state.project)
+    problems = [output_path_problem(path, source.ref.path) for source in sources]
+    problem = next((p for p in problems if p is not None), None)
     if problem is not None:
         window.status_bar.showMessage(problem)
         log_event("output_path_rejected", path=path, detail=problem)

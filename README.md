@@ -249,6 +249,13 @@ Only Windows binaries have ever been built. PyInstaller cannot cross-compile,
 so a Linux build needs a Linux machine, and nobody has run one. macOS is not
 supported.
 
+On Linux, `./run.sh package` builds the same two-app bundle for the current
+machine into `dist/deckle/` and runs the artifact audit. The script creates a
+clean `.buildenv` for PyInstaller. Linux packaging has not been validated in
+CI, so inspect and test the resulting bundle before distributing it. Use
+`./run.sh` to launch the working tree, `./run.sh test` to run tests, and
+`./run.sh help` to see the other development commands.
+
 ---
 
 ## A first run, in about a minute
@@ -423,6 +430,7 @@ Not released. Expect breaking changes.
 | | |
 |---|---|
 | **Flat-sheet imposition** | Proven. Verified placement-identical against the previous implementation across six setting combinations and two documents. |
+| **Trading card sheets** | **Implemented; physical alignment unverified.** Create card decks from image folders, pair shared or individual backs, set copies and rotations, and export or print matched two-sided sheets. The adjustable black inside border and outside bleed allowance help cover small front/back shifts when cutting. See [Trading card sheets in the guide](docs/GUIDE.md#trading-card-sheets). |
 | **Folio / saddle stitch** | **Experimental.** Geometry verified, ordering unverified on paper. [See above](#signatures--folio-saddle-stitch-experimental). |
 | **Manual-duplex printing** | Works, on built-in printer presets. |
 | **Binding schedules** | Works. |
@@ -473,7 +481,8 @@ deckle/core/    models, loader, layout, signatures, marks, export, render,
                 outputs, printing, profiles, print_session, paper, paths,
                 locate, schema, recent, dummy, calibration_sheet,
                 calibration, calibration_flow, about, report, session_log,
-                diagnostics
+                diagnostics, cards, card_import, card_pairing, card_layout,
+                planning
 deckle/app/     PySide6 shell, views, Qt print backend
 deckle/cli/     headless entry point, imports only deckle.core
 ```

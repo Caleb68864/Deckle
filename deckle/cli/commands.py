@@ -41,7 +41,9 @@ from deckle.core.loader import (
     load_pdf,
 )
 from deckle.core.models import LayoutSettings, Project, SourcePage
-from deckle.core.outputs import describe_write_failure
+from deckle.core.card_layout import card_grid, impose_cards
+from deckle.core.cards import active_copy_count, card_output_problems, project_source_pages
+from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.paper import (
     GRADE_BASIS_SIZES_IN, caliper_pt_from_gsm, gsm_from_pounds,
 )
@@ -462,8 +464,118 @@ def _strategy_for(settings: LayoutSettings) -> LayoutStrategy:
 
 
 
+_NOT_CARD_PROJECT = object()
+
+
+def _card_project_for_args(args):
+    """Load a card project for card-aware CLI commands, if this is one."""
+    if not _is_project_file(args.source): return _NOT_CARD_PROJECT
+    project = _load_project_or_report(args.source)
+    if project is None: return None
+    if project.kind != "cards": return _NOT_CARD_PROJECT
+    given = _layout_flags_given(args)
+    if getattr(args, "page_selection", None) is not None:
+        given.append("--pages")
+    if getattr(args, "rule", False):
+        given.append("--rule")
+    unsupported = [flag for flag in given if flag != "--paper"]
+    if unsupported:
+        print("error: these options do not apply to card decks: " + ", ".join(unsupported), file=sys.stderr)
+        return None
+    if "--paper" in given:
+        project = dataclasses.replace(project, layout=dataclasses.replace(project.layout, paper=args.paper))
+    return project
+
+
+def _card_info_data(project):
+    deck = project.card_deck
+    problems = card_output_problems(deck)
+    grid = None
+    try: grid = card_grid(deck.settings, project.layout.paper)
+    except ValueError as exc: problems = tuple(problems) + (str(exc),)
+    slot_mappings=[]
+    if not problems and grid:
+        try:
+            plan=impose_cards(deck,project.layout.paper)
+            labels={a.id:a.label for a in deck.assets}
+            for sheet in plan.sheets:
+                for side_name,side in (("front",sheet.front),("back",sheet.back)):
+                    for slot,page in enumerate(side.pages):
+                        dec=page.card
+                        slot_mappings.append({"sheet":sheet.index,"side":side_name,"slot":slot,
+                            "card_id":dec.card_id if dec else None,"copy_index":dec.copy_index if dec else None,
+                            "front":labels.get(next((c.front.asset_id for c in deck.cards if dec and c.id==dec.card_id), "")),
+                            "back":labels.get(next(((deck.shared_back if deck.back_mode=="shared" else c.back).asset_id for c in deck.cards if dec and c.id==dec.card_id and (deck.shared_back if deck.back_mode=="shared" else c.back)), ""))})
+        except ValueError: pass
+    return {
+        "kind": "cards", "status": "incomplete" if problems else "ready", "entry_count": len(deck.cards),
+        "active_copy_count": active_card_copy_count(deck),
+        "unresolved_count": sum(1 for card in deck.cards if not card.skipped and (deck.shared_back if deck.back_mode == "shared" else card.back) is None),
+        "columns": grid.columns if grid else None, "rows": grid.rows if grid else None,
+        "sheets": ((active_card_copy_count(deck)+grid.capacity-1)//grid.capacity) if grid and active_card_copy_count(deck) else 0,
+        "problems": list(problems), "slot_mappings": slot_mappings,
+    }
+
+
+def active_card_copy_count(deck):
+    return active_copy_count(deck)
+
+
+def _cmd_card_info(args, project):
+    data = _card_info_data(project)
+    if not getattr(args,"json",False):
+        print(f"project: {args.source}")
+        print("kind: cards")
+        print(f"entry count: {data['entry_count']}")
+        print(f"active card copies: {data['active_copy_count']}")
+        print(f"unresolved cards: {data['unresolved_count']}")
+        print(f"grid: {data['columns']} x {data['rows']}" if data["columns"] else "grid: unavailable")
+        print(f"sheet count: {data['sheets']}")
+        print("status: incomplete" if data["problems"] else "status: ready")
+        for issue in data["problems"]: print(f"problem: {issue}", file=sys.stderr)
+    else:
+        report._emit_json(data)
+    return 0
+
+
+def _cmd_export_cards(args, project):
+    problems = card_output_problems(project.card_deck)
+    if problems:
+        print("error: " + " ".join(problems), file=sys.stderr); return 1
+    try: plan = impose_cards(project.card_deck, project.layout.paper)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr); return 1
+    selection=args.sheets
+    if selection is not None and report._report_missing_sheets(plan,selection,len(plan.sheets)): return 1
+    profile=None; back_offset=(0.0,0.0); offset_source=""; print_pass=None; side=None; rotate=False
+    if args.profile is not None:
+        profile=report._resolve_profile(args.profile)
+        if profile is None:return 1
+        back_offset=(profile.back_offset_x_pt,profile.back_offset_y_pt); offset_source=f"profile {args.profile!r}"
+    if args.pass_side is not None:
+        if profile is None:
+            print("error: card pass export requires --profile",file=sys.stderr);return 1
+        print_pass=pass_export(plan,profile,args.pass_side,selection); side=args.pass_side
+        selection=print_pass.sheets; rotate=print_pass.rotate_180
+    if args.back_offset is not None:back_offset=args.back_offset;offset_source="--back-offset"
+    for asset in project_source_pages(project):
+        problem=output_path_problem(args.output,asset.ref.path)
+        if problem:print(f"error: {problem}",file=sys.stderr);return 1
+    if getattr(args,"dry_run",False):
+        report._report_export_dry_run(args,plan,selection,side,rotate,back_offset,offset_source,print_pass);return 0
+    try:export_plan(plan,args.output,sheets=selection,rule=args.rule,side=side,rotate_180=rotate,back_offset_pt=back_offset)
+    except (OSError,ValueError) as exc:print(f"error: cannot write {args.output}: {exc}",file=sys.stderr);return 1
+    print(f"wrote {args.output}")
+    if back_offset!=(0.0,0.0):report._report_registration(back_offset,offset_source)
+    if print_pass is not None:print(print_pass.reload_instruction)
+    return 0
+
+
 def _cmd_info(args: argparse.Namespace) -> int:
     as_json = getattr(args, "json", False)
+    card_project = _card_project_for_args(args)
+    if card_project is None: return 1
+    if card_project is not _NOT_CARD_PROJECT: return _cmd_card_info(args, card_project)
     with report._json_stdout(as_json):
         resolved = _resolve_input(args)
         if resolved is None:
@@ -544,6 +656,9 @@ def _impose_or_report(pages, settings):
 def _cmd_export(args: argparse.Namespace) -> int:
     if report._report_output_problem(args.output, args.source):
         return 1
+    card_project = _card_project_for_args(args)
+    if card_project is None: return 1
+    if card_project is not _NOT_CARD_PROJECT: return _cmd_export_cards(args, card_project)
     resolved = _resolve_input(args)
     if resolved is None:
         return 1
@@ -640,6 +755,20 @@ def _cmd_export(args: argparse.Namespace) -> int:
 def _cmd_impose(args: argparse.Namespace) -> int:
     if report._report_output_problem(args.output, args.source):
         return 1
+    card_project = _card_project_for_args(args)
+    if card_project is None: return 1
+    if card_project is not _NOT_CARD_PROJECT:
+        try: plan = impose_cards(card_project.card_deck, card_project.layout.paper)
+        except ValueError as exc:
+            print(f"error: {exc}",file=sys.stderr); return 1
+        if getattr(args,"dry_run",False):
+            print(f"dry run: would write {args.output}\n  cards: {active_copy_count(card_project.card_deck)}\n  sheets: {len(plan.sheets)}\nnothing was written.");return 0
+        for source in project_source_pages(card_project):
+            problem=output_path_problem(args.output,source.ref.path)
+            if problem:print(f"error: {problem}",file=sys.stderr);return 1
+        try: save_project(dataclasses.replace(card_project, printer=args.printer or card_project.printer),args.output)
+        except OSError as exc: report._report_write_failure(args.output,exc);return 1
+        print(f"wrote {args.output}");return 0
     resolved = _resolve_input(args)
     if resolved is None:
         return 1
@@ -706,6 +835,10 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
     """
     as_json = getattr(args, "json", False)
     with report._json_stdout(as_json):
+        card_project = _card_project_for_args(args)
+        if card_project is None: return 1
+        if card_project is not _NOT_CARD_PROJECT:
+            print("error: binding schedules are not available for card decks", file=sys.stderr); return 1
         resolved = _resolve_input(args)
         if resolved is None:
             return 1
@@ -1274,6 +1407,11 @@ def _pass_output_path(output: str, side: str) -> str:
     return f"{root}.{side}{extension or '.pdf'}"
 
 
+def _card_pass_output_path(output: str, side: str) -> str:
+    root, extension = os.path.splitext(output)
+    return f"{root}-{side}s{extension or '.pdf'}"
+
+
 
 def _cmd_print(args: argparse.Namespace) -> int:
     """Plan a manual-duplex print run, and optionally write its passes.
@@ -1307,15 +1445,21 @@ def _cmd_print(args: argparse.Namespace) -> int:
             return 1
         profile, origin = resolved_profile
 
-        resolved = _resolve_input(args)
-        if resolved is None:
-            return 1
-        pages, settings = resolved
-
-        plan = _impose_or_report(pages, settings)
-        if plan is None:
-            return 1
-        report._emit_warnings(pages, plan)
+        card_project = _card_project_for_args(args)
+        if card_project is None: return 1
+        if card_project is not _NOT_CARD_PROJECT:
+            pages, settings = [], card_project.layout
+            if card_output_problems(card_project.card_deck):
+                print("error: " + " ".join(card_output_problems(card_project.card_deck)), file=sys.stderr); return 1
+            try: plan = impose_cards(card_project.card_deck, settings.paper)
+            except ValueError as exc: print(f"error: {exc}",file=sys.stderr); return 1
+        else:
+            resolved = _resolve_input(args)
+            if resolved is None: return 1
+            pages, settings = resolved
+            plan = _impose_or_report(pages, settings)
+            if plan is None: return 1
+            report._emit_warnings(pages, plan)
 
         selection = args.sheets
         if selection is not None and report._report_missing_sheets(
@@ -1329,16 +1473,17 @@ def _cmd_print(args: argparse.Namespace) -> int:
 
         if args.output is not None:
             planned = [
-                _pass_output_path(args.output, print_pass.side)
+                (_card_pass_output_path(args.output, print_pass.side) if card_project is not _NOT_CARD_PROJECT else _pass_output_path(args.output, print_pass.side))
                 for print_pass in passes
             ]
             # Both destinations are checked before either is written. A
             # run that produces the fronts and then fails on the backs
             # leaves the operator holding half a job with no way to tell
             # from the directory which half.
+            sources = project_source_pages(card_project) if card_project is not _NOT_CARD_PROJECT else ()
             for path in planned:
-                if report._report_output_problem(path, args.source):
-                    return 1
+                if any(report._report_output_problem(path, asset.ref.path) for asset in sources): return 1
+                if report._report_output_problem(path, args.source): return 1
             for print_pass, path in zip(passes, planned):
                 try:
                     export_plan(
