@@ -36,44 +36,6 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(REPO, "tests", "fixtures", "sample.pdf")
 
 
-@pytest.fixture
-def torn_write():
-    """The next file written under this context dies halfway through.
-
-    Patches both ``io.open`` and ``builtins.open``: they are two names for
-    the same behaviour and code reaches them differently, so arming one
-    leaves the other live.
-    """
-    import builtins
-
-    real_io, real_builtin = io.open, builtins.open
-
-    @contextlib.contextmanager
-    def armed():
-        def wrap(real):
-            def guarded(file, mode="r", *args, **kwargs):
-                handle = real(file, mode, *args, **kwargs)
-                if "w" in mode:
-                    write = handle.write
-
-                    def half_then_die(data):
-                        write(data[: len(data) // 2])
-                        handle.flush()
-                        raise OSError(28, "No space left on device")
-
-                    handle.write = half_then_die
-                return handle
-            return guarded
-
-        io.open, builtins.open = wrap(real_io), wrap(real_builtin)
-        try:
-            yield
-        finally:
-            io.open, builtins.open = real_io, real_builtin
-
-    return armed
-
-
 def _run(*args) -> int:
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(buffer):
