@@ -288,3 +288,47 @@ def test_the_suggestion_never_recommends_a_gathering_it_would_warn_about():
             assert not creep_is_worth_reporting(
                 suggestion.sheets, caliper, trim
             ), (caliper, trim, suggestion.sheets)
+
+
+# -- M5: one table ------------------------------------------------------------
+
+
+def test_the_cli_and_the_app_offer_the_same_sheet_sizes():
+    """A project set to A3 in the app could not be stated at the CLI."""
+    from deckle.app.views.layout_panel import PAPER_PRESETS as panel_sizes
+    from deckle.cli.values import _PAPER_PRESETS as cli_sizes
+    from deckle.cli.values import _parse_paper
+
+    assert {name.lower(): size for name, size in panel_sizes} == cli_sizes
+    assert _parse_paper("a3") == (841.89, 1190.55)
+    assert _parse_paper("Tabloid") == (792.0, 1224.0)
+
+
+def test_letter_is_defined_once():
+    import re
+    from pathlib import Path
+
+    import deckle
+
+    root = Path(deckle.__file__).parent
+    definitions = [
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if re.search(r"^LETTER_PT\b.*=", path.read_text(encoding="utf-8"), re.M)
+    ]
+    assert definitions == ["core/paper.py"]
+
+
+def test_caliper_from_weight_agrees_with_the_cli_and_refuses_the_same_things():
+    import pytest
+
+    from deckle.core.paper import caliper_from_weight, caliper_pt_from_gsm, gsm_from_pounds
+
+    assert caliper_from_weight(80, "gsm", "offset") == caliper_pt_from_gsm(80, "offset")
+    assert caliper_from_weight(20, "lb", "offset", "bond") == caliper_pt_from_gsm(
+        gsm_from_pounds(20, "bond"), "offset"
+    )
+    with pytest.raises(ValueError, match="unknown weight unit"):
+        caliper_from_weight(20, "kg", "offset")
+    with pytest.raises(ValueError, match="paper grade"):
+        caliper_from_weight(20, "lb", "offset")

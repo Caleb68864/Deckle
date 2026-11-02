@@ -11,6 +11,7 @@ event loop, and is the single place that turns a loaded source into an
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import replace
 from typing import Sequence
 
@@ -27,7 +28,11 @@ def _load_source(path: str) -> Sequence[SourcePage]:
 
 
 def load_and_apply_import(
-    state: AppState, source_path: str, *, append: bool = False
+    state: AppState,
+    source_path: str,
+    *,
+    append: bool = False,
+    cancel: threading.Event | None = None,
 ) -> tuple[list[SourcePage], list]:
     """Load ``source_path`` into ``state.project``, replacing or appending.
 
@@ -52,6 +57,10 @@ def load_and_apply_import(
     :param state: the app state whose project is updated.
     :param source_path: a PDF file, or a directory of images.
     :param append: add to the existing pages instead of replacing them.
+    :param cancel: when set by the time the load finishes, the pages are
+        returned but **not** applied. The guard has to be here and not on the
+        Qt side, because the mutation happens on the worker thread before
+        ``finished`` fires.
     :returns: ``(pages, warnings)`` -- the newly imported pages only, never
         the whole document, so a caller can report what it just added.
         The warnings come from
@@ -64,6 +73,8 @@ def load_and_apply_import(
     pages = _load_source(source_path)
     warnings = list(getattr(pages, "warnings", []))
     page_list = list(pages)
+    if cancel is not None and cancel.is_set():
+        return page_list, warnings
     if append:
         state.mutate(
             lambda project: replace(project, pages=[*project.pages, *page_list])
@@ -145,6 +156,8 @@ class ImportWorker:
     :ivar pages: the imported pages, once :meth:`run` has finished.
     :ivar warnings: non-fatal import advisories.
     :ivar error: a message when the import failed, else ``None``.
+    :ivar cancel: set when this import is superseded, its project is replaced
+        or the window is closing. The load itself cannot be interrupted.
     """
 
     def __init__(
@@ -156,6 +169,7 @@ class ImportWorker:
         self.pages: list[SourcePage] = []
         self.warnings: list = []
         self.error: str | None = None
+        self.cancel = threading.Event()
 
     def run(self) -> None:
         """Perform the import, recording the outcome on ``self``.
@@ -169,9 +183,11 @@ class ImportWorker:
             left to propagate rather than silently producing an empty
             import.
         """
+        if self.cancel.is_set():
+            return
         try:
             self.pages, self.warnings = load_and_apply_import(
-                self.state, self.source_path, append=self.append
+                self.state, self.source_path, append=self.append, cancel=self.cancel
             )
         except EncryptedPdfError as exc:
             self.error = f"password-protected PDF: {exc.path}"
@@ -216,7 +232,7 @@ class ImportView:
         self.imported = self._signals.imported
         self.failed = self._signals.failed
 
-        self.state = state
+        self._state = state
         self.widget = QWidget(parent)
         layout = QHBoxLayout(self.widget)
         self.import_pdf_button = QPushButton("Import PDF...", self.widget)
@@ -241,7 +257,28 @@ class ImportView:
 
         self._thread = None
         self._worker: ImportWorker | None = None
+        #: "Add" imports waiting for the running one, in the order asked for.
+        self._queued: list[str] = []
         self._QThread = QThread
+
+    @property
+    def state(self) -> AppState:
+        """The state imports go into.
+
+        :returns: the current state.
+        """
+        return self._state
+
+    @state.setter
+    def state(self, state: AppState) -> None:
+        # Every path that replaces the project assigns this. A running worker
+        # captured the OUTGOING state, so it would finish, mutate something
+        # nothing reads and announce pages that are nowhere (B13).
+        if state is not self._state:
+            self._state = state
+            self._queued.clear()
+            if self._worker is not None:
+                self._worker.cancel.set()
 
     def pick_pdf(self) -> None:
         _QCheckBox, QFileDialog, *_ = _qt_widgets()
@@ -265,9 +302,34 @@ class ImportView:
         :returns: nothing, immediately. The import runs on a ``QThread``
             so a 300-page source never blocks the UI; completion arrives as
             ``imported`` or ``failed``.
+
+        Two quick imports used to apply in completion order, so a slow scan
+        started first landed on top of the cover imported second. A
+        replacing import now supersedes whatever is running or waiting. An
+        adding one waits its turn instead: cancelling the import before it
+        would silently lose pages the user also asked to keep.
         """
         if append is None:
             append = self.append_checkbox.isChecked()
+        running = self._worker is not None and not self._worker.cancel.is_set() and (
+            self._thread is not None and self._thread.isRunning()
+        )
+        if append and running:
+            self._queued.append(source_path)
+            self.status_label.setText(f"Waiting to add {source_path}...")
+            return
+        self._queued.clear()
+        if self._worker is not None:
+            self._worker.cancel.set()
+        self._start(source_path, append)
+
+    def _start(self, source_path: str, append: bool) -> None:
+        """Run one import on a new thread.
+
+        :param source_path: a PDF file, or a directory of images.
+        :param append: add to the current document rather than replacing it.
+        :returns: nothing.
+        """
         self.status_label.setText(
             f"{'Adding' if append else 'Importing'} {source_path}..."
         )
@@ -275,11 +337,21 @@ class ImportView:
         thread = self._QThread(self.widget)
         thread.run = worker.run  # simplest correct QThread.run override
         thread.finished.connect(lambda: self._on_finished(worker))
+        # Threads are parented to the widget, so without this there is one
+        # more for the life of the window per import.
+        thread.finished.connect(thread.deleteLater)
         self._thread = thread
         self._worker = worker
         thread.start()
 
     def _on_finished(self, worker: ImportWorker) -> None:
+        if worker is not self._worker:
+            return
+        # `deleteLater` frees it once this returns, and a stale wrapper
+        # would raise out of the shutdown wait.
+        self._thread = None
+        if worker.cancel.is_set():
+            return
         if worker.error is not None:
             self.status_label.setText(worker.error)
             self.failed.emit(worker.error)
@@ -287,3 +359,5 @@ class ImportView:
             verb = "Added" if worker.append else "Imported"
             self.status_label.setText(f"{verb} {len(worker.pages)} page(s).")
             self.imported.emit(worker.pages, worker.warnings)
+        if self._queued:
+            self._start(self._queued.pop(0), True)

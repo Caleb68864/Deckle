@@ -19,9 +19,10 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import tempfile
 from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import img2pdf
 import natsort
@@ -43,6 +44,13 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 _FALLBACK_PAGE_PT = (612.0, 792.0)  # US Letter, matching Project defaults.
 
 _IMPORT_STORE_DIR_NAME = "imported"
+
+# How many images are merged before the in-progress document is written out
+# and every open single-image PDF released, bounding the image bytes held at
+# once (~250 MB at 5 MB a scan, down from ~2.5 GB for 500). A 500-image import
+# rewrites the growing document nine times; halving this halves the memory and
+# doubles the rewrites.
+_MERGE_BATCH_IMAGES = 50
 
 
 def import_store_dir() -> str:
@@ -74,7 +82,7 @@ def import_store_dir() -> str:
     return str(data_dir(_IMPORT_STORE_DIR_NAME))
 
 
-def _import_key(per_image_pdfs: list[bytes]) -> str:
+def _import_key(per_image_pdfs: Iterable[bytes]) -> str:
     """A name for the normalised PDF a set of images will produce.
 
     Content-addressed, which is what keeps a store nobody prunes from
@@ -83,13 +91,14 @@ def _import_key(per_image_pdfs: list[bytes]) -> str:
     second project from the same book -- lands on the name already there
     and costs nothing.
 
-    Derived from the per-image PDFs the caller is already holding rather
+    Derived from the per-image PDFs, one at a time so none is kept, rather
     than from the merged file, so the answer is known *before* anything is
     written and a repeat import can skip the merge entirely. Each page's
     digest is folded in rather than its bytes concatenated, so where one
     page ends and the next begins is part of the key.
 
-    :param per_image_pdfs: one single-page PDF per image, in page order.
+    :param per_image_pdfs: one single-page PDF per image, in page order. May
+        be a generator.
     :returns: a hex digest, used as the stored file's stem.
     """
     digest = hashlib.sha256()
@@ -98,7 +107,34 @@ def _import_key(per_image_pdfs: list[bytes]) -> str:
     return digest.hexdigest()
 
 
-def _merge_image_pdfs(per_image_pdfs: list[bytes], out_path: str) -> None:
+def _flush_merge_batch(
+    merged: pikepdf.Pdf, opened: list, directory: str
+) -> pikepdf.Pdf:
+    """Write the merge so far to a fresh scratch file and reopen it from there.
+
+    Save before close: pikepdf reads a page lazily from the document it came
+    from, so closing a source first loses its content without an exception.
+    Clearing ``opened`` is what actually releases the image bytes. A new file
+    each time, because saving over the one being read needs
+    ``allow_overwriting_input``, which reads the whole of it back onto the
+    heap and undoes the bound.
+
+    :param merged: the document being built.
+    :param opened: the single-image documents its pages still read from.
+    :param directory: where the scratch files go.
+    :returns: the reopened document.
+    """
+    fd, part = tempfile.mkstemp(suffix=".part.pdf", dir=directory)
+    os.close(fd)
+    merged.save(part)
+    merged.close()
+    for single in opened:
+        single.close()
+    opened.clear()
+    return pikepdf.open(part)
+
+
+def _merge_image_pdfs(per_image_pdfs: Iterable[bytes], out_path: str) -> None:
     """Concatenate single-page PDFs into ``out_path``, one page each.
 
     Written through :func:`deckle.core.paths.atomic_output`, like every
@@ -107,23 +143,29 @@ def _merge_image_pdfs(per_image_pdfs: list[bytes], out_path: str) -> None:
     named by content, so a truncated file would sit there claiming to be
     the whole book.
 
-    :param per_image_pdfs: one single-page PDF per image, in page order.
+    :param per_image_pdfs: one single-page PDF per image, in page order. A
+        generator, so that at most :data:`_MERGE_BATCH_IMAGES` are alive.
     :param out_path: the file to end up with.
     :raises OSError: the file cannot be written.
     """
     merged = pikepdf.Pdf.new()
-    opened = []
-    try:
-        for pdf_bytes in per_image_pdfs:
-            single = pikepdf.open(io.BytesIO(pdf_bytes))
-            opened.append(single)
-            merged.pages.extend(single.pages)
-        with atomic_output(out_path) as scratch:
-            merged.save(scratch)
-    finally:
-        for single in opened:
-            single.close()
-        merged.close()
+    opened: list = []
+    # Beside the target, so a full disk fails here and not on the rename.
+    with tempfile.TemporaryDirectory(dir=os.path.dirname(out_path) or ".") as parts:
+        try:
+            for pdf_bytes in per_image_pdfs:
+                single = pikepdf.open(io.BytesIO(pdf_bytes))
+                opened.append(single)
+                merged.pages.extend(single.pages)
+                if len(opened) >= _MERGE_BATCH_IMAGES:
+                    merged = _flush_merge_batch(merged, opened, parts)
+            with atomic_output(out_path) as scratch:
+                merged.save(scratch)
+        finally:
+            for single in opened:
+                single.close()
+            # Before the directory goes: on Windows an open file blocks that.
+            merged.close()
 
 
 class SourceLoadError(Exception):
@@ -499,8 +541,7 @@ def _read_pdf_pages(path: str) -> list[SourcePage]:
                     "actually wrote its pages.",
                 )
 
-            sha256 = _sha256_file(path)
-            pages: list[SourcePage] = []
+            sizes: list[tuple[float, float]] = []
             for index in range(len(doc)):
                 page = doc[index]
                 try:
@@ -509,17 +550,30 @@ def _read_pdf_pages(path: str) -> list[SourcePage]:
                     # Children before the parent, or their finalizers assert
                     # against a closed document -- see render.rasterize_page.
                     page.close()
-                ref = SourceRef(
-                    path=stored_path,
-                    page_index=index,
-                    sha256=sha256,
-                    width_pt=float(width_pt),
-                    height_pt=float(height_pt),
-                )
-                pages.append(SourcePage(ref=ref, rotate_deg=0, skipped=False))
-            return pages
+                sizes.append((float(width_pt), float(height_pt)))
         finally:
             doc.close()
+
+    # Outside the guard. It is the process-wide pdfium lock and this reads the
+    # whole file, so importing a large PDF froze every preview for the length
+    # of the hash (B33). A file rewritten between the two yields new content's
+    # hash over old geometry; the hash always opened the file separately, and
+    # `project_io`'s source check is what catches that.
+    sha256 = _sha256_file(path)
+    return [
+        SourcePage(
+            ref=SourceRef(
+                path=stored_path,
+                page_index=index,
+                sha256=sha256,
+                width_pt=width_pt,
+                height_pt=height_pt,
+            ),
+            rotate_deg=0,
+            skipped=False,
+        )
+        for index, (width_pt, height_pt) in enumerate(sizes)
+    ]
 
 
 def _scan_image_dir(dir_path: str) -> tuple[list[str], list[str]]:
@@ -713,16 +767,18 @@ def load_image_dir(path: str) -> list[SourcePage]:
             )
         )
 
-    per_image_pdfs = [
-        _single_image_pdf_or_raise(img_path, dpi)
-        for img_path, dpi in zip(image_paths, dpis)
-    ]
+    # Generators, walked twice: holding the list between the two passes is
+    # what cost ~2.5 GB for 500 scans. The second conversion is cheap (img2pdf
+    # embeds rather than re-encodes) and a repeat import does not reach it.
+    def per_image_pdfs():
+        for img_path, dpi in zip(image_paths, dpis):
+            yield _single_image_pdf_or_raise(img_path, dpi)
 
     store_dir = import_store_dir()
-    out_path = os.path.join(store_dir, f"{_import_key(per_image_pdfs)}.pdf")
+    out_path = os.path.join(store_dir, f"{_import_key(per_image_pdfs())}.pdf")
     if not os.path.exists(out_path):
         os.makedirs(store_dir, exist_ok=True)
-        _merge_image_pdfs(per_image_pdfs, out_path)
+        _merge_image_pdfs(per_image_pdfs(), out_path)
     # Otherwise this exact set of images has been imported before and the
     # merge is skipped entirely. The existing file is left alone rather
     # than rewritten with the same bytes -- another project is already

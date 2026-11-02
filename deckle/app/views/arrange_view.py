@@ -817,12 +817,9 @@ class ArrangeView:
             if index < self.list_widget.count() and rendered.width and rendered.height:
                 item = self.list_widget.item(index)
                 if item is not None:
-                    # Keep the raw buffer for anything that wants the pixels,
-                    # and ALSO put it on screen. Storing it in UserRole and
-                    # stopping there is what the grid did for months: every
-                    # thumbnail rendered correctly and went nowhere, so the
-                    # page list showed nothing but text labels.
-                    item.setData(0x0100, rendered)  # Qt.ItemDataRole.UserRole
+                    # The icon owns its own copy of the pixels, and nothing
+                    # else reads the raw buffer. Keeping it on the item as
+                    # well held ~150 MB for 300 pages scrolled end to end.
                     item.setIcon(_icon_from_rendered(rendered))
 
     # -- selection / actions ---------------------------------------------

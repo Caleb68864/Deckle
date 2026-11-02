@@ -383,5 +383,5 @@ def test_an_unreadable_defaults_file_does_not_stop_a_new_project(config_root):
 def test_the_new_project_carries_no_pages_and_no_printer(config_root):
     project = default_project()
 
-    assert project.pages == []
+    assert project.pages == ()
     assert project.printer is None

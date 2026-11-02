@@ -367,10 +367,20 @@ class SheetPlan:
         ``fold_scheme="none"`` where there is nothing to gather.
     """
 
-    sheets: list[Sheet]
+    sheets: tuple[Sheet, ...]
     paper_pt: tuple[float, float]
-    warnings: list[LayoutWarning]
+    warnings: tuple[LayoutWarning, ...]
     signatures: tuple[Signature, ...] = ()
+
+    def __post_init__(self) -> None:
+        # Coerced rather than required. `frozen=True` stops a caller rebinding
+        # these and says nothing about `plan.sheets.append(...)`, and a plan is
+        # shared by the undo stack, the preview, the schedule and the exporter.
+        # Every producer builds a local list, which is the right way to build
+        # one, so the conversion belongs here.
+        object.__setattr__(self, "sheets", tuple(self.sheets))
+        object.__setattr__(self, "warnings", tuple(self.warnings))
+        object.__setattr__(self, "signatures", tuple(self.signatures))
 
 
 @dataclass(frozen=True)
@@ -615,8 +625,11 @@ class Project:
     :ivar printer: the printer name recorded with the project, or ``None``.
     """
 
-    pages: list[SourcePage]
+    pages: tuple[SourcePage, ...]
     layout: LayoutSettings
     printer: str | None
     kind: Literal["book", "cards"] = "book"
     card_deck: CardDeck | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pages", tuple(self.pages))

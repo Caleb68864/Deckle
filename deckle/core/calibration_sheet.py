@@ -48,9 +48,9 @@ import pikepdf
 from pikepdf import Name
 from pikepdf.canvas import ContentStreamBuilder
 
+from deckle.core.paper import LETTER_PT
 from deckle.core.paths import atomic_output
 
-LETTER_PT = (612.0, 792.0)
 
 MM_PT = 72.0 / 25.4
 """One millimetre in PDF points. The registration ticks are in millimetres

@@ -567,9 +567,9 @@ def test_ink_bbox_cache_is_lru_bounded(tmp_path, monkeypatch):
         render.ink_bbox(ref, dpi=12)
 
     assert len(render._ink_bbox_cache) == 2
-    assert refs[0] not in render._ink_bbox_cache
-    assert refs[1] in render._ink_bbox_cache
-    assert refs[2] in render._ink_bbox_cache
+    assert (refs[0], 12) not in render._ink_bbox_cache
+    assert (refs[1], 12) in render._ink_bbox_cache
+    assert (refs[2], 12) in render._ink_bbox_cache
 
 
 def test_ink_bbox_recent_use_survives_eviction(tmp_path, monkeypatch):
@@ -583,8 +583,8 @@ def test_ink_bbox_recent_use_survives_eviction(tmp_path, monkeypatch):
     render.ink_bbox(refs[0], dpi=12)  # refresh refs[0]
     render.ink_bbox(refs[2], dpi=12)
 
-    assert refs[0] in render._ink_bbox_cache
-    assert refs[1] not in render._ink_bbox_cache
+    assert (refs[0], 12) in render._ink_bbox_cache
+    assert (refs[1], 12) not in render._ink_bbox_cache
 
 
 # -- pdfium object lifetimes ---------------------------------------------

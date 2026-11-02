@@ -595,6 +595,45 @@ def _warn_if_newer_format(path: str, found: Any) -> None:
     )
 
 
+def _check_source(ref: SourceRef) -> None:
+    """Whether a source is still there, and still what was saved.
+
+    :param ref: the reference to check.
+    :returns: nothing.
+    :raises SourceMissingError: the file has gone or cannot be read.
+    :raises SourceChangedWarning: it has different content now.
+    """
+    if not os.path.exists(ref.path):
+        raise SourceMissingError(ref.path)
+    try:
+        current_hash = _sha256_file(ref.path)
+    except OSError:
+        raise SourceMissingError(ref.path)
+    if current_hash != ref.sha256:
+        raise SourceChangedWarning(ref.path)
+
+
+def check_project_sources(project: Project) -> None:
+    """Hash every source of a project loaded with ``check_sources=False``.
+
+    Split from :func:`load_project` so the desktop app can read the file on the
+    GUI thread and do this, the slow half, off it. It warns about nothing, and
+    ``warnings.catch_warnings`` is process-global, so the half that does warn
+    is the half that should not move to a thread.
+
+    :param project: the project.
+    :returns: nothing.
+    :raises SourceMissingError: a source has gone or cannot be read.
+    :raises SourceChangedWarning: a source has different content now.
+    """
+    checked: set[str] = set()
+    for page in project_source_pages(project):
+        if is_blank_page(page) or page.ref.path in checked:
+            continue
+        checked.add(page.ref.path)
+        _check_source(page.ref)
+
+
 def load_project(
     path: str,
     *,
@@ -737,15 +776,13 @@ def load_project(
             elif not on_outside_roots(ref.path, roots):
                 raise PathOutsideRootsWarning(ref.path, roots)
         if check_sources:
-            if not os.path.exists(ref.path):
-                raise SourceMissingError(ref.path)
-            try:
-                current_hash = _sha256_file(ref.path)
-            except OSError:
-                raise SourceMissingError(ref.path)
-            if current_hash != ref.sha256:
-                raise SourceChangedWarning(ref.path)
+            _check_source(ref)
 
     layout = layout_from_dict(payload["layout"])
     printer = payload.get("printer")
+    if printer is not None and not isinstance(printer, str):
+        raise ValueError(
+            f"'printer' is {_shape_of(printer)}, not a printer name, so "
+            f"{os.path.basename(path)} is damaged or was not written by Deckle."
+        )
     return Project(pages=pages, layout=layout, printer=printer, kind=kind, card_deck=card_deck)

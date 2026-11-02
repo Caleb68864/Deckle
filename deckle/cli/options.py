@@ -127,8 +127,26 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
         help="gutter width, e.g. 0.75in, 18pt, 5mm (default: 0)",
     )
     parser.add_argument(
+        "--margin-top", dest="margin_top_pt", type=values._parse_length_pt,
+        default=0.0, metavar="LENGTH",
+        help="head margin -- the space above the text, e.g. 0.5in (default: 0)",
+    )
+    parser.add_argument(
+        "--margin-bottom", dest="margin_bottom_pt", type=values._parse_length_pt,
+        default=0.0, metavar="LENGTH",
+        help="tail margin -- the space below the text, e.g. 0.5in (default: 0)",
+    )
+    parser.add_argument(
+        "--margin-outer", dest="margin_outer_pt", type=values._parse_length_pt,
+        default=0.0, metavar="LENGTH",
+        help="fore-edge margin -- the space on the edge you see when the book "
+        "is closed. The fourth edge is the spine, and its margin is --gutter "
+        "(default: 0, which prints to the paper edge and will be clipped by "
+        "the printer)",
+    )
+    parser.add_argument(
         "--paper", type=values._parse_paper, default=values.LETTER_PT,
-        help="paper size: a preset (letter, a4, legal) or WxH[unit] (default: letter)",
+        help="paper size: a preset (letter, a4, legal, a3, tabloid) or WxH[unit] (default: letter)",
     )
     parser.add_argument(
         "--landscape", action="store_true",
@@ -138,6 +156,29 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",
         help="which edge the gutter shifts toward (default: left)",
+    )
+    parser.add_argument(
+        "--slack-to", dest="slack_to", choices=["gutter", "outer", "split"],
+        default="gutter",
+        help="where spare horizontal width goes when a page is narrower than "
+        "its box, and therefore which margin stays identical through the "
+        "book. gutter: the fore-edge is exact and the gutter varies. outer: "
+        "the gutter is exact and the fore-edge varies -- use it with a fixed "
+        "punch or a sewing template. split: half each, content visually "
+        "centred (default: gutter)",
+    )
+    parser.add_argument(
+        "--start-on-verso", dest="start_on_verso", action="store_true",
+        help="begin the book on a left-hand page instead of a right-hand one, "
+        "at the cost of one leading blank (default: off -- page 1 is a recto)",
+    )
+    parser.add_argument(
+        "--landscape-policy", dest="landscape_policy",
+        choices=["rotate", "scale"], default="rotate",
+        help="what to do with a landscape page in a portrait book. rotate: "
+        "turn it 90 degrees so it fills the page, and warn (the reader turns "
+        "the book). scale: leave it upright and fit it to the width "
+        "(default: rotate)",
     )
     parser.add_argument(
         "--fold-scheme", choices=["none", "folio"], default="none",
@@ -317,6 +358,21 @@ def build_parser() -> argparse.ArgumentParser:
             "export only these sheets, counting from 0 -- e.g. 0, 2,0 or "
             "0,2-4. Print sheet 0 on its own to proof a job before "
             "committing the stack"
+        ),
+    )
+    export_parser.add_argument(
+        "--signature", type=int, default=None, metavar="N",
+        help=(
+            "export one signature, counting from 1 as the binding schedule "
+            "does. Requires --fold-scheme folio"
+        ),
+    )
+    export_parser.add_argument(
+        "--split", action="store_true",
+        help=(
+            "write one file per signature beside -o, named <output>-sig-01.pdf, "
+            "<output>-sig-02.pdf and so on, so a stack of files matches the "
+            "stack of gatherings on the bench"
         ),
     )
     export_parser.add_argument(

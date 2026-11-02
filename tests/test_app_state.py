@@ -456,7 +456,7 @@ def test_remove_pages_rejects_a_bad_index():
 def test_removing_every_page_leaves_an_empty_document():
     from deckle.app.state import remove_pages
 
-    assert remove_pages(_make_project(5), list(range(5))).pages == []
+    assert remove_pages(_make_project(5), list(range(5))).pages == ()
 
 
 def test_remove_is_undoable():

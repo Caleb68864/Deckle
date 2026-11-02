@@ -95,7 +95,7 @@ def test_plan_passes_reads_only_sheet_index_at_runtime():
 
     passes = plan_passes(plan, _profile(reverse_stack=True))
 
-    assert [p.sheet_order for p in passes] == [[0, 1, 2, 3], [3, 2, 1, 0]]
+    assert [p.sheet_order for p in passes] == [(0, 1, 2, 3), (3, 2, 1, 0)]
 
 
 def test_plan_passes_reads_only_sheet_index_by_ast():

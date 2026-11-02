@@ -28,6 +28,8 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -37,49 +39,6 @@ FIXTURE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "tests", "fixtures", "sample.pdf",
 )
-
-
-@pytest.fixture
-def torn_write():
-    """The next file written under this context dies halfway through."""
-    import builtins
-
-    real_io_open = io.open
-    real_builtin_open = builtins.open
-
-    @contextlib.contextmanager
-    def armed():
-        def wrap(real):
-            def guarded(file, mode="r", *args, **kwargs):
-                handle = real(file, mode, *args, **kwargs)
-                if "w" in mode:
-                    real_write = handle.write
-
-                    def half_then_die(data):
-                        real_write(data[: len(data) // 2])
-                        handle.flush()
-                        raise OSError(28, "No space left on device")
-
-                    handle.write = half_then_die
-                return handle
-
-            return guarded
-
-        # Both, because they are different names for the same behaviour and
-        # code reaches them differently: `open(...)` resolves
-        # `builtins.open`, while `Path.write_text` and `os.fdopen` go
-        # through `io.open`. Patching one leaves the other unarmed -- which
-        # is exactly how the first version of this file passed against
-        # unfixed code.
-        io.open = wrap(real_io_open)
-        builtins.open = wrap(real_builtin_open)
-        try:
-            yield
-        finally:
-            io.open = real_io_open
-            builtins.open = real_builtin_open
-
-    return armed
 
 
 def _run(*args) -> int:
@@ -167,9 +126,6 @@ def test_a_dummy_page_count_below_one_is_reported(tmp_path):
     traceback, because ``_cmd_dummy`` caught only ``OSError`` -- the same
     shape as the three settings ``_impose_or_report`` was written for.
     """
-    import subprocess
-    import sys
-
     out = os.path.join(str(tmp_path), "dummy.pdf")
     result = subprocess.run(
         [sys.executable, "-m", "deckle.cli", "dummy", "--pages", "0", "-o", out],
@@ -194,3 +150,55 @@ def test_a_failed_dummy_write_keeps_the_previous_one(tmp_path, torn_write):
         _run("dummy", "--pages", "16", "-o", out)
 
     assert open(out, "rb").read() == first
+
+
+_WRITE_UNDER_A_FILE_SIZE_LIMIT = """
+import resource, signal, sys
+from deckle.cli import main
+limit = int(sys.argv[1])
+signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+sys.exit(main(sys.argv[2:]))
+"""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="RLIMIT_FSIZE is POSIX")
+@pytest.mark.parametrize("first,second", [
+    pytest.param(("export", FIXTURE), ("export", FIXTURE, "--fold-scheme", "folio"),
+                 id="export"),
+    pytest.param(("dummy", "--pages", "8"), ("dummy", "--pages", "16"), id="dummy"),
+])
+def test_a_real_write_failure_keeps_the_previous_pdf(tmp_path, tmp_path_factory,
+                                                    first, second):
+    """The same property with nothing patched: the kernel refuses the bytes.
+
+    ``torn_write`` has to know how each writer reaches the disk, and being
+    wrong about pikepdf is what once made it miss. A file-size limit fails
+    qpdf's own native ``write`` with ``EFBIG`` however it got there, so this
+    cannot go stale in that way. Out of process, because the limit applies to
+    everything the process writes and cannot be lowered and raised again by
+    an unprivileged test. Its own session log for the same reason: the suite's
+    shared one is already over the limit, and failing to append to it is noise
+    logging prints to stderr, which is why the message is looked for rather
+    than the absence of a traceback.
+    """
+    home = tmp_path_factory.mktemp("home")
+    out = os.path.join(str(tmp_path), "out.pdf")
+    assert _run(*first, "-o", out) == 0
+    before = open(out, "rb").read()
+    limit = len(before) // 2
+
+    result = subprocess.run(
+        [sys.executable, "-c", _WRITE_UNDER_A_FILE_SIZE_LIMIT, str(limit),
+         *second, "-o", out],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1",
+             "XDG_DATA_HOME": str(home / "data"),
+             "XDG_CONFIG_HOME": str(home / "config")},
+    )
+
+    assert result.returncode == 1, result.stderr
+    assert "error: cannot write to" in result.stderr
+    assert open(out, "rb").read() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["out.pdf"]

@@ -340,7 +340,10 @@ class PreviewFrame:
     sheet_index: int
     side: Literal["front", "back"]
     rendered: RenderedPage
-    warnings: list[LayoutWarning]
+    warnings: tuple[LayoutWarning, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "warnings", tuple(self.warnings))
 
 
 def build_preview_frame(

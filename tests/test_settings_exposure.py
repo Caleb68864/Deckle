@@ -49,6 +49,14 @@ GUI = "gui"
 #: is not a gap. Anything whose reason reads like an excuse belongs in
 #: the other list.
 EXEMPT: dict[str, str] = {
+    "--signature": (
+        "The print dialog already has a signature selector; this is the "
+        "export path's spelling of the same choice."
+    ),
+    "--split": (
+        "For carrying a stack of files to a print shop, which is a scripting "
+        "job. The app prints or saves one document."
+    ),
     # Where output goes, and whether to produce it at all. The app writes
     # through Save dialogs, which are the same decision made the GUI way.
     "--output": "the app asks with a Save dialog instead",
@@ -134,6 +142,12 @@ GUI_FLAGS: dict[str, str] = {
     "--paper": "paper",
     "--landscape": "paper",
     "--gutter": "gutter_pt",
+    "--margin-top": "margin_top_pt",
+    "--margin-bottom": "margin_bottom_pt",
+    "--margin-outer": "margin_outer_pt",
+    "--slack-to": "slack_to",
+    "--start-on-verso": "start_on_recto",
+    "--landscape-policy": "landscape_policy",
     "--binding-edge": "binding_edge",
     "--blank-mode": "blank_mode",
     "--grain": "grain",

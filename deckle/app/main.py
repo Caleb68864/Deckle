@@ -1,11 +1,14 @@
 """Deckle's main window: wires ``AppState`` to ``ImportView``/``ArrangeView``.
 
 Zero printers installed is a defined, first-class state (red-team A-1):
-``available_printer_names`` is queried once, on a background worker, at
-window construction; when it comes back empty the print action is disabled
-with an explanatory status message instead of opening an empty/broken print
-dialog or raising. There is no printer menu and no re-query -- a printer
-plugged in after launch is not seen until Deckle restarts (B30).
+``available_printer_names`` is queried on a background worker, under a
+deadline, at window construction; when it comes back empty the print action
+is disabled with an explanatory status message instead of opening an
+empty/broken print dialog or raising. It is queried again, quietly, when the
+window is shown, whenever it is activated, whenever a menu is opened, and
+when Print is clicked (B30): the Print button is disabled while there are no
+printers, so the click alone could never have noticed a printer turned on
+after launch.
 
 What this module is, and is not (M3). It is the window: splitters,
 buttons, tooltips, the status bar, the menu bar's target methods, the
@@ -44,10 +47,12 @@ from deckle.app.printer_query import (  # noqa: F401
     _single_shot,
     available_printer_names,
 )
+from deckle.core.paper import LETTER_PT
 from deckle.core.defaults import load_defaults
 from deckle.app import menus
 from deckle.app.menus import MENUS, build_menu_bar
 from deckle.app import exporting, project_actions, shutdown
+from deckle.app.workers import run_in_thread
 
 #: Re-exported for the two button tooltips ``_sync_document_actions`` sets;
 #: the functions that say them live in the modules that own the action.
@@ -62,6 +67,9 @@ from deckle.core.diagnostics import (
 )
 from deckle.app.views.arrange_view import ArrangeView
 from deckle.app.views.import_view import ImportView, import_advisory_message
+from deckle.app.views.calibration_wizard import CalibrationWizard
+from deckle.app.views.custom_paper import CustomPaperDialog
+from deckle.app.views.profile_editor import ProfileEditorDialog
 from deckle.app.views.layout_panel import LayoutPanel, recompute_plan
 from deckle.app.views.preview_view import PreviewView
 from deckle.app.views.cards_view import CardsView
@@ -79,7 +87,11 @@ from deckle.core.locate import locate_page
 from deckle.core.models import LayoutSettings, Project
 from deckle.core.profiles import BUILTIN_PRESETS, NewerProfileAdvisory, PrinterProfile
 
-LETTER_PT = (612.0, 792.0)
+
+#: How long closing the window waits for an export still writing. Long, because
+#: it has no cancellation point and is writing a file somebody asked for, and
+#: still bounded, because a stuck thread must not hang the quit for ever.
+EXPORT_SHUTDOWN_WAIT_MS = 120_000
 
 NO_PRINTERS_MESSAGE = "No printers installed -- connect a printer to enable printing."
 
@@ -372,6 +384,13 @@ class MainWindow:
         #: construction without asking whether the menus exist yet.
         self.menu_actions: dict = {}
 
+        #: Set once the window starts closing, so nothing new is started.
+        self._stopping = False
+        #: Background jobs this window owns, so shutdown can settle them.
+        self._jobs: dict = {}
+        #: How a job is started. A seam for a caller with no event loop.
+        self._job_runner = run_in_thread
+
         #: The menu description this window was built from. Held as an
         #: attribute rather than reached for as a module global so that
         #: the enable rules below read the *same* description the menu
@@ -400,6 +419,9 @@ class MainWindow:
         # through `close()` below -- Qt calls closeEvent directly. Without
         # this, quitting mid-render crashed on exit.
         self.window.closeEvent = self._on_close_event
+        # Print is disabled with no printers, so this and the menus below
+        # are how a printer turned on after launch gets noticed at all.
+        self.window.changeEvent = self._on_change_event
         # Controls on the left, the sheets on the right.
         #
         # Everything used to sit in one vertical column, which meant the
@@ -422,7 +444,10 @@ class MainWindow:
         self.import_view = ImportView(self.state, controls)
         controls_layout.addWidget(self.import_view.widget)
 
-        self.layout_panel = LayoutPanel(self.state, controls, profile=self.profile)
+        self.layout_panel = LayoutPanel(
+            self.state, controls, profile=self.profile,
+            custom_paper_dialog_cls=CustomPaperDialog,
+        )
         controls_layout.addWidget(self.layout_panel.widget)
         self.cards_view = CardsView(self.state, controls, on_change=self._on_pages_changed)
         controls_layout.addWidget(self.cards_view.widget)
@@ -603,6 +628,8 @@ class MainWindow:
             self._menus,
             scope_widgets={"grid": self.arrange_view.list_widget},
         )
+        for entry in self.window.menuBar().actions():
+            entry.menu().aboutToShow.connect(self._recheck_printers)
 
         self._refresh_recent_menu()
         self._sync_document_actions()
@@ -961,7 +988,13 @@ class MainWindow:
         else:
             self.status_bar.clearMessage()
 
-    def refresh_printers(self, *, blocking: bool = False, timeout_ms: int | None = None) -> None:
+    def refresh_printers(
+        self,
+        *,
+        blocking: bool = False,
+        timeout_ms: int | None = None,
+        quiet: bool = False,
+    ) -> None:
         """Re-check available printers, off the UI thread and under a deadline.
 
         ``QPrinterInfo.availablePrinters()`` enumerates **network** printers
@@ -988,6 +1021,11 @@ class MainWindow:
             is nothing to time out against.
         :param timeout_ms: the deadline for the asynchronous path, or
             ``None`` for :data:`PRINTER_QUERY_TIMEOUT_MS`.
+        :param quiet: a re-check nobody asked for. It does not disable Print
+            or take the status bar while it runs, it does nothing while an
+            earlier enumeration thread is still running (activating a window
+            must not stack up threads parked in a dead spooler), and its
+            answer goes through :meth:`_apply_requeried_printers`.
         :returns: nothing. The result arrives via ``_apply_printers``,
             which enables or disables **only** the Print action.
         """
@@ -1000,11 +1038,18 @@ class MainWindow:
             _PrinterQuery(worker, self._apply_printers, timeout_ms).complete()
             return
 
-        self.print_button.setEnabled(False)
-        self.status_bar.showMessage("Checking for printers...")
+        if quiet:
+            running = self._printer_query
+            if running is not None and not running.worker_finished:
+                return
+            apply_result = self._apply_requeried_printers
+        else:
+            self.print_button.setEnabled(False)
+            self.status_bar.showMessage("Checking for printers...")
+            apply_result = self._apply_printers
 
         worker = _PrinterQueryWorker()
-        query = _PrinterQuery(worker, self._apply_printers, timeout_ms)
+        query = _PrinterQuery(worker, apply_result, timeout_ms)
         thread = _new_thread(self.window)
         thread.run = worker.run
         thread.finished.connect(query.complete)
@@ -1013,6 +1058,36 @@ class MainWindow:
         self._printer_thread = thread
         thread.start()
         _single_shot(timeout_ms, query.time_out)
+
+    def _apply_requeried_printers(
+        self,
+        printers: list[str],
+        no_printers_message: str | None = None,
+        imageable_areas: dict[str, tuple[float, float, float, float]] | None = None,
+    ) -> None:
+        """Take a quiet re-check's answer, only if it is news.
+
+        An unchanged answer does nothing at all. :meth:`_apply_printers`
+        re-resolves the profile for the preselected printer, so running it
+        on every activation would throw away the printer chosen in the Print
+        dialog, and overwrite the status bar each time the window got focus.
+
+        A failed re-check (``no_printers_message`` is only passed when the
+        spooler missed its deadline) changes nothing either: not knowing is
+        no reason to take Print away from a printer already listed.
+
+        :param printers: the enumerated printer names.
+        :param no_printers_message: why there are none, when enumeration
+            failed rather than finding nothing.
+        :param imageable_areas: each driver's non-printable border.
+        :returns: nothing.
+        """
+        if no_printers_message is not None:
+            return
+        areas = dict(imageable_areas or {})
+        if list(printers) == self._printers and areas == self._imageable_areas:
+            return
+        self._apply_printers(printers, None, areas)
 
     def _apply_printers(
         self,
@@ -1106,8 +1181,10 @@ class MainWindow:
         self.preview_view.refresh()
 
     def print_document(self) -> None:
-        # Use the cached list rather than re-enumerating: a second query
-        # would re-introduce exactly the block this moved off the UI thread.
+        # The dialog opens against the CACHED list. The re-check is off the
+        # UI thread and its answer lands for the next click: waiting for it
+        # here would put up to a deadline's freeze on this button.
+        self.refresh_printers(quiet=True)
         printers = self._printers
         if not printers:
             # Defensive: the button should already be disabled, but never
@@ -1138,6 +1215,7 @@ class MainWindow:
             # that back on close, replacing a border a driver had actually
             # reported -- and both clip warnings are computed from it.
             imageable_areas=self._imageable_areas,
+            profile_editor_cls=ProfileEditorDialog,
         )
         self.print_dialog.widget.exec()
         # The dialog is where the printer and its paper behaviour are
@@ -1146,6 +1224,28 @@ class MainWindow:
         # put the two halves of the same answer on screen at once.
         self.set_printer_profile(self.print_dialog.selected_profile())
         self.status_bar.showMessage(f"{len(printers)} printer(s) available.")
+
+    def calibrate_printer(self) -> None:
+        """Walk the operator through measuring a printer, and use the result.
+
+        Reached with or without a document: it prints its own sheets. The
+        printer list is whatever is known; a name can be typed.
+
+        :returns: nothing.
+        """
+        wizard = CalibrationWizard(
+            list(self._printers),
+            self.window,
+            page_size=self.state.project.layout.paper,
+            printer_name=self.state.project.printer,
+        )
+        wizard.widget.exec()
+        if wizard.saved_profile is None:
+            return
+        # Through the same re-resolution enumeration uses, so the preview and
+        # the margin button draw against the new measurement straight away.
+        self._apply_printers(list(self._printers), None, dict(self._imageable_areas))
+        self.status_bar.showMessage(f"Calibration saved for {wizard.saved_name}.")
 
     # -- menu commands -------------------------------------------------
     # Every one of these is named by `deckle.app.menus.MENUS`. They are
@@ -1664,11 +1764,35 @@ class MainWindow:
         return "front" if label == choices[0] else "back"
 
     def show(self) -> None:
-        """Show the window.
+        """Show the window and re-check for printers.
 
         :returns: nothing.
         """
         self.window.show()
+        self._recheck_printers()
+
+    def _recheck_printers(self) -> None:
+        """Ask the spooler again without disturbing anything on screen.
+
+        :returns: nothing. Does nothing once the window is closing: dismissing
+            the "save changes?" prompt re-activates the window, and a thread
+            started then would still be running when Qt destroys its parent.
+        """
+        if not self._stopping:
+            self.refresh_printers(quiet=True)
+
+    def _on_change_event(self, event) -> None:
+        """Re-check for printers when the window is activated.
+
+        :param event: Qt's change event, passed on to the base class.
+        :returns: nothing.
+        """
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QMainWindow
+
+        QMainWindow.changeEvent(self.window, event)
+        if event.type() == QEvent.Type.ActivationChange and self.window.isActiveWindow():
+            self._recheck_printers()
 
     def close(self) -> None:
         """Flush the pending autosave and close the window.
@@ -1700,20 +1824,30 @@ class MainWindow:
     def stop_background_work(self, timeout_ms: int = 5000) -> None:
         """Cancel in-flight renders and wait for their threads to finish.
 
-        The three views that rasterise off-thread, named here rather than
+        The views that load or rasterise off-thread, named here rather than
         inside :func:`deckle.app.shutdown.stop_background_work`, because
         which views a window has is the window's own business.
         ``layout_panel`` joined the list when the Crop & trim tab started
-        compositing the document off-thread (N11).
+        compositing the document off-thread (N11), ``import_view`` when
+        quitting mid-import was found to run pdfium into teardown (B13).
 
         :param timeout_ms: how long to wait per thread.
         :returns: nothing. Never raises -- see
             :func:`deckle.app.shutdown.stop_background_work`.
         """
+        self._stopping = True
         shutdown.stop_background_work(
-            (self.preview_view, self.arrange_view, self.layout_panel),
+            (self.preview_view, self.arrange_view, self.layout_panel, self.import_view),
             timeout_ms,
+            jobs=list(self._jobs.values()),
+            job_timeout_ms=EXPORT_SHUTDOWN_WAIT_MS,
         )
+        # Bounded, because this one may be parked in a dead spooler. Only while
+        # it is running: Qt frees a finished thread, and asking one that has
+        # gone raises. See `_PrinterQuery.worker_finished`.
+        query = self._printer_query
+        if query is not None and not query.worker_finished:
+            self._printer_thread.wait(timeout_ms)
 
 
 def main(argv: list[str] | None = None) -> int:

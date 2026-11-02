@@ -210,7 +210,7 @@ pq.available_printer_names = lambda: ["Measured"]
 # driven synchronously below, which is the path under test.
 real_refresh = am.MainWindow.refresh_printers
 am.MainWindow.refresh_printers = (
-    lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
+    lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers([])
 )
 window = am.MainWindow()
 am.MainWindow.refresh_printers = real_refresh

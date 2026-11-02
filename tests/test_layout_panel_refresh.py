@@ -107,7 +107,8 @@ def test_returning_to_a_preset_removes_the_custom_entry():
     panel.refresh_from_project()
 
     assert panel.paper_combo.currentText() == "Letter"
-    assert not any("Custom" in name for name in _items(panel))
+    # The generated entry, not the permanent `Custom...` verb (F11).
+    assert not any(name.startswith("Custom (") for name in _items(panel))
 
 
 def test_the_name_list_stays_in_step_with_the_combo():

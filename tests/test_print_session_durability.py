@@ -134,9 +134,12 @@ def test_a_failed_save_leaves_the_state_file_parseable(torn_write):
     session.start()
     before = session.state_path.read_text(encoding="utf-8")
 
-    with torn_write(), pytest.raises(OSError):
+    with torn_write():
         session.advance()
 
+    # Reported rather than raised: the dialog calls `advance()` with no
+    # `try`, and the paper is already out.
+    assert "resume point" in session.last_error
     assert json.loads(session.state_path.read_text(encoding="utf-8"))
     assert session.state_path.read_text(encoding="utf-8") == before
 
@@ -154,9 +157,10 @@ def test_a_failed_save_leaves_no_scratch_file_beside_the_state(torn_write):
     session = _session()
     session.start()
 
-    with torn_write(), pytest.raises(OSError):
+    with torn_write():
         session.advance()
 
+    assert "resume point" in session.last_error
     directory = session.state_path.parent
     assert [p.name for p in directory.iterdir()] == [session.state_path.name]
 
@@ -191,3 +195,66 @@ def test_a_completed_run_removes_its_state_file():
 
     assert session.finished
     assert not session.state_path.exists()
+
+
+# -- B27: the file has to outlive the crash ---------------------------------
+
+
+def test_the_state_lives_in_the_data_directory_not_the_temp_directory(monkeypatch):
+    from deckle.core import paths, print_session
+
+    monkeypatch.delenv("DECKLE_SESSION_STATE_DIR", raising=False)
+
+    assert print_session._state_dir() == paths.data_dir("print_sessions")
+
+
+def test_a_failed_save_stops_the_run_rather_than_printing_on(torn_write):
+    """A cursor the disk has not got must not be walked past."""
+    session = _session()
+    session.start()
+    cursor_before = session._state.sheet_cursor
+
+    with torn_write():
+        session.advance()
+    assert session.last_error is not None
+    submitted_once = session._state.sheet_cursor
+
+    assert submitted_once > cursor_before
+    assert not session.finished
+
+
+def test_a_failed_save_on_resume_submits_nothing(torn_write):
+    session = _session()
+    session.start()
+    calls = []
+    real = session._submit_chunk
+    session._submit_chunk = lambda: (calls.append(1), real())[1]
+
+    with torn_write():
+        session.resume(0)
+
+    assert calls == []
+    assert "resume point" in session.last_error
+
+
+def test_a_state_file_that_cannot_be_deleted_does_not_raise(monkeypatch):
+    from pathlib import Path
+
+    session = _session()
+    session.start()
+
+    def _refuse(self, missing_ok=False):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(Path, "unlink", _refuse)
+    session._delete_state()
+
+
+def test_printer_and_save_failures_are_both_said(torn_write):
+    session = _session()
+    session.start()
+    session._last_error = "the printer went away"
+    with torn_write():
+        assert session._save() is False
+    assert session.last_error.startswith("the printer went away. Also:")
+    assert "resume point" in session.last_error

@@ -713,3 +713,101 @@ def test_the_flat_sheet_schedule_still_names_the_flip_edge():
 
 def test_the_flat_sheet_schedule_still_counts_its_sheets():
     assert "Sheets to print: 5" in format_schedule_text(_flat_schedule(10))
+
+
+# -- F10: read it back -------------------------------------------------------
+
+
+def _folio_plan(page_count, sheets_per_signature=4, skip=()):
+    pages = [
+        SourcePage(ref=page.ref, rotate_deg=0, skipped=page.ref.page_index in skip)
+        for page in _pages(page_count)
+    ]
+    settings = _folio_settings(sheets_per_signature=sheets_per_signature)
+    return SaddleStitchStrategy().impose(pages, settings), settings
+
+
+def test_a_sixteen_page_folio_reads_one_to_sixteen():
+    from deckle.core.schedule import read_back_order
+
+    plan, _ = _folio_plan(16)
+    assert read_back_order(plan) == (tuple(range(1, 17)),)
+
+
+def test_two_signatures_read_back_as_two_tuples():
+    from deckle.core.schedule import read_back_order
+
+    plan, _ = _folio_plan(32)
+    assert read_back_order(plan) == (tuple(range(1, 17)), tuple(range(17, 33)))
+
+
+def test_a_padded_signature_reports_its_blanks_as_blanks():
+    from deckle.core.schedule import format_read_back, read_back_order
+
+    plan, _ = _folio_plan(14)
+    order = read_back_order(plan)[0]
+    assert order == (*range(1, 15), None, None)
+    assert format_read_back(order).endswith("14  blank  blank")
+
+
+def test_a_skipped_page_shows_as_the_gap_it_is():
+    """The point of reporting source pages: reader positions would count
+    1, 2, 3 whatever had been dropped."""
+    from deckle.core.schedule import read_back_order
+
+    plan, _ = _folio_plan(17, skip=(4,))
+    assert read_back_order(plan)[0] == (1, 2, 3, 4, *range(6, 18))
+
+
+def test_a_wrongly_folded_plan_would_show():
+    """The readout reads the slots, so it can disagree with the simulator."""
+    from dataclasses import replace
+
+    from deckle.core.schedule import read_back_order
+
+    plan, _ = _folio_plan(16)
+    first = plan.sheets[0]
+    swapped = replace(first, front=first.back, back=first.front)
+    wrong = replace(plan, sheets=[swapped, *plan.sheets[1:]])
+    assert read_back_order(wrong)[0] != tuple(range(1, 17))
+
+
+def test_flat_sheets_read_back_as_nothing():
+    from dataclasses import replace
+
+    from deckle.core.schedule import build_schedule, format_schedule_text, read_back_order
+
+    plan, settings = _folio_plan(16)
+    flat = replace(plan, signatures=[])
+    assert read_back_order(flat) == ()
+    assert "READ IT BACK" not in format_schedule_text(build_schedule(flat, settings))
+
+
+def test_a_long_gathering_is_elided_in_the_middle():
+    from deckle.core.schedule import format_read_back
+
+    line = format_read_back(tuple(range(1, 41)))
+    assert line == (
+        "1  2  3  4  5  6  7  8  ...  33  34  35  36  37  38  39  40"
+    )
+
+
+def test_the_read_back_block_comes_last_before_after_sewing():
+    from deckle.core.schedule import build_schedule, format_schedule_text
+
+    plan, settings = _folio_plan(16)
+    text = format_schedule_text(build_schedule(plan, settings))
+    assert "stop here." in text
+    assert "signature 1:  1  2  3" in text
+    assert "deckle-cli dummy" in text
+    assert text.index("READ IT BACK") < text.index("AFTER SEWING")
+
+
+def test_read_back_survives_a_slot_count_mismatch():
+    from dataclasses import replace
+
+    from deckle.core.schedule import read_back_order
+
+    plan, _ = _folio_plan(16)
+    short = replace(plan, sheets=plan.sheets[:1])
+    assert len(read_back_order(short)[0]) == 16

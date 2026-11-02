@@ -18,6 +18,49 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+LETTER_PT: tuple[float, float] = (612.0, 792.0)
+A4_PT: tuple[float, float] = (595.28, 841.89)
+LEGAL_PT: tuple[float, float] = (612.0, 1008.0)
+A3_PT: tuple[float, float] = (841.89, 1190.55)
+TABLOID_PT: tuple[float, float] = (792.0, 1224.0)
+
+#: Every named sheet size, portrait, in the order the dropdown lists them. One
+#: table, because two diverged: the panel carried five and the CLI three, so a
+#: project set to A3 in the app could not be stated at the command line. These
+#: are sizes; :data:`PAPER_PRESETS` below is paper stock.
+PAPER_SIZES: tuple[tuple[str, tuple[float, float]], ...] = (
+    ("Letter", LETTER_PT),
+    ("A4", A4_PT),
+    ("Legal", LEGAL_PT),
+    ("A3", A3_PT),
+    ("Tabloid", TABLOID_PT),
+)
+
+# The PDF page-size limits pikepdf enforces, in points. Outside them there
+# is no page to make, so there is no point imposing one.
+MIN_PAPER_PT = 3.0
+MAX_PAPER_PT = 14400.0
+
+
+def paper_size_problem(paper: tuple[float, float]) -> str | None:
+    """Why this sheet size cannot be made, or ``None`` if it can.
+
+    Here rather than in a front end because ``--paper`` and the app's custom
+    size dialog must refuse the same sizes in the same words.
+
+    :param paper: ``(width, height)`` in points.
+    :returns: a user-facing sentence, or ``None``.
+    """
+    for length in paper:
+        if not MIN_PAPER_PT <= length <= MAX_PAPER_PT:
+            return (
+                f"a PDF page must be between "
+                f"{MIN_PAPER_PT:g} and {MAX_PAPER_PT:g}pt "
+                f"({MIN_PAPER_PT / 72:.2g}in to {MAX_PAPER_PT / 72:g}in) on "
+                f"each side; that is {paper[0]:g}x{paper[1]:g}pt"
+            )
+    return None
+
 PT_PER_MM = 72.0 / 25.4
 
 
@@ -281,3 +324,30 @@ def suggest_sheets_per_signature(
         creep_pt=creep_pt(sheets, caliper_pt),
         limited_by="creep" if by_creep <= by_fold else "fold",
     )
+
+
+def caliper_from_weight(
+    weight: float, unit: str, paper_type: str, grade: str | None = None
+) -> float:
+    """One sheet's caliper, from the number on the ream wrapper.
+
+    :param weight: the number on the wrapper.
+    :param unit: ``"gsm"`` or ``"lb"``.
+    :param paper_type: which bulk to apply.
+    :param grade: the basis size, required for ``"lb"``.
+    :returns: the caliper in points.
+    :raises ValueError: an unknown unit, type or grade, or pounds with no
+        grade. A pound weight means nothing without its basis size: 20lb is
+        75gsm as bond and 54gsm as cover.
+    """
+    if unit not in ("gsm", "lb"):
+        raise ValueError(f"unknown weight unit {unit!r}: expected gsm or lb")
+    if unit == "lb":
+        if grade is None:
+            raise ValueError(
+                "a weight in pounds also needs a paper grade: 20lb is "
+                "75gsm as bond but 54gsm as cover. Expected one of "
+                f"{', '.join(sorted(GRADE_BASIS_SIZES_IN))}"
+            )
+        weight = gsm_from_pounds(weight, grade)
+    return caliper_pt_from_gsm(weight, paper_type)

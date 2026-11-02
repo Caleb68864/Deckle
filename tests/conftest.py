@@ -128,3 +128,86 @@ def cancel_autosave_timers():
         returns how many timers it cancelled.
     """
     return cancel_pending_autosave_timers
+
+
+@pytest.fixture
+def torn_write():
+    """The next file written under this context dies halfway through.
+
+    The output-durability tests share this rather than each keeping a copy,
+    because the copies went wrong together. Two doors have to be guarded:
+
+    - **Python's ``open``.** Both ``io.open`` and ``builtins.open``: they are
+      two names for the same behaviour and code reaches them differently, so
+      arming one leaves the other live.
+    - **``pikepdf.Pdf.save``.** pikepdf hands qpdf the file descriptor where
+      it can, so C++ does the writing and no Python ``write`` is ever called.
+      Wrapping the handle's ``write`` caught PDFs only for as long as pikepdf
+      happened to write through Python (10.12 did, 10.17 does not). Once it
+      stopped, the fault silently never fired, the "failed" export succeeded,
+      and the tests reported a durability bug that did not exist. The tear
+      happens *on whatever target
+      ``save`` was handed*, so a writer aimed straight at the user's file
+      still loses it; this is not the injection-at-the-serialiser mistake
+      that ``tests/test_cli_output_durability.py`` warns about.
+
+    **Leaving the context without a tear fails the test.** A fault that did
+    not fire proves nothing, and that is the failure this fixture must not be
+    able to have again: on a run where the PDF save slipped past, the
+    no-debris tests for ``export`` and ``dummy`` were passing without any
+    write having failed. A real kernel-level fault, with no patching at all,
+    is exercised by ``test_a_real_write_failure_keeps_the_previous_pdf``.
+    """
+    import builtins
+    import contextlib
+    import io
+
+    import pikepdf
+
+    real_io, real_builtin, real_save = io.open, builtins.open, pikepdf.Pdf.save
+
+    @contextlib.contextmanager
+    def armed():
+        fired = []
+
+        def die():
+            fired.append(True)
+            return OSError(28, "No space left on device")
+
+        def wrap(real):
+            def guarded(file, mode="r", *args, **kwargs):
+                handle = real(file, mode, *args, **kwargs)
+                if "w" in mode:
+                    write = handle.write
+
+                    def half_then_die(data):
+                        write(data[: len(data) // 2])
+                        handle.flush()
+                        raise die()
+
+                    handle.write = half_then_die
+                return handle
+            return guarded
+
+        def tearing_save(self, target, *args, **kwargs):
+            whole = io.BytesIO()
+            real_save(self, whole, *args, **kwargs)
+            half = whole.getvalue()[: len(whole.getvalue()) // 2]
+            if hasattr(target, "write"):
+                target.write(half)
+                target.flush()
+            else:
+                with real_builtin(target, "wb") as handle:
+                    handle.write(half)
+            raise die()
+
+        io.open, builtins.open = wrap(real_io), wrap(real_builtin)
+        pikepdf.Pdf.save = tearing_save
+        try:
+            yield
+        finally:
+            io.open, builtins.open = real_io, real_builtin
+            pikepdf.Pdf.save = real_save
+        assert fired, "torn_write never fired: nothing here tested a failed write"
+
+    return armed

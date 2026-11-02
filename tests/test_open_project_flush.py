@@ -55,7 +55,7 @@ import deckle.app.main as am
 import deckle.app.printer_query as pq
 pq.available_printer_names = lambda: []
 am.MainWindow.refresh_printers = (
-    lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
+    lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers([])
 )
 
 from dataclasses import replace
@@ -103,6 +103,9 @@ window.layout_panel.state = state
 # An edit the user has made and has not explicitly saved.
 state.mutate(lambda p: replace(p, pages=list(p.pages) + [p.pages[0]]))
 edited_pages = len(state.project.pages)
+
+from deckle.app.workers import run_inline
+window._job_runner = run_inline
 
 report = {
     "edited_pages": edited_pages,

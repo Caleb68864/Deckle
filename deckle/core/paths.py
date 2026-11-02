@@ -32,6 +32,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -230,6 +231,54 @@ def evict_oldest_files(directory: str | os.PathLike[str], keep: int,
             report("autosave_eviction_failed", exc, file_path)
 
 
+def _replacement_mode(target: Path) -> int:
+    """The permission bits a rewrite of ``target`` should end up with.
+
+    ``mkstemp`` creates its file ``0600``, and the rename carries those bits
+    onto the target, so a shared project or schedule became owner-only on
+    its next save (B34). An existing target keeps its own bits; a new one
+    gets what ``open(path, "w")`` would have given it.
+
+    Reading the umask means setting it and putting it back, because there is
+    no other way to ask. A thread creating a file inside that two-call window
+    gets the wrong bits, which is the worst it can do.
+
+    :param target: the file being replaced. It need not exist.
+    :returns: the mode to apply to the scratch file before the rename.
+    """
+    try:
+        return stat.S_IMODE(os.stat(target).st_mode)
+    except OSError:
+        current = os.umask(0)
+        os.umask(current)
+        return 0o666 & ~current
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush the directory entry a rename just created. POSIX only.
+
+    The name a rename publishes is directory metadata, and a crash before it
+    reaches the disk leaves the directory pointing at the old file. Windows
+    has no directory handle to sync. Best effort: the rename has already
+    returned, so a failure here must not report a completed save as lost.
+
+    :param directory: the directory the rename happened in.
+    :returns: nothing, and raises nothing.
+    """
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 @contextlib.contextmanager
 def atomic_output(path: str | os.PathLike[str]):
     """Yield a scratch path to write, renamed over ``path`` on success.
@@ -260,13 +309,30 @@ def atomic_output(path: str | os.PathLike[str]):
     os.close(fd)
     try:
         yield tmp_name
+        os.chmod(tmp_name, _replacement_mode(target))
         os.replace(tmp_name, target)
+        _fsync_directory(directory)
     except BaseException:
         try:
             os.unlink(tmp_name)
         except OSError:
             pass
         raise
+
+
+def move_over(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> None:
+    """Move ``source`` onto ``target``, replacing it if it exists.
+
+    The one sanctioned rename for a file this program did not just write.
+    ``os.replace`` and not ``os.rename``, which refuses an existing target on
+    Windows.
+
+    :param source: the file to move.
+    :param target: where it ends up.
+    :returns: nothing.
+    :raises OSError: the move fails; ``source`` is then still where it was.
+    """
+    os.replace(source, target)
 
 
 def write_text_atomic(path: str | os.PathLike[str], text: str, *,
@@ -320,7 +386,9 @@ def write_text_atomic(path: str | os.PathLike[str], text: str, *,
             # reach the platter ahead of the content it is renaming, and a
             # crash leaves the target pointing at a file of zeros.
             os.fsync(f.fileno())
+        os.chmod(tmp_name, _replacement_mode(target))
         os.replace(tmp_name, target)
+        _fsync_directory(directory)
     except BaseException:
         # Best-effort: the write already failed, and failing to clean up
         # after it must not replace the error that explains why.

@@ -37,7 +37,6 @@ import hashlib
 import json
 import logging
 import os
-import tempfile
 import time
 import uuid
 import dataclasses
@@ -47,7 +46,7 @@ from typing import Callable, Literal, Sequence
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.models import SheetPlan
-from deckle.core.paths import write_text_atomic
+from deckle.core.paths import data_dir, write_text_atomic
 from deckle.core.plan_digest import plan_digest
 from deckle.core.printing import PrintBackend, PrintPass, PrintResult, plan_passes
 from deckle.core.schema import StoredValueError, check_values
@@ -107,11 +106,20 @@ class StaleSessionError(Exception):
 
 
 def _state_dir() -> Path:
-    """The directory holding interrupted sessions' state files."""
+    """The directory holding interrupted sessions' state files.
+
+    Under :func:`deckle.core.paths.data_dir`, not the OS temp dir: on Linux
+    that is commonly tmpfs, emptied by the very power cut or panic a
+    resumable session exists to survive. Sessions a previous build left in
+    the temp dir are not read: it is world-writable on POSIX, and those files
+    decide what gets printed (see ``docs/decisions.md``).
+
+    :returns: the directory, which may not exist yet.
+    """
     override = os.environ.get("DECKLE_SESSION_STATE_DIR")
     if override:
         return Path(override)
-    return Path(tempfile.gettempdir()) / "deckle" / "print_sessions"
+    return data_dir("print_sessions")
 
 
 def _hash_plan(plan: SheetPlan) -> str:
@@ -523,8 +531,8 @@ class PrintSession:
         """Where this session's state file lives.
 
         :returns: ``<state dir>/<session_id>.json``. The directory is
-            ``DECKLE_SESSION_STATE_DIR`` when set, otherwise a
-            ``deckle/print_sessions`` folder under the OS temp dir.
+            ``DECKLE_SESSION_STATE_DIR`` when set, otherwise
+            ``print_sessions`` under :func:`deckle.core.paths.data_dir`.
         """
         return _state_dir() / f"{self._state.session_id}.json"
 
@@ -555,7 +563,18 @@ class PrintSession:
         current = self._current_pass()
         return current.reload_instruction if current else None
 
-    def _save(self) -> None:
+    def _save(self) -> bool:
+        """Persist the cursor, reporting a failure rather than raising it.
+
+        By the time this runs sheets are physically out, and the print dialog
+        calls ``start``, ``advance`` and ``resume`` with no ``try``, so an
+        unwritable directory was a traceback in front of someone holding a
+        stack of paper. It goes on :attr:`last_error` instead, beside any
+        printer error already there, and still stops the run.
+
+        :returns: whether the state reached the disk. A caller about to
+            submit more sheets must stop on ``False``.
+        """
         # Through the shared writer rather than a fourth hand-rolled
         # temp-and-rename. This one already had the rename, which is why a
         # failed save here always left the previous state parseable; what
@@ -569,13 +588,33 @@ class PrintSession:
         # behind whenever the write failed, one per failure, beside the
         # state it was meant to replace.
         path = self.state_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        write_text_atomic(path, json.dumps(self._state.to_json(), indent=2))
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_text_atomic(path, json.dumps(self._state.to_json(), indent=2))
+        except OSError as exc:
+            log_exception("session_state_save_failed", exc, path=str(path))
+            problem = (
+                f"this run's resume point could not be saved to {path} ({exc}). "
+                "Resuming would start from the last position that was saved, "
+                "so check the stack before you do."
+            )
+            self._last_error = (
+                f"{self._last_error}. Also: {problem}" if self._last_error else problem
+            )
+            return False
+        return True
 
     def _delete_state(self) -> None:
+        """Remove the finished run's state. The job is done, so never raises.
+
+        :returns: nothing. A leftover file is offered as resumable next time,
+            which the resume count answers, so it is logged and left.
+        """
         path = self.state_path
-        if path.exists():
-            path.unlink()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            log_exception("session_state_delete_failed", exc, path=str(path))
 
     # -- construction from disk ----------------------------------------------
 
@@ -919,7 +958,8 @@ class PrintSession:
         """
         self._state.test_first = False
         self._state.test_sheet_pending = False
-        self._save()
+        if not self._save():
+            return
         self._submit_chunk()
 
     def _submit_chunk(self) -> None:
@@ -954,7 +994,8 @@ class PrintSession:
 
         self._last_error = None
         self._state.sheet_cursor += len(chunk)
-        self._save()
+        if not self._save():
+            return
 
         if self._state.sheet_cursor >= len(pass_.sheet_order):
             self._advance_pass()
@@ -1021,7 +1062,8 @@ class PrintSession:
             return
         self._state.sheet_cursor = sheets_completed
         self._state.test_sheet_pending = False
-        self._save()
+        if not self._save():
+            return
         if self._state.sheet_cursor >= len(pass_.sheet_order):
             self._advance_pass()
         else:

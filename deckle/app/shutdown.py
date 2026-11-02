@@ -71,7 +71,9 @@ def live_threads(view) -> list:
     return threads
 
 
-def stop_background_work(views, timeout_ms: int = 5000) -> None:
+def stop_background_work(
+    views, timeout_ms: int = 5000, jobs=(), job_timeout_ms: int | None = None
+) -> None:
     """Cancel in-flight renders on ``views`` and wait for their threads.
 
     Nothing did this, so quitting mid-render left preview and thumbnail
@@ -93,6 +95,11 @@ def stop_background_work(views, timeout_ms: int = 5000) -> None:
         cancellation must not hang the quit -- a stuck thread is a worse
         outcome than an abandoned one, and the wait is bounded for that
         reason.
+    :param jobs: the :class:`deckle.app.workers.Job` objects the caller owns.
+        Not cancelled: they have no cancellation point, and an export the user
+        asked for is better finished than abandoned.
+    :param job_timeout_ms: how long to wait per job, defaulting to
+        ``timeout_ms``.
     :returns: nothing. Never raises: this runs while the app is closing,
         and an exception here would replace a clean exit with the crash it
         exists to prevent.
@@ -118,5 +125,14 @@ def stop_background_work(views, timeout_ms: int = 5000) -> None:
                             "shutdown_thread_timeout",
                             view=type(view).__name__,
                         )
+        except Exception as exc:  # pragma: no cover - defensive
+            log_exception("shutdown_wait_failed", exc)
+
+    for job in jobs:
+        try:
+            thread = job.thread
+            if thread is not None and thread.isRunning():
+                if not thread.wait(timeout_ms if job_timeout_ms is None else job_timeout_ms):
+                    log_event("shutdown_thread_timeout", view="job")
         except Exception as exc:  # pragma: no cover - defensive
             log_exception("shutdown_wait_failed", exc)

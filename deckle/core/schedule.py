@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 
 from deckle.core.marks import SEWING_MARGIN_PT
 from deckle.core.paper import creep_is_worth_reporting, creep_pt
-from deckle.core.models import LayoutSettings, SheetPlan
+from deckle.core.models import LayoutSettings, OutputPage, SheetPlan
 from deckle.core.printing import duplex_flip_edge
 from deckle.core.signatures import fold_reading_order
 
@@ -116,6 +116,8 @@ class Schedule:
         answer the exporter wrote into the PDF's ``/Duplex`` entry; see
         this module's "describes, never re-derives" rule.
     :ivar notes: advisories worth reading before cutting paper.
+    :ivar read_back: what each gathering reads once folded, from the fold
+        simulator. Empty when nothing is folded.
     """
 
     signatures: tuple[SignatureInstruction, ...]
@@ -129,11 +131,80 @@ class Schedule:
     spine_width_pt: tuple[float, float] | None = None
     duplex_flip_edge: str = "long"
     notes: tuple[str, ...] = field(default_factory=tuple)
+    read_back: tuple[tuple[int | None, ...], ...] = ()
 
     @property
     def signature_count(self) -> int:
         """How many gatherings the job breaks into."""
         return len(self.signatures)
+
+
+#: How many leading and trailing positions a read-back line shows before it
+#: elides. Both ends of a gathering are where a fold order goes wrong.
+READ_BACK_SHOWN = 8
+
+
+def read_back_order(plan: SheetPlan) -> tuple[tuple[int | None, ...], ...]:
+    """What each signature reads once folded and nested, one tuple per gathering.
+
+    :func:`~deckle.core.signatures.fold_reading_order` says which reading
+    position each physical slot lands in, by simulating the fold rather than
+    by re-evaluating ``saddle_order``. This looks up what the imposer actually
+    put in each slot. It therefore reports **source** page numbers, each
+    file's own, where the gathering table reports reader-facing positions: on
+    those, the same simulator would only ever count 1, 2, 3.
+
+    Never raises. The slot list and the simulator are two derivations of one
+    length, and a disagreement gives a short readout rather than killing a
+    schedule somebody asked for.
+
+    :param plan: the plan to read back.
+    :returns: 1-based source page numbers, ``None`` for a blank, in the order
+        a reader turns the leaves. ``()`` for a plan with no signatures.
+    """
+    if not plan.signatures:
+        return ()
+    slots = [
+        page
+        for sheet in plan.sheets
+        for side in (sheet.front, sheet.back)
+        if side is not None
+        for page in side.pages
+    ]
+    order = fold_reading_order(plan)
+    read: list[OutputPage | None] = [None] * len(order)
+    for slot_index, position in enumerate(order):
+        if slot_index < len(slots) and position < len(read):
+            read[position] = slots[slot_index]
+    numbers = tuple(
+        None if page is None or page.source_ref is None
+        else page.source_ref.page_index + 1
+        for page in read
+    )
+    gatherings: list[tuple[int | None, ...]] = []
+    start = 0
+    for signature in plan.signatures:
+        # Four pages per folio sheet, the same inference the simulator makes.
+        length = 4 * len(signature.sheet_indices)
+        gatherings.append(numbers[start : start + length])
+        start += length
+    return tuple(gatherings)
+
+
+def format_read_back(pages: tuple[int | None, ...]) -> str:
+    """One gathering's reading order, elided in the middle when long.
+
+    :param pages: one entry of :func:`read_back_order`.
+    :returns: the numbers, with ``blank`` for a blank.
+    """
+    def name(value: int | None) -> str:
+        return "blank" if value is None else str(value)
+
+    if len(pages) <= 2 * READ_BACK_SHOWN:
+        return "  ".join(name(p) for p in pages)
+    head = "  ".join(name(p) for p in pages[:READ_BACK_SHOWN])
+    tail = "  ".join(name(p) for p in pages[-READ_BACK_SHOWN:])
+    return f"{head}  ...  {tail}"
 
 
 def _page_numbers(
@@ -359,6 +430,7 @@ def build_schedule(plan: SheetPlan, settings: LayoutSettings) -> Schedule:
         spine_width_pt=spine_width_pt(len(plan.sheets), settings.paper_thickness_pt),
         duplex_flip_edge=duplex_flip_edge(plan.paper_pt),
         notes=tuple(notes),
+        read_back=read_back_order(plan),
     )
 
 
@@ -560,6 +632,23 @@ def format_schedule_text(schedule: Schedule, title: str | None = None) -> str:
             )
         else:
             lines.append("  No sewing stations were marked.")
+        lines.append("")
+
+    if schedule.read_back:
+        lines.append("READ IT BACK")
+        lines.append("-" * len("READ IT BACK"))
+        lines.append("  Folded and nested as above, each gathering reads out in this")
+        lines.append("  order, by the page numbers in the source file. If it is not")
+        lines.append("  the order you expect, stop here.")
+        lines.append("")
+        for index, pages in enumerate(schedule.read_back, start=1):
+            lines.append(f"    signature {index}:  {format_read_back(pages)}")
+        lines.append("")
+        lines.append("  This is the fold simulator, not a measurement: it works the")
+        lines.append("  order out a second time from how the paper folds, rather than")
+        lines.append("  from the arithmetic that imposed the sheets. Two derivations")
+        lines.append("  that agree are worth having and are still not paper. Fold a")
+        lines.append("  numbered dummy before a real book -- deckle-cli dummy.")
         lines.append("")
 
     lines.append("AFTER SEWING")

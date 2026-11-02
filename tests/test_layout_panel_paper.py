@@ -200,3 +200,127 @@ def test_the_applied_size_survives_imposition():
     assert max(len(s.sheet_indices) for s in plan.signatures) <= (
         project.layout.sheets_per_signature
     )
+
+
+# -- F11: typing a size ------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    yield QApplication.instance() or QApplication([])
+
+
+def _custom_panel(answer):
+    """A panel whose ``Custom...`` dialog answers ``answer`` at once."""
+    from types import SimpleNamespace
+
+    from deckle.app.state import AppState
+    from deckle.app.views.layout_panel import LayoutPanel
+    from deckle.core.models import LayoutSettings, Project
+
+    asked = []
+
+    class _Dialog:
+        def __init__(self, paper, *, unit="in", parent=None):
+            asked.append((paper, unit))
+            self.widget = SimpleNamespace(exec=lambda: 0)
+            self.paper_pt = answer
+
+    state = AppState(
+        Project(
+            pages=[],
+            layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0, binding_edge="left"),
+            printer=None,
+        )
+    )
+    panel = LayoutPanel(state, custom_paper_dialog_cls=_Dialog)
+    panel.asked = asked
+    return panel
+
+
+def _entries(panel):
+    return [panel.paper_combo.itemText(i) for i in range(panel.paper_combo.count())]
+
+
+def test_the_custom_entry_applies_a_typed_size_as_one_undo_step(qapp):
+    panel = _custom_panel((500.0, 700.0))
+    before = panel.state.project
+    plans = []
+    panel.layout_changed.connect(plans.append)
+
+    panel.paper_combo.setCurrentText("Custom...")
+
+    assert panel.state.project.layout.paper == (500.0, 700.0)
+    assert panel.paper_combo.currentText() == "Custom (500 x 700pt)"
+    assert _entries(panel)[-1] == "Custom...", "the verb has to stay last"
+    assert len(plans) == 1
+    assert panel.asked == [((612.0, 792.0), panel._unit)]
+    panel.state.undo()
+    assert panel.state.project == before
+
+
+def test_cancelling_puts_the_combo_back_and_changes_nothing(qapp):
+    panel = _custom_panel(None)
+    before = panel.state.project
+
+    panel.paper_combo.setCurrentText("Custom...")
+
+    assert panel.state.project is before
+    assert panel.paper_combo.currentText() == "Letter"
+    assert len(panel.asked) == 1, "the dialog reopened on its own cancel"
+    assert not panel.state.can_undo
+
+
+def test_typing_a_presets_size_selects_the_preset(qapp):
+    panel = _custom_panel((595.28, 841.89))
+    panel.paper_combo.setCurrentText("Custom...")
+    assert panel.state.project.layout.paper == (595.28, 841.89)
+    assert panel.paper_combo.currentText() == "A4"
+
+
+def test_a_second_custom_size_replaces_the_first_entry(qapp):
+    panel = _custom_panel((500.0, 700.0))
+    panel.paper_combo.setCurrentText("Custom...")
+    panel.paper_combo.setCurrentText("Custom...")
+    assert sum(e.startswith("Custom (") for e in _entries(panel)) == 1
+
+
+def test_the_dialog_converts_values_and_ranges_together(qapp):
+    from deckle.app.views.custom_paper import CustomPaperDialog
+
+    dialog = CustomPaperDialog((612.0, 792.0), unit="in")
+    assert dialog.width_spin.value() == pytest.approx(8.5)
+
+    dialog.unit_combo.setCurrentText("mm")
+
+    assert dialog.width_spin.value() == pytest.approx(215.9, abs=0.001)
+    assert dialog.width_spin.maximum() == pytest.approx(14400.0 / 72 * 25.4, abs=0.01)
+
+    dialog.accept()
+    assert dialog.paper_pt[0] == pytest.approx(612.0, abs=0.01)
+
+
+def test_the_dialog_refuses_what_no_pdf_can_hold(qapp):
+    from deckle.app.views.custom_paper import CustomPaperDialog
+
+    dialog = CustomPaperDialog((612.0, 792.0), unit="pt")
+    dialog.width_spin.setRange(0.0, 100000.0)
+    dialog.width_spin.setValue(20000.0)
+
+    dialog.accept()
+
+    assert dialog.paper_pt is None
+    assert "must be between" in dialog.status_label.text()
+
+
+def test_the_flag_and_the_dialog_refuse_in_the_same_words():
+    import argparse
+
+    from deckle.cli.values import _parse_paper
+    from deckle.core.paper import paper_size_problem
+
+    with pytest.raises(argparse.ArgumentTypeError) as caught:
+        _parse_paper("1x1pt")
+    assert paper_size_problem((1.0, 1.0)) in str(caught.value)

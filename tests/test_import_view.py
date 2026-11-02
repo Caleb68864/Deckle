@@ -72,6 +72,7 @@ def test_a_successful_import_reports_the_page_count():
 
     view = ImportView(_state())
     _, worker = _worker(FIXTURE)
+    view._worker = worker
     view._on_finished(worker)
 
     assert "2 page(s)" in view.status_label.text()
@@ -85,6 +86,7 @@ def test_a_successful_import_emits_pages_and_warnings():
     view.imported.connect(lambda pages, warnings: seen.append((len(pages), warnings)))
 
     _, worker = _worker(FIXTURE)
+    view._worker = worker
     view._on_finished(worker)
 
     assert seen and seen[0][0] == 2
@@ -146,6 +148,7 @@ def test_a_failed_import_says_so_rather_than_claiming_zero_pages():
 
     view = ImportView(_state())
     _, worker = _worker(os.path.join(os.path.dirname(__file__), "does-not-exist.pdf"))
+    view._worker = worker
     view._on_finished(worker)
 
     text = view.status_label.text()
@@ -162,6 +165,7 @@ def test_a_failed_import_emits_failed_and_not_imported():
     view.imported.connect(lambda pages, warnings: successes.append(pages))
 
     _, worker = _worker(os.path.join(os.path.dirname(__file__), "missing.pdf"))
+    view._worker = worker
     view._on_finished(worker)
 
     assert failures and not successes
@@ -176,7 +180,7 @@ def test_a_failed_import_leaves_the_project_untouched(tmp_path):
     state, worker = _worker(str(bad))
 
     assert worker.error is not None
-    assert state.project.pages == []
+    assert state.project.pages == ()
 
 
 def test_import_failures_are_recorded_in_the_diagnostic_log(tmp_path, monkeypatch):
