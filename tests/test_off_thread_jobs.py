@@ -219,13 +219,13 @@ os._exit(0)
 '''
 
 
-def test_the_real_window_stays_alive_through_a_save(tmp_path):
+def test_the_real_window_stays_alive_through_a_save(tmp_path, probe_env):
     result = subprocess.run(
         [sys.executable, "-c", PROBE, FIXTURE, str(tmp_path / "out.pdf")],
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": REPO_ROOT},
+        env=probe_env,
     )
     lines = [ln for ln in result.stdout.splitlines() if ln.startswith("REPORT ")]
     assert lines, result.stdout + result.stderr
@@ -551,13 +551,13 @@ os._exit(0)
 '''
 
 
-def test_the_real_window_opens_a_project_through_a_real_thread(tmp_path):
+def test_the_real_window_opens_a_project_through_a_real_thread(tmp_path, probe_env):
     result = subprocess.run(
         [sys.executable, "-c", OPEN_PROBE, _saved_project(tmp_path)],
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": REPO_ROOT},
+        env=probe_env,
     )
     lines = [ln for ln in result.stdout.splitlines() if ln.startswith("REPORT ")]
     assert lines, result.stdout + result.stderr

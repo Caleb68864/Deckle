@@ -238,7 +238,7 @@ os._exit(0)
 '''
 
 
-def test_the_real_window_notices_a_printer_with_print_greyed_out():
+def test_the_real_window_notices_a_printer_with_print_greyed_out(probe_env):
     """Launch, turn the printer on, come back: no click was possible, because
     the only control that used to re-check is the one that is disabled."""
     result = subprocess.run(
@@ -246,7 +246,7 @@ def test_the_real_window_notices_a_printer_with_print_greyed_out():
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, "QT_QPA_PLATFORM": "offscreen", "PYTHONPATH": REPO_ROOT},
+        env=probe_env,
     )
     lines = [ln for ln in result.stdout.splitlines() if ln.startswith("REPORT ")]
     assert lines, result.stdout + result.stderr

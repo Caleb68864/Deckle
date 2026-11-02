@@ -125,6 +125,13 @@ against a real printer.
 
 ### Fixed
 
+- Importing the same image folder again reuses the stored PDF. The stored file's name
+  depended on the time of the import, so each later import kept another full copy.
+  Copies already in the store are left alone.
+- Three real-window tests no longer hang CI at random. Their subprocess shared the
+  suite's data directory, so an autosave left there by an earlier test opened the
+  recovery prompt with nobody to answer it. The app itself did not change.
+
 - Print-session state moved out of the temp dir, which on Linux does not survive
   the crash it is kept for. A state file that cannot be written now stops the
   run with a message rather than a traceback.

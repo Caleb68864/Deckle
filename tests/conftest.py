@@ -28,9 +28,13 @@ inside a test wins for the duration of that test, and
 ``tests/test_app_directories.py``, which is *about* these variables,
 deletes them itself.
 
-Out-of-process probes are not covered by this -- a subprocess inherits the
-parent's environment, so it would land in this same scratch root, which is
-fine, but each one sets its own anyway so that its store is empty.
+Out-of-process probes are not covered by this. A subprocess inherits the
+parent's environment and so lands in this same scratch root, which is shared
+with every test in the run. An autosave debounce that fires before its test
+ends leaves a recovery file there, and a probe's ``MainWindow()`` then blocks
+for good in the modal prompt offering it back. So a probe takes its own data
+root, through :func:`probe_env` or by hand, and
+``tests/test_probes_own_their_store.py`` holds every probe to that.
 """
 
 from __future__ import annotations
@@ -42,6 +46,8 @@ import tempfile
 import threading
 
 import pytest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _SCRATCH_HOME = tempfile.mkdtemp(prefix="deckle-tests-home-")
 
@@ -128,6 +134,25 @@ def cancel_autosave_timers():
         returns how many timers it cancelled.
     """
     return cancel_pending_autosave_timers
+
+
+@pytest.fixture
+def probe_env(tmp_path):
+    """The environment for a subprocess that opens a real window.
+
+    Its data root is its own, so its recovery store is empty whatever else ran
+    first. See the module docstring for the hang this prevents.
+
+    :returns: a copy of ``os.environ`` with the probe's settings applied.
+    """
+    data_root = str(tmp_path / "probe-data")
+    return {
+        **os.environ,
+        "QT_QPA_PLATFORM": "offscreen",
+        "PYTHONPATH": REPO_ROOT,
+        "XDG_DATA_HOME": data_root,
+        "APPDATA": data_root,
+    }
 
 
 @pytest.fixture
