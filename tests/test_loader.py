@@ -440,3 +440,17 @@ def test_a_repeat_import_lands_on_the_same_file(tmp_path, monkeypatch):
     )
     second = loader.load_image_dir(str(folder))
     assert first[0].ref.path == second[0].ref.path
+
+
+def test_a_repeat_import_a_moment_later_lands_on_the_same_file(tmp_path):
+    """The name came from PDFs stamped with the time, so it only repeated
+    within one second: a later import stored the whole book again, for good."""
+    import time
+
+    from deckle.core import loader
+
+    folder = _image_folder(tmp_path, 2)
+    first = loader.load_image_dir(str(folder))[0].ref.path
+    time.sleep(1.1)
+    second = loader.load_image_dir(str(folder))[0].ref.path
+    assert first == second

@@ -16,6 +16,7 @@ reboot.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import io
 import os
@@ -80,6 +81,14 @@ def import_store_dir() -> str:
     :returns: the directory. Nothing is created; the writer makes it.
     """
     return str(data_dir(_IMPORT_STORE_DIR_NAME))
+
+
+_NORMALISED_PDF_DATE = datetime.datetime(2000, 1, 1, tzinfo=datetime.timezone.utc)
+"""The date written into every per-image PDF.
+
+Their bytes name the file in the import store, so they must not depend on when
+the import ran: img2pdf would otherwise stamp the current time. Only the page
+objects reach the merged PDF, so nobody reads this value."""
 
 
 def _import_key(per_image_pdfs: Iterable[bytes]) -> str:
@@ -676,7 +685,14 @@ def _single_image_pdf_or_raise(
 
 
 def _single_image_pdf_bytes(image_path: str, dpi: tuple[float, float] | None) -> bytes:
-    kwargs = {"rotation": img2pdf.Rotation.ifvalid}
+    # The internal engine because the pikepdf one writes a different /ID on every
+    # call even with the dates fixed, and these bytes name the stored file.
+    kwargs = {
+        "rotation": img2pdf.Rotation.ifvalid,
+        "engine": img2pdf.Engine.internal,
+        "creationdate": _NORMALISED_PDF_DATE,
+        "moddate": _NORMALISED_PDF_DATE,
+    }
     if dpi is None:
         # No usable DPI metadata: fit to a standard page instead of
         # inheriting img2pdf's silent 96.0 dpi default.

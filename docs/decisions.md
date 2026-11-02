@@ -1420,6 +1420,12 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
 - Watch: save before closing the sources. pikepdf reads pages lazily, and closing first loses content with no exception. `test_a_batched_merge_keeps_every_pages_content` reads the pixels back.
 - Commit: uncommitted, on `roadmap/2026-11-02`.
 
+## 2026-11-02 — The import store's name depended on the clock
+- Symptom: `test_a_repeat_import_lands_on_the_same_file` and its neighbour failed at random on CI, whenever two imports fell either side of a second. For a user, every later re-import of a folder kept another full copy in a store nothing prunes.
+- Cause: the key hashes img2pdf's per-image PDFs, which carry the current time and, from the pikepdf engine, a varying `/ID`.
+- Fix: the internal engine and a fixed date, so equal inputs give equal bytes. Hashing the source files instead was the alternative, but it would drop the key pass that the bounded-memory test holds to its shape.
+- Watch: files already in the store keep their old names. The first re-import after this change adds one more copy, and then repeats land on it.
+
 ## 2026-11-02 — F10 reports source pages, because reader positions would be a tautology
 - The spec reused "the gathering table's numbering", which B7 has since changed to reader position. On those numbers the simulator would count 1, 2, 3 whatever had happened, a reassuring line that could not fail. `read_back_order` looks up what the imposer put in each slot and reports the source page, so a skipped page shows as a gap and a wrongly folded plan shows as disorder. It says which numbers these are, and gives no verdict.
 - Commit: uncommitted, on `roadmap/2026-11-02`.
