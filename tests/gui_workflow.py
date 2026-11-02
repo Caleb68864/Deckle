@@ -41,6 +41,7 @@ def main(source_pdf: str, out_pdf: str) -> int:
 
     import deckle.app.main as app_main
     from deckle.app.views.arrange_view import ThumbnailWorker
+    from deckle.app.workers import run_inline
     from deckle.app.views.layout_panel import recompute_plan
     from deckle.core.loader import load_pdf
 
@@ -51,7 +52,7 @@ def main(source_pdf: str, out_pdf: str) -> int:
 
     printer_query.available_printer_names = lambda: []
     app_main.MainWindow.refresh_printers = (
-        lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
+        lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers([])
     )
 
     report: dict = {}
@@ -222,6 +223,7 @@ def main(source_pdf: str, out_pdf: str) -> int:
 
     saved_layout = window.state.project.layout
     reopened = app_main.MainWindow()
+    reopened._job_runner = run_inline
     report["reopened"] = reopened.open_project(project_path)
     restored = reopened.state.project.layout
     report["layout_survived_round_trip"] = (

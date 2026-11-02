@@ -43,11 +43,16 @@ from deckle.core.export import clear_sheet_cache
 from deckle.core.models import Project
 from deckle.core.cards import project_has_content, project_source_pages
 from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.app.workers import run_inline
+from deckle.core.paths import move_over
 from deckle.core.project_io import (
     NewerFormatAdvisory,
+    UnknownCardFieldsWarning,
+    UnknownLayoutFieldsWarning,
     PathOutsideRootsAdvisory,
     SourceChangedWarning,
     SourceMissingError,
+    check_project_sources,
     load_project,
 )
 # Aliased: this module has its own `save_project`, which is the window's
@@ -97,6 +102,10 @@ def refresh_recent_menu(window) -> None:
         menu.setEnabled(bool(paths))
     except Exception as exc:  # noqa: BLE001 -- convenience, never fatal
         log_exception("recent_menu_refresh_failed", exc)
+
+
+#: Appended to an autosave once it has been recovered from.
+RECOVERED_AUTOSAVE_SUFFIX = ".recovered"
 
 
 def confirm_discard(window, action: str) -> bool:
@@ -162,6 +171,13 @@ def recover_autosave_if_offered(window, path: str, project: Project) -> Project:
         log_exception("autosave_recovery_failed", exc, path=autosave_path)
         return project
     log_event("autosave_recovered", path=path, pages=len(recovered.pages))
+    # Moved aside, or the offer comes back on every open until the next edit
+    # rewrites it. Kept rather than deleted as a decline is: these edits were
+    # just called worth having, and this may be the wrong generation of them.
+    try:
+        move_over(autosave_path, autosave_path + RECOVERED_AUTOSAVE_SUFFIX)
+    except OSError as exc:  # noqa: BLE001 -- recovered already, never fatal
+        log_exception("autosave_archive_failed", exc, path=autosave_path)
     return recovered
 
 
@@ -284,6 +300,12 @@ def open_project(window, path: str) -> bool:
     source that still exists but has CHANGED is the dangerous one:
     nothing looks wrong, and imposing it would use content the user has
     never reviewed.
+
+    The file is read here and its sources are hashed off the GUI thread,
+    because that is seconds on a large scan set (B17). So on a real window the
+    return value means "it has started", and the rest happens in
+    :func:`_apply_loaded_project`. With ``run_inline``, the fallback for a
+    window with no event loop, it still means "it opened".
     """
     try:
         with warnings.catch_warnings(record=True) as caught:
@@ -294,8 +316,11 @@ def open_project(window, path: str) -> bool:
             # inside Deckle, which tells the user nothing they can act
             # on. The containment check still runs; only its rendering
             # changes.
-            project = load_project(path, allowed_roots=(os.path.dirname(path),))
+            project = load_project(
+                path, check_sources=False, allowed_roots=(os.path.dirname(path),)
+            )
         newer_format: str | None = None
+        dropped_fields: str | None = None
         for warning in caught:
             if issubclass(warning.category, PathOutsideRootsAdvisory):
                 log_event("project_source_outside_roots", path=path,
@@ -307,26 +332,91 @@ def open_project(window, path: str) -> bool:
                 # book four pages short with nothing to suggest it.
                 newer_format = str(warning.message)
                 log_event("project_newer_format", path=path, detail=newer_format)
-    except SourceMissingError as exc:
+            elif issubclass(
+                warning.category,
+                (UnknownLayoutFieldsWarning, UnknownCardFieldsWarning),
+            ):
+                # Settings this build dropped (B23). The newer-format message
+                # outranks it, being the explanation of the same loss.
+                dropped_fields = str(warning.message)
+                log_event("project_unknown_fields", path=path, detail=dropped_fields)
+    except Exception as exc:  # noqa: BLE001 -- reported, never a crash
+        _report_open_failure(window, path, exc)
+        return False
+
+    # Edits made while the sources are hashed were never offered a save.
+    started_from = getattr(window.state, "project", None)
+    outcome: list[bool] = []
+
+    def on_done(_result) -> None:
+        current = getattr(window.state, "project", None)
+        if current is not started_from and not window._confirm_discard(
+            "opening another project"
+        ):
+            window.status_bar.showMessage(f"Did not open {os.path.basename(path)}.")
+            outcome.append(False)
+            return
+        outcome.append(
+            _apply_loaded_project(window, path, project, newer_format or dropped_fields)
+        )
+
+    def on_error(exc: Exception) -> None:
+        _report_open_failure(window, path, exc)
+        outcome.append(False)
+
+    jobs = getattr(window, "_jobs", {})
+    # A second open while the first is still hashing wins.
+    previous = jobs.get("open")
+    if previous is not None:
+        previous.cancel.set()
+    window.status_bar.showMessage(f"Opening {os.path.basename(path)}...")
+    runner = getattr(window, "_job_runner", run_inline)
+    jobs["open"] = runner(
+        lambda _cancel: check_project_sources(project),
+        on_done,
+        on_error,
+        getattr(window, "window", None),
+    )
+    return outcome[0] if outcome else True
+
+
+def _report_open_failure(window, path: str, exc: Exception) -> None:
+    """Say why a project did not open.
+
+    :param window: the main window.
+    :param path: the project.
+    :param exc: what went wrong.
+    :returns: nothing.
+    """
+    if isinstance(exc, SourceMissingError):
         window.status_bar.showMessage(
             f"Cannot open {os.path.basename(path)}: a source file is "
             f"missing -- {exc.expected_path}."
         )
         log_exception("project_source_missing", exc, path=path)
-        return False
-    except SourceChangedWarning as exc:
+    elif isinstance(exc, SourceChangedWarning):
         window.status_bar.showMessage(
             f"Cannot open {os.path.basename(path)}: {os.path.basename(exc.path)} "
             "has changed since the project was saved. Re-import it to "
             "accept the new version."
         )
         log_exception("project_source_changed", exc, path=path)
-        return False
-    except Exception as exc:  # noqa: BLE001 -- reported, never a crash
+    else:
         window.status_bar.showMessage(f"Cannot open {os.path.basename(path)}: {exc}")
         log_exception("project_open_failed", exc, path=path)
-        return False
 
+
+def _apply_loaded_project(window, path: str, project, advisory: str | None) -> bool:
+    """Swap a project whose sources have checked out into the window.
+
+    GUI thread only.
+
+    :param window: the main window.
+    :param path: the project.
+    :param project: what was loaded from it.
+    :param advisory: a load warning that outranks the page count, or ``None``.
+    :returns: ``True``.
+    """
     loaded = project
     project = window._recover_autosave_if_offered(path, project)
     recovered = project is not loaded
@@ -384,8 +474,8 @@ def open_project(window, path: str) -> bool:
     # news, and it is news about whether the thing on screen is the book
     # they saved.
     window.status_bar.showMessage(
-        newer_format
-        if newer_format
+        advisory
+        if advisory
         else (f"Opened {os.path.basename(path)} -- {len(project.card_deck.cards)} card(s)." if project.kind == "cards" else f"Opened {os.path.basename(path)} -- {len(project.pages)} page(s).")
     )
     log_event("project_opened", path=path, pages=len(project.pages))

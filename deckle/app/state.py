@@ -336,7 +336,7 @@ def make_blank_page(paper_pt: tuple[float, float]) -> SourcePage:
 def reorder_pages(project: Project, old_index: int, new_index: int) -> Project:
     """Move the page at ``old_index`` to ``new_index``, in place order.
 
-    Operates purely on ``project.pages`` (a plain ``list[SourcePage]``) --
+    Operates purely on ``project.pages`` (a ``tuple[SourcePage, ...]`` of plain value objects) --
     never touches a PDF page-tree.
 
     **Not the drag-and-drop path.** The grid uses

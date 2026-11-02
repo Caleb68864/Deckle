@@ -1393,3 +1393,62 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
   change compares answers instead it will report every correct calibration as
   a disagreement.
 - Commit: this commit. The Qt shell is next and still unbuilt.
+
+## 2026-11-02 — B30: the spec's re-check could never run in the case it was for
+- Symptom: printers were enumerated once, so a printer turned on after launch was not seen until a restart.
+- Fix: a quiet `refresh_printers` on show, on window activation, on opening a menu, and on a Print click. Its answer goes through `_apply_requeried_printers`, which does nothing when nothing changed and nothing when the spooler missed its deadline.
+- Why not the spec: it re-checks on show and on click. Print is disabled with no printers, so the click never arrives in the very case the row describes, and its `[HUMAN]` acceptance could not have passed. It also said overlapping refreshes are safe; with a trigger as frequent as activation they are not, because each abandoned query leaves a thread parked in the spooler. `worker_finished` coalesces them, even past the deadline.
+- Watch: `_apply_printers` re-resolves the profile for the preselected printer. Calling it on every focus change would silently undo the printer chosen in the Print dialog.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — B13: superseding is right for a replace and wrong for an add
+- Symptom: two quick imports applied in completion order; an import running while a project opened mutated a state nothing reads and announced its pages; quitting mid-import ran pdfium into teardown.
+- Fix: the spec's cancel token, checked before the mutation on the worker thread, plus `import_view` on the shutdown list. `ImportView.state` became a property whose setter abandons the running import, because four paths assign it and a call at each is a list to fall behind.
+- Why not the spec: it predates B40. An adding import that cancelled the one before would silently lose pages the user also asked to keep, so an add queues and a replace supersedes.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — B27: not reading the sessions a previous build left in the temp dir
+- Symptom: the file that exists to survive a crash lived in tmpfs; `_save` raised into a dialog with no `try`, in front of someone holding paper.
+- Fix: `data_dir("print_sessions")`. A failed save goes on `last_error` and still stops the run.
+- Decision: nothing migrates or reads old state files. The temp dir is world-writable on POSIX and these files decide what is printed.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — B33: the content-addressed store means converting each image twice
+- Symptom: the whole-file hash ran under the process-wide pdfium lock; every image's PDF bytes were held at once.
+- Fix: hash outside the guard; generators and batched merging.
+- Why not the spec: the store landed after it was written, and its name is a digest of every page, needed before the merge so a repeat import can skip it. Rather than hold the list between the two, each image is converted once for the key and once for the merge. img2pdf embeds rather than re-encodes, so that is I/O and not a re-render.
+- Watch: save before closing the sources. pikepdf reads pages lazily, and closing first loses content with no exception. `test_a_batched_merge_keeps_every_pages_content` reads the pixels back.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — F10 reports source pages, because reader positions would be a tautology
+- The spec reused "the gathering table's numbering", which B7 has since changed to reader position. On those numbers the simulator would count 1, 2, 3 whatever had happened, a reassuring line that could not fail. `read_back_order` looks up what the imposer put in each slot and reports the source page, so a skipped page shows as a gap and a wrongly folded plan shows as disorder. It says which numbers these are, and gives no verdict.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — B17: everything off the GUI thread but print
+- Fix: `app/workers.py` (`Job`, `run_in_thread`, `run_inline`). Save PDF, single-pass export, Auto-crop and Open project's source hashing use it.
+- Deliberately not done: print submission holds the paper, its modal prompts would have to cross threads, and it cannot be proved without a printer. The row stays partial and says so.
+- Why not the spec for Open project: it moves `load_project` to a worker and records `catch_warnings` as a tolerable hazard. Splitting the hash out as `check_project_sources` avoids the hazard: the file is read, and warned about, on the GUI thread, and the worker only hashes. The save prompt comes before the job, so edits made during it would be replaced unasked; those get the prompt again.
+- Choices: an export has no cancellation point, so a second is refused rather than superseded, and closing waits up to two minutes rather than abandoning a file somebody asked for. `LayoutPanel` already uses `_worker`/`_thread` for the composite, so Auto-crop has its own attribute and is found through the widget's children. A measurement of a document that changed meanwhile is dropped.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — F2 Phase 4: the wizard's screens, and what it leaves alone
+- Built `app/views/calibration_wizard.py` over `calibration_flow`. A plain dialog rather than a `QWizard`, so it drives headlessly; on the File menu, because F1's editor, the spec's entry point, does not exist.
+- No reading is preselected: a default is an answer the operator did not give, and this is the record of what they saw.
+- The wizard does not ask for the registration offsets, so saving carries the stored ones over. Zeroing them would destroy a hand measurement as a side effect of a question about something else.
+- Phase 5 is not done and an agent must not do it. Nothing here has been confirmed on paper, and the README and GUIDE say so.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — Smaller closures, each per its spec
+- B23: no allow-list on load warnings. B28: a non-text `printer` is refused. B32: crop in `actual_margins_pt`, rotation on a blank, `dpi` in the ink key. B34: writers keep the target's mode and fsync the directory. B35: its remaining clauses. M5: `PAPER_SIZES`. F5: six CLI flags. F6: the Sheets box. F11: Custom.... F12 §A: `--signature`, `--split`.
+- Also added `paths.move_over`, because `test_only_paths_replaces_a_file_in_place` reserves `os.replace` for that module.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — F1: typing an offset does not un-measure a calibration
+- Built `app/views/profile_editor.py`, from **Edit profile...** in the Print dialog.
+- Why not the spec: it always writes `calibration_version=0`, written before the wizard existed. The wizard measures the four behaviours and neither the border nor the offsets, so the expected next step after calibrating is typing the offset in, and that must not erase the only field saying a target was printed. Version and timestamp now survive unless one of the four behaviours is overruled.
+- Watch: `calibration_version` means "these four behaviours were measured". It says nothing about the offset or the border.
+- Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-02 — M8: coerce in the dataclass, not at fifty call sites
+- `SheetPlan`, `Project`, `PrintPass` and `PreviewFrame` declare tuples and coerce in `__post_init__`, because the next caller to pass a list would otherwise simply be today's situation again. No production code relied on the mutability; the fallout was 25 tests comparing against a list or writing into `project.pages[:]`, and seven of those were using the exact shared mutation this forbids to set up their fixtures.
+- Commit: uncommitted, on `roadmap/2026-11-02`.

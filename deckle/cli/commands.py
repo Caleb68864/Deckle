@@ -24,6 +24,7 @@ import dataclasses
 import json
 import os
 import sys
+from pathlib import Path
 import warnings
 
 from deckle.core.diagnostics import log_event, log_exception
@@ -45,14 +46,12 @@ from deckle.core.card_layout import card_grid, impose_cards
 from deckle.core.cards import active_copy_count, card_output_problems, project_source_pages
 from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.paper import (
-    GRADE_BASIS_SIZES_IN, caliper_pt_from_gsm, gsm_from_pounds,
+    GRADE_BASIS_SIZES_IN, caliper_from_weight,
 )
 from deckle.core.paths import atomic_output, write_text_atomic
 from deckle.core.printing import pass_export, plan_passes
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile, saved_profiles
 from deckle.core.project_io import (
-    NewerFormatAdvisory,
-    PathOutsideRootsAdvisory,
     SourceChangedWarning,
     SourceMissingError,
     load_project,
@@ -95,6 +94,7 @@ def _paper_thickness_from_args(args) -> float:
             "sensible rule for which one wins"
         )
     value, unit = weight
+    grade = None
     if unit == "lb":
         grade = getattr(args, "paper_grade", None)
         if grade is None:
@@ -104,8 +104,7 @@ def _paper_thickness_from_args(args) -> float:
                 "as bond but 54gsm as cover. Expected one of "
                 + ", ".join(sorted(GRADE_BASIS_SIZES_IN))
             )
-        value = gsm_from_pounds(value, grade)
-    return caliper_pt_from_gsm(value, args.paper_type)
+    return caliper_from_weight(value, unit, args.paper_type, grade)
 
 
 
@@ -176,14 +175,13 @@ def _load_project_or_report(path: str) -> Project | None:
             # renders a bare warning with a file and line number that points
             # at Deckle rather than at anything the user did.
             project = load_project(path, allowed_roots=(os.getcwd(),))
+        # Every one of them, not chosen classes (B23): `catch_warnings`
+        # suppresses whatever it records, so a filter here is a filter on
+        # what the user may find out, and it hid the warning that says this
+        # file carries settings this build dropped. stderr, not stdout:
+        # `--json` promises stdout carries the JSON document and nothing else.
         for warning in caught:
-            if issubclass(warning.category, PathOutsideRootsAdvisory):
-                print(f"note: {warning.message}", file=sys.stderr)
-            elif issubclass(warning.category, NewerFormatAdvisory):
-                # stderr, not stdout: `--json` promises stdout carries the
-                # JSON document and nothing else, and a note that broke
-                # that would break every script that parses it.
-                print(f"note: {warning.message}", file=sys.stderr)
+            print(f"note: {warning.message}", file=sys.stderr)
         return project
     except SourceMissingError as exc:
         print(
@@ -437,6 +435,15 @@ def _build_layout_settings(args: argparse.Namespace) -> LayoutSettings:
         paper=paper,
         gutter_pt=args.gutter,
         binding_edge=args.binding_edge,
+        margin_top_pt=args.margin_top_pt,
+        margin_bottom_pt=args.margin_bottom_pt,
+        margin_outer_pt=args.margin_outer_pt,
+        slack_to=args.slack_to,
+        # The flag is the negative because store_true cannot clear a
+        # default-True field, and a store_false flag would never be reported
+        # as ignored against a .deckle source.
+        start_on_recto=not args.start_on_verso,
+        landscape_policy=args.landscape_policy,
         fold_scheme=args.fold_scheme,
         sheets_per_signature=args.sheets_per_signature,
         blank_mode=args.blank_mode,
@@ -653,6 +660,123 @@ def _impose_or_report(pages, settings):
 
 
 
+def _signature_sheets(plan, args: argparse.Namespace) -> list[int] | None:
+    """The sheet indices ``--signature`` names, refusing what it cannot mean.
+
+    1-based, unlike ``--sheets``, because it names the number printed on the
+    schedule in front of the binder.
+
+    :param plan: the imposed plan.
+    :param args: the parsed arguments.
+    :returns: the indices, or ``None`` when a message has been printed.
+    """
+    total = len(plan.signatures)
+    if not 1 <= args.signature <= total:
+        print(
+            f"error: no signature {args.signature} in this document -- it has "
+            f"{total}, numbered 1 to {total}.",
+            file=sys.stderr,
+        )
+        return None
+    return list(plan.signatures[args.signature - 1].sheet_indices)
+
+
+def _signature_request_problem(plan, args: argparse.Namespace) -> str | None:
+    """Why ``--signature``/``--split`` cannot be honoured, or ``None``.
+
+    :param plan: the imposed plan.
+    :param args: the parsed arguments.
+    :returns: the refusal, without its ``error:`` prefix.
+    """
+    if args.signature is None and not args.split:
+        return None
+    if args.signature is not None and args.split:
+        return (
+            "give either --signature or --split, not both: one writes a chosen "
+            "gathering, the other writes all of them."
+        )
+    if args.sheets is not None:
+        chosen = "--signature" if args.signature is not None else "--split"
+        return f"give either --sheets or {chosen}, not both."
+    if not plan.signatures:
+        return (
+            "this document has no signatures -- add --fold-scheme folio, or "
+            "use --sheets to pick sheets."
+        )
+    return None
+
+
+def _split_paths(output: str, count: int) -> list[str]:
+    """The file for each signature under ``--split``.
+
+    :param output: the ``-o`` value.
+    :param count: how many signatures.
+    :returns: ``<stem>-sig-NN<suffix>``, zero-padded so ``ls`` sorts them.
+    """
+    path = Path(output)
+    return [
+        str(path.with_name(f"{path.stem}-sig-{n:02d}{path.suffix}"))
+        for n in range(1, count + 1)
+    ]
+
+
+def _export_split(plan, args, profile, back_offset, offset_source) -> int:
+    """Write every signature to its own file.
+
+    Every path is checked before the first is written, so a run that would
+    fail on file 9 of 17 fails before file 1.
+
+    :param plan: the imposed plan.
+    :param args: the parsed arguments.
+    :param profile: the printer profile, for ``--pass``.
+    :param back_offset: the registration correction.
+    :param offset_source: where that correction came from.
+    :returns: a process exit code.
+    """
+    paths = _split_paths(args.output, len(plan.signatures))
+    for path in paths:
+        if report._report_output_problem(path, args.source):
+            return 1
+    print_pass = None
+    for path, signature in zip(paths, plan.signatures):
+        selection = list(signature.sheet_indices)
+        side = None
+        rotate_180 = False
+        if args.pass_side is not None:
+            print_pass = pass_export(plan, profile, args.pass_side, selection)
+            side = args.pass_side
+            selection = print_pass.sheets
+            rotate_180 = print_pass.rotate_180
+        if getattr(args, "dry_run", False):
+            report._report_export_dry_run(
+                argparse.Namespace(**{**vars(args), "output": path}),
+                plan, selection, side, rotate_180, back_offset, offset_source, print_pass,
+            )
+            continue
+        try:
+            export_plan(
+                plan, path, sheets=selection, rule=args.rule, side=side,
+                rotate_180=rotate_180, back_offset_pt=back_offset,
+            )
+        except OSError as exc:
+            report._report_write_failure(path, exc)
+            return 1
+        except ValueError as exc:
+            print(f"error: cannot write {path}: {exc}", file=sys.stderr)
+            log_exception("export_failed", exc, path=path)
+            return 1
+        print(f"wrote {path}")
+    if getattr(args, "dry_run", False):
+        return 0
+    if back_offset != (0.0, 0.0):
+        report._report_registration(back_offset, offset_source)
+    if print_pass is not None:
+        print(print_pass.reload_instruction)
+    if args.rule:
+        report._report_rule(plan.paper_pt[0])
+    return 0
+
+
 def _cmd_export(args: argparse.Namespace) -> int:
     if report._report_output_problem(args.output, args.source):
         return 1
@@ -669,11 +793,20 @@ def _cmd_export(args: argparse.Namespace) -> int:
         return 1
     report._emit_warnings(pages, plan)
 
+    problem = _signature_request_problem(plan, args)
+    if problem is not None:
+        print(f"error: {problem}", file=sys.stderr)
+        return 1
+
     selection = args.sheets
     if selection is not None and report._report_missing_sheets(
         plan, selection, len(plan.sheets)
     ):
         return 1
+    if args.signature is not None:
+        selection = _signature_sheets(plan, args)
+        if selection is None:
+            return 1
 
     side = None
     rotate_180 = False
@@ -712,6 +845,9 @@ def _cmd_export(args: argparse.Namespace) -> int:
     if args.back_offset is not None:
         back_offset = args.back_offset
         offset_source = "--back-offset"
+
+    if args.split:
+        return _export_split(plan, args, profile, back_offset, offset_source)
 
     if getattr(args, "dry_run", False):
         report._report_export_dry_run(
@@ -839,15 +975,17 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
         if card_project is None: return 1
         if card_project is not _NOT_CARD_PROJECT:
             print("error: binding schedules are not available for card decks", file=sys.stderr); return 1
-        resolved = _resolve_input(args)
-        if resolved is None:
-            return 1
-        pages, settings = resolved
-
+        # Before the source is loaded: `_resolve_input` hashes the document,
+        # and a bad output path is knowable before that starts.
         if args.output is not None and report._report_output_problem(
             args.output, args.source
         ):
             return 1
+
+        resolved = _resolve_input(args)
+        if resolved is None:
+            return 1
+        pages, settings = resolved
 
         plan = _impose_or_report(pages, settings)
         if plan is None:

@@ -274,3 +274,44 @@ def test_ink_bbox_with_content_is_non_degenerate(tmp_path):
     x0, y0, x1, y1 = bbox
     assert x1 > x0
     assert y1 > y0
+
+
+# -- B32 -----------------------------------------------------------------------
+
+
+def test_the_ink_cache_answers_per_resolution(monkeypatch):
+    """A re-measure at a higher dpi must not hand back the coarse answer."""
+    from PIL import Image
+
+    from deckle.core.models import SourceRef
+
+    asked = []
+
+    def _raster(ref, dpi):
+        asked.append(dpi)
+        image = Image.new("RGB", (100, 100), "white")
+        image.paste("black", (10, 10, 20 if dpi == 12 else 30, 20))
+        return image
+
+    monkeypatch.setattr(render, "_rasterize_for_bbox", _raster)
+    ref = SourceRef(path="a.pdf", page_index=0, sha256="a", width_pt=100.0, height_pt=100.0)
+
+    coarse = render.ink_bbox(ref, dpi=12)
+    fine = render.ink_bbox(ref, dpi=48)
+    render.ink_bbox(ref, dpi=48)
+
+    assert coarse != fine
+    assert asked == [12, 48]
+
+
+@pytest.mark.parametrize(
+    "rotate_deg, expected",
+    [(0, (100, 200)), (90, (200, 100)), (180, (100, 200)), (270, (200, 100)), (360, (100, 200))],
+)
+def test_a_rotated_blank_thumbnail_turns_like_a_real_page(rotate_deg, expected):
+    from deckle.core.models import SourceRef
+
+    ref = SourceRef(path="", page_index=0, sha256="", width_pt=100.0, height_pt=200.0)
+    page = render._blank_thumbnail(ref, 72, rotate_deg=rotate_deg)
+    assert (page.width, page.height) == expected
+    assert len(page.rgba) == page.width * page.height * 4

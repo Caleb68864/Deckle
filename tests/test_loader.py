@@ -313,3 +313,130 @@ def test_a_repeat_import_leaves_the_stored_file_alone(tmp_path, monkeypatch):
 
     after = os.stat(stored)
     assert (after.st_ino, after.st_mtime) == (before.st_ino, before.st_mtime)
+
+
+# -- B33 -----------------------------------------------------------------------
+
+
+def test_the_pdfium_lock_is_free_while_the_file_is_hashed(monkeypatch):
+    """Every preview waits on that lock, and a hash is seconds on a big scan."""
+    import threading
+
+    from deckle.core import loader
+    from deckle.core.pdfium_lock import pdfium_guard
+
+    free = []
+    real = loader._sha256_file
+
+    def _probe():
+        # An RLock, so only another thread's answer means anything.
+        with pdfium_guard():
+            free.append(True)
+
+    def _hash(path):
+        probe = threading.Thread(target=_probe, daemon=True)
+        probe.start()
+        probe.join(2.0)
+        free.append(bool(free))
+        return real(path)
+
+    monkeypatch.setattr(loader, "_sha256_file", _hash)
+    pages = loader.load_pdf(os.path.join(os.path.dirname(__file__), "fixtures", "sample.pdf"))
+    assert len(pages) == 2
+    assert free[-1] is True, "the hash ran with the pdfium lock held"
+
+
+def _image_folder(tmp_path, count):
+    from PIL import Image
+
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    for i in range(count):
+        # Each a different size, so a page out of order or lost shows.
+        Image.new("RGB", (100 + i, 200), (i * 20, 0, 0)).save(
+            folder / f"{i:03}.png", dpi=(72, 72)
+        )
+    return folder
+
+
+def test_a_merge_holds_a_bounded_number_of_images(tmp_path, monkeypatch):
+    from deckle.core import loader
+
+    monkeypatch.setattr(loader, "_MERGE_BATCH_IMAGES", 3)
+    held = []
+    real = loader._flush_merge_batch
+
+    def _spy(merged, opened, directory):
+        held.append(len(opened))
+        return real(merged, opened, directory)
+
+    monkeypatch.setattr(loader, "_flush_merge_batch", _spy)
+
+    pages = loader.load_image_dir(str(_image_folder(tmp_path, 8)))
+
+    assert held == [3, 3]
+    assert [round(page.ref.width_pt) for page in pages] == [100 + i for i in range(8)]
+
+
+def test_a_batched_merge_keeps_every_pages_content(tmp_path, monkeypatch):
+    """Closing a source before saving loses its content and raises nothing."""
+    import pypdfium2 as pdfium
+
+    from deckle.core import loader
+
+    monkeypatch.setattr(loader, "_MERGE_BATCH_IMAGES", 2)
+    pages = loader.load_image_dir(str(_image_folder(tmp_path, 5)))
+
+    doc = pdfium.PdfDocument(pages[0].ref.path)
+    try:
+        reds = []
+        for i in range(5):
+            bitmap = doc[i].render(scale=1).to_pil().convert("RGB")
+            reds.append(bitmap.getpixel((10, 10))[0])
+    finally:
+        doc.close()
+    assert reds == [i * 20 for i in range(5)]
+
+
+def test_no_part_files_survive_a_merge(tmp_path, monkeypatch):
+    import os
+
+    from deckle.core import loader
+
+    monkeypatch.setattr(loader, "_MERGE_BATCH_IMAGES", 2)
+    pages = loader.load_image_dir(str(_image_folder(tmp_path, 5)))
+    store = os.path.dirname(pages[0].ref.path)
+    assert [n for n in os.listdir(store) if n.endswith(".part.pdf") or n.startswith("tmp")] == []
+
+
+def test_the_image_bytes_are_never_all_held_in_a_list(tmp_path, monkeypatch):
+    """The key pass and the merge each see a generator, not the whole folder."""
+    from deckle.core import loader
+
+    seen = []
+    real_key, real_merge = loader._import_key, loader._merge_image_pdfs
+    monkeypatch.setattr(
+        loader, "_import_key", lambda pdfs: (seen.append(type(pdfs).__name__), real_key(pdfs))[1]
+    )
+    monkeypatch.setattr(
+        loader,
+        "_merge_image_pdfs",
+        lambda pdfs, out: (seen.append(type(pdfs).__name__), real_merge(pdfs, out))[1],
+    )
+    loader.load_image_dir(str(_image_folder(tmp_path, 3)))
+    assert seen == ["generator", "generator"]
+
+
+def test_a_repeat_import_lands_on_the_same_file(tmp_path, monkeypatch):
+    """Batching must not change the content-addressed name."""
+    from deckle.core import loader
+
+    folder = _image_folder(tmp_path, 4)
+    first = loader.load_image_dir(str(folder))
+    monkeypatch.setattr(
+        loader,
+        "_merge_image_pdfs",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("merged again")),
+    )
+    second = loader.load_image_dir(str(folder))
+    assert first[0].ref.path == second[0].ref.path

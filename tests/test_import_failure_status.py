@@ -57,7 +57,7 @@ import deckle.app.printer_query as pq
 # is the status bar, which `_apply_printers` also writes.
 pq.available_printer_names = lambda: []
 am.MainWindow.refresh_printers = (
-    lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
+    lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers([])
 )
 
 message = sys.argv[1]

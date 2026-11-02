@@ -30,6 +30,46 @@ from deckle.core.outputs import describe_write_failure, output_path_problem
 from deckle.core.printing import pass_export
 from deckle.core.cards import project_has_content, project_source_pages, card_output_problems
 
+
+def _export_running(window) -> bool:
+    """Refuse a second export while one is writing.
+
+    The button is re-enabled by anything that syncs the document actions, and
+    an export has no cancellation point, so a second one would race the first
+    onto the disk.
+
+    :param window: the main window.
+    :returns: whether one is running, in which case the status bar says so.
+    """
+    job = window._jobs.get("export")
+    if job is None or job.thread is None:
+        return False
+    window.status_bar.showMessage("Still writing the last export -- try again when it finishes.")
+    return True
+
+
+def _start_export(window, fn, on_done, on_error) -> None:
+    """Run an export off the GUI thread, with Save PDF greyed out meanwhile.
+
+    :param window: the main window.
+    :param fn: writes the file.
+    :param on_done: called on the GUI thread once it has.
+    :param on_error: called on the GUI thread with what went wrong.
+    :returns: nothing.
+    """
+    def finish(deliver, *args):
+        window._sync_document_actions()
+        deliver(*args)
+
+    window.save_pdf_button.setEnabled(False)
+    window._jobs["export"] = window._job_runner(
+        lambda _cancel: fn(),
+        lambda _result: finish(on_done),
+        lambda exc: finish(on_error, exc),
+        window.window,
+    )
+
+
 def _output_ready(window) -> bool:
     project = window.state.project
     if not project_has_content(project): return False
@@ -92,6 +132,8 @@ def save_pdf_as(window) -> None:
         # save dialog for a document that does not exist.
         window.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
         return
+    if _export_running(window):
+        return
 
     sources = project_source_pages(window.state.project)
     start_dir = os.path.dirname(sources[0].ref.path) or os.getcwd() if sources else os.getcwd()
@@ -120,21 +162,24 @@ def save_pdf_as(window) -> None:
     plan = window.preview_view.plan
     sheets = len(plan.sheets)
     window.status_bar.showMessage(f"Exporting {sheets} sheet(s) to {os.path.basename(path)}...")
-    try:
-        export(plan, path)
-    except OSError as exc:
-        # The common failures are all OSError and all explainable: the
-        # file is open in a viewer, the drive went away, the disk is
-        # full. Anything else is a bug and should still surface as one.
-        message = describe_write_failure(path, exc)
-        window.status_bar.showMessage(message)
-        log_exception("output_write_failed", exc, path=path)
-        return
-    except Exception as exc:  # noqa: BLE001 -- surfaced, never swallowed
+
+    def on_error(exc: Exception) -> None:
+        if isinstance(exc, OSError):
+            # The common failures are all OSError and all explainable: the
+            # file is open in a viewer, the drive went away, the disk is
+            # full. Anything else is a bug and should still surface as one.
+            window.status_bar.showMessage(describe_write_failure(path, exc))
+            log_exception("output_write_failed", exc, path=path)
+            return
         window.status_bar.showMessage(f"Export failed: {exc}")
         log_exception("export_failed", exc, path=path)
-        return
-    window.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
+
+    _start_export(
+        window,
+        lambda: export(plan, path),
+        lambda: window.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}"),
+        on_error,
+    )
 
 
 def export_single_pass(window) -> None:
@@ -200,31 +245,42 @@ def export_single_pass(window) -> None:
         log_event("output_path_rejected", path=path, detail=problem)
         return
 
-    try:
-        export(
+    if _export_running(window):
+        return
+    window.status_bar.showMessage(
+        f"Exporting the {side} pass to {os.path.basename(path)}..."
+    )
+
+    def on_done() -> None:
+        window.status_bar.showMessage(
+            f"Saved the {side} pass ({len(export_pass.sheets)} sheet(s)) to "
+            f"{path} -- {export_pass.reload_instruction}"
+        )
+        log_event(
+            "pass_exported",
+            path=path,
+            side=side,
+            sheets=len(export_pass.sheets),
+        )
+
+    def on_error(exc: Exception) -> None:
+        if isinstance(exc, OSError):
+            window.status_bar.showMessage(describe_write_failure(path, exc))
+            log_exception("pass_write_failed", exc, path=path, side=side)
+            return
+        window.status_bar.showMessage(f"Export failed: {exc}")
+        log_exception("pass_export_failed", exc, path=path, side=side)
+
+    _start_export(
+        window,
+        lambda: export(
             plan,
             path,
             sheets=export_pass.sheets,
             side=export_pass.side,
             rotate_180=export_pass.rotate_180,
             back_offset_pt=export_pass.back_offset_pt,
-        )
-    except OSError as exc:
-        message = describe_write_failure(path, exc)
-        window.status_bar.showMessage(message)
-        log_exception("pass_write_failed", exc, path=path, side=side)
-        return
-    except Exception as exc:  # noqa: BLE001 -- surfaced, never swallowed
-        window.status_bar.showMessage(f"Export failed: {exc}")
-        log_exception("pass_export_failed", exc, path=path, side=side)
-        return
-    window.status_bar.showMessage(
-        f"Saved the {side} pass ({len(export_pass.sheets)} sheet(s)) to "
-        f"{path} -- {export_pass.reload_instruction}"
-    )
-    log_event(
-        "pass_exported",
-        path=path,
-        side=side,
-        sheets=len(export_pass.sheets),
+        ),
+        on_done,
+        on_error,
     )

@@ -403,7 +403,7 @@ def test_an_empty_document_gains_no_leading_filler():
     """A leading blank is a position for content. With no content there is
     nothing to position, and a one-sheet 'document' of pure filler is not
     an empty document."""
-    assert impose([], settings(start_on_recto=False)).sheets == []
+    assert impose([], settings(start_on_recto=False)).sheets == ()
 
 
 def test_even_page_counts_gain_no_filler():

@@ -59,7 +59,9 @@ def sewing_stations(
         tail, already sorted and de-duplicated by whoever accepted them.
         ``None`` falls back to even spacing; ``()`` returns no marks, the
         same as ``count <= 0``.
-    :returns: the station ticks, tail to head.
+    :returns: the station ticks, tail to head. On a sheet shorter than
+        ``2 * SEWING_MARGIN_PT``, evenly spaced stations coincide at
+        ``SEWING_MARGIN_PT``.
     :raises ValueError: a position falls on or outside a sheet edge.
         Refused rather than clamped: a station at the very edge of the fold
         is a hole in nothing, and silently moving a stated position would
@@ -88,7 +90,9 @@ def sewing_stations(
         y = sheet_h / 2.0
         return (Mark(kind="sewing_station", x0=x0, y0=y, x1=x1, y1=y),)
 
-    span = sheet_h - 2 * SEWING_MARGIN_PT
+    # Clamped: on a sheet shorter than the two insets a negative step walked
+    # the stations down from the tail inset and off the paper.
+    span = max(0.0, sheet_h - 2 * SEWING_MARGIN_PT)
     step = span / (count - 1)
     marks = []
     for i in range(count):

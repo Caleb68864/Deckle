@@ -800,3 +800,108 @@ def test_a_corrupt_stored_profile_does_not_stop_the_dialog_opening():
     assert dialog.profile_combo.count() == len(PRESETS)
     dialog.start_print()
     assert dialog._session is not None
+
+
+# -- F6: reprinting one sheet ---------------------------------------------------
+
+
+def _sheet_dialog(**kwargs):
+    return _make_dialog(**kwargs)
+
+
+def test_the_box_narrows_the_print_to_the_sheets_named():
+    dialog = _sheet_dialog()
+    total = len(dialog.plan.sheets)
+    assert total > 1, "the fixture has to have something to narrow"
+
+    dialog.sheets_edit.setText("1")
+
+    assert dialog._sheets == [1]
+    assert dialog.print_button.isEnabled()
+    assert dialog.status_label.text() == f"1 of {total} sheet(s) selected."
+
+
+def test_empty_means_all_of_them():
+    dialog = _sheet_dialog()
+    dialog.sheets_edit.setText("1")
+    dialog.sheets_edit.setText("  ")
+    assert dialog._sheets is None
+    assert dialog.print_button.isEnabled()
+    assert dialog.status_label.text() == ""
+
+
+@pytest.mark.parametrize("typed", ["a", "1-", "3-1", "1,,2"])
+def test_a_malformed_selection_blocks_print_and_says_why(typed):
+    dialog = _sheet_dialog()
+    dialog.sheets_edit.setText(typed)
+    assert not dialog.print_button.isEnabled()
+    assert dialog.status_label.text().startswith("invalid sheets")
+
+
+def test_a_sheet_the_document_has_not_got_blocks_print():
+    dialog = _sheet_dialog()
+    total = len(dialog.plan.sheets)
+    dialog.sheets_edit.setText(f"0,{total}")
+    assert not dialog.print_button.isEnabled()
+    assert dialog.status_label.text() == (
+        f"No sheet {total} in this document -- it has {total}, numbered from 0."
+    )
+
+
+def test_start_print_refuses_a_bad_selection_without_making_a_session():
+    made = []
+
+    class _Session:
+        list_resumable = staticmethod(lambda: [])
+
+        def __init__(self, *args, **kwargs):
+            made.append(kwargs)
+
+    dialog = _sheet_dialog(session_cls=_Session)
+    dialog.sheets_edit.setText("nonsense")
+    dialog.start_print()
+    assert made == []
+
+
+def test_start_print_hands_the_session_the_box_in_the_order_typed():
+    made = []
+
+    class _Session:
+        list_resumable = staticmethod(lambda: [])
+        finished = True
+        last_error = None
+
+        def __init__(self, *args, **kwargs):
+            made.append(kwargs)
+
+        def start(self):
+            pass
+
+    dialog = _sheet_dialog(session_cls=_Session)
+    dialog._drive = lambda session: None
+    dialog.sheets_edit.setText("1,0")
+    dialog.start_print()
+    assert made[0]["sheets"] == [1, 0]
+
+
+def test_the_signature_dropdown_fills_in_the_box():
+    dialog = _sheet_dialog()
+    dialog.signature_combo.addItem("Signature 1", [0, 1])
+    dialog.signature_combo.setCurrentIndex(dialog.signature_combo.count() - 1)
+    assert dialog.sheets_edit.text() == "0-1"
+    assert dialog._sheets == [0, 1]
+    dialog.signature_combo.setCurrentIndex(0)
+    assert dialog.sheets_edit.text() == ""
+    assert dialog._sheets is None
+
+
+@pytest.mark.parametrize(
+    "indices, text",
+    [((), ""), ((3,), "3"), ((4, 5, 6, 7), "4-7"), ((0, 3, 4), "0,3-4"), ((2, 0), "2,0"), ((1, 1), "1,1")],
+)
+def test_selection_text_round_trips(indices, text):
+    from deckle.core.printing import parse_sheet_selection, sheet_selection_text
+
+    assert sheet_selection_text(indices) == text
+    if indices:
+        assert tuple(parse_sheet_selection(text)) == indices

@@ -15,6 +15,8 @@ every test of the pure half.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import os
 import threading
 
@@ -332,7 +334,7 @@ def test_the_composite_never_runs_on_the_gui_thread(panel, monkeypatch):
 
 def test_a_finished_composite_paints_and_captions(panel, tmp_path):
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 2)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 2))
 
     panel._start_composite()
 
@@ -354,7 +356,7 @@ def test_a_superseded_composite_never_paints(panel, tmp_path):
 
 def test_starting_a_composite_cancels_the_one_in_flight(panel, tmp_path):
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 2)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 2))
     panel._start_composite()
     superseded = panel._composite_worker
 
@@ -365,7 +367,7 @@ def test_starting_a_composite_cancels_the_one_in_flight(panel, tmp_path):
 
 def test_unticking_the_checkbox_clears_the_picture(panel, tmp_path):
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 2)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 2))
     panel._start_composite()
     assert not panel.composite_label.pixmap().isNull()
 
@@ -377,7 +379,7 @@ def test_unticking_the_checkbox_clears_the_picture(panel, tmp_path):
 
 def test_unticking_cancels_a_run_in_flight(panel, tmp_path):
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 2)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 2))
     panel._start_composite()
     worker = panel._composite_worker
 
@@ -399,7 +401,7 @@ def test_an_empty_document_draws_nothing(qt_app):
 def test_the_parity_combo_picks_the_rectangle(panel, tmp_path):
     """The combo is connected, and it selects both the pages and the crop."""
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 4)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 4))
     _set_crops(panel, odd=ODD, even=EVEN)
 
     panel.composite_parity_combo.setCurrentIndex(
@@ -414,7 +416,7 @@ def test_the_parity_combo_picks_the_rectangle(panel, tmp_path):
 
 def test_all_pages_with_two_crops_says_why_there_is_no_rectangle(panel, tmp_path):
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 2)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 2))
     _set_crops(panel, odd=ODD, even=EVEN)
 
     panel._start_composite()
@@ -430,7 +432,7 @@ def test_the_panel_exposes_its_thread_to_shutdown(panel, tmp_path):
     process down with it.
     """
     panel._QThread = _SyncThread
-    panel.state.project.pages[:] = _fixture_pages(tmp_path, 2)
+    panel.state._project = replace(panel.state.project, pages=_fixture_pages(tmp_path, 2))
     panel._start_composite()
 
     assert panel._thread is panel._composite_thread

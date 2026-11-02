@@ -19,16 +19,20 @@ from __future__ import annotations
 import argparse
 import re
 
+from deckle.core.printing import SHEET_SELECTION_EXAMPLE, parse_index_selection
+from deckle.core.paper import (  # noqa: F401 -- the bounds are re-exported
+    A4_PT,
+    LEGAL_PT,
+    LETTER_PT,
+    MAX_PAPER_PT,
+    MIN_PAPER_PT,
+    PAPER_SIZES,
+    paper_size_problem,
+)
 
-LETTER_PT = (612.0, 792.0)
-A4_PT = (595.28, 841.89)
-LEGAL_PT = (612.0, 1008.0)
 
-_PAPER_PRESETS = {
-    "letter": LETTER_PT,
-    "a4": A4_PT,
-    "legal": LEGAL_PT,
-}
+
+_PAPER_PRESETS = {name.lower(): size for name, size in PAPER_SIZES}
 
 _ACCEPTED_LENGTH_UNITS = ("in", "pt", "mm", "cm")
 
@@ -97,11 +101,6 @@ def _parse_paper(value: str) -> tuple[float, float]:
     )
 
 
-# The PDF page-size limits pikepdf enforces, in points. Outside them there
-# is no page to make, so there is no point imposing one.
-MIN_PAPER_PT = 3.0
-MAX_PAPER_PT = 14400.0
-
 
 def _reject_unprintable_paper(paper: tuple[float, float], typed: str) -> None:
     """Refuse a sheet size no PDF can represent, while the user is still
@@ -117,14 +116,9 @@ def _reject_unprintable_paper(paper: tuple[float, float], typed: str) -> None:
     :param typed: what the user actually wrote, for the message.
     :raises argparse.ArgumentTypeError: the size is outside PDF's range.
     """
-    for length in paper:
-        if not MIN_PAPER_PT <= length <= MAX_PAPER_PT:
-            raise argparse.ArgumentTypeError(
-                f"invalid paper {typed!r}: a PDF page must be between "
-                f"{MIN_PAPER_PT:g} and {MAX_PAPER_PT:g}pt "
-                f"({MIN_PAPER_PT / 72:.2g}in to {MAX_PAPER_PT / 72:g}in) on "
-                f"each side; that is {paper[0]:g}x{paper[1]:g}pt"
-            )
+    problem = paper_size_problem(paper)
+    if problem is not None:
+        raise argparse.ArgumentTypeError(f"invalid paper {typed!r}: {problem}")
 
 
 def _parse_paper_weight(text: str) -> tuple[float, str]:
@@ -295,13 +289,9 @@ def _parse_index_selection(
     them: it is subtracted from every number, so the caller states the base
     once instead of every consumer remembering it.
 
-    Order is preserved and repeats are kept, because
-    :func:`deckle.core.export.export` documents both for its ``sheets``
-    argument. A caller that does not care (``--pages`` sets flags, so it
-    does not) may ignore that.
-
-    Open-ended ranges (``2-``) are deliberately not accepted: neither the
-    sheet count nor the page count is known when argparse runs.
+    The grammar lives in :func:`deckle.core.printing.parse_index_selection`,
+    so the print dialog's sheet box accepts exactly what ``--sheets`` does.
+    This only restates a refusal as the exception argparse renders.
 
     :param value: the raw flag text.
     :param noun: what the numbers name, for the messages.
@@ -311,34 +301,10 @@ def _parse_index_selection(
     :raises argparse.ArgumentTypeError: empty, malformed, a range that runs
         backwards, or a number below ``offset``.
     """
-    selection: list[int] = []
-    items = [item.strip() for item in value.split(",")]
-    if not value.strip() or any(not item for item in items):
-        raise argparse.ArgumentTypeError(
-            f"invalid {noun} {value!r}: expected {example}"
-        )
-    for item in items:
-        bounds = [part.strip() for part in item.split("-")]
-        if len(bounds) > 2 or any(not part.isdigit() for part in bounds):
-            raise argparse.ArgumentTypeError(
-                f"invalid {noun} {value!r}: {item!r} is not a {noun[:-1]} "
-                "number or an inclusive range like 2-4"
-            )
-        start = int(bounds[0])
-        end = int(bounds[-1])
-        if start < offset or end < offset:
-            raise argparse.ArgumentTypeError(
-                f"invalid {noun} {value!r}: {noun} are numbered from {offset}"
-            )
-        if len(bounds) == 1:
-            selection.append(start - offset)
-            continue
-        if end < start:
-            raise argparse.ArgumentTypeError(
-                f"invalid {noun} {value!r}: the range {item!r} runs backwards"
-            )
-        selection.extend(range(start - offset, end - offset + 1))
-    return selection
+    try:
+        return parse_index_selection(value, noun=noun, example=example, offset=offset)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _parse_sheet_selection(value: str) -> list[int]:
@@ -355,14 +321,7 @@ def _parse_sheet_selection(value: str) -> list[int]:
     :raises argparse.ArgumentTypeError: empty, malformed, negative, or a
         range that runs backwards.
     """
-    return _parse_index_selection(
-        value,
-        noun="sheets",
-        example=(
-            "sheet numbers like 0, 2,0 or 0,2-4 -- counting from 0, as the "
-            "schedule and the warnings do"
-        ),
-    )
+    return _parse_index_selection(value, noun="sheets", example=SHEET_SELECTION_EXAMPLE)
 
 
 def _parse_page_selection(value: str) -> list[int]:

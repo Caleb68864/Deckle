@@ -191,3 +191,35 @@ def test_parity_is_still_used_when_no_spine_side_is_given():
     )
 
     assert left != right
+
+
+# -- B32: the footprint is the cropped page --------------------------------
+
+
+def _cropped_page(rotate_deg=0):
+    from deckle.core.models import OutputPage, Placement, SourceRef
+
+    return OutputPage(
+        source_ref=SourceRef(path="a.pdf", page_index=0, sha256="a", width_pt=500.0, height_pt=700.0),
+        placement=Placement(scale_x=1.0, scale_y=1.0, tx=50.0, ty=40.0, rotate_deg=rotate_deg),
+        crop_pt=(100.0, 50.0, 20.0, 10.0),
+        is_filler=False,
+    )
+
+
+def test_actual_margins_measure_the_cropped_page_not_the_whole_one():
+    """380x640 is drawn; 500x700 would report overflow on a roomy sheet."""
+    inner, outer, top, bottom = actual_margins_pt(
+        _cropped_page(), (612.0, 792.0), is_recto=True, binding_edge="left"
+    )
+    assert (inner, bottom) == (50.0, 40.0)
+    assert outer == pytest.approx(612.0 - 50.0 - 380.0)
+    assert top == pytest.approx(792.0 - 40.0 - 640.0)
+
+
+def test_actual_margins_subtract_the_crop_before_the_rotation_swap():
+    _inner, outer, top, _bottom = actual_margins_pt(
+        _cropped_page(rotate_deg=90), (1000.0, 1000.0), is_recto=True, binding_edge="left"
+    )
+    assert outer == pytest.approx(1000.0 - 50.0 - 640.0)
+    assert top == pytest.approx(1000.0 - 40.0 - 380.0)

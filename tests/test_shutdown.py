@@ -45,7 +45,7 @@ import deckle.app.shutdown as sd
 import deckle.app.printer_query as pq
 pq.available_printer_names = lambda: []
 am.MainWindow.refresh_printers = (
-    lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
+    lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers([])
 )
 from dataclasses import replace
 from deckle.core.loader import load_pdf
@@ -329,6 +329,11 @@ class _StubWindow:
         self.arrange_view._worker = _FakeWorker()
         self.layout_panel = _FakeView(_FakeThread(), [])
         self.layout_panel._worker = _FakeWorker()
+        self.import_view = _FakeView(_FakeThread(), [])
+        self.import_view._worker = _FakeWorker()
+        self._jobs = {}
+        self._printer_query = None
+        self._stopping = False
 
 
 def test_shutdown_cancels_and_waits_for_the_composite_thread():
@@ -344,6 +349,18 @@ def test_shutdown_cancels_and_waits_for_the_composite_thread():
     assert window.layout_panel._thread.waited_ms == 10, (
         "nobody waited for the composite thread"
     )
+
+
+def test_shutdown_cancels_and_waits_for_the_import_thread():
+    """B13: quitting mid-import ran pdfium into interpreter teardown."""
+    from deckle.app.main import MainWindow
+
+    window = _StubWindow()
+
+    MainWindow.stop_background_work(window, timeout_ms=10)
+
+    assert window.import_view._worker.cancel.is_set()
+    assert window.import_view._thread.waited_ms == 10
 
 
 def test_shutdown_still_covers_the_two_original_views():

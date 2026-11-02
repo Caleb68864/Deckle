@@ -23,8 +23,12 @@ requires neither PySide6 nor a display server.
    app.project_actions
    app.exporting
    app.shutdown
+   app.workers
    app.views.import_view
    app.views.arrange_view
    app.views.layout_panel
    app.views.preview_view
    app.views.print_dialog
+   app.views.custom_paper
+   app.views.calibration_wizard
+   app.views.profile_editor

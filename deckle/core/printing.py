@@ -171,10 +171,13 @@ class PrintPass:
     """One physical pass through the printer: an ordered set of sheets."""
 
     index: int
-    sheet_order: list[int]
+    sheet_order: tuple[int, ...]
     side: Literal["front", "back"]
     reload_instruction: str
     rotate_backs: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "sheet_order", tuple(self.sheet_order))
 
 
 def _axis_word(flip_axis: str) -> str:
@@ -203,6 +206,95 @@ def _back_instruction(profile: PrinterProfile) -> str:
         f"{_axis_word(profile.flip_axis)} edge, {_face_word(profile.output_face)}, "
         "and print pass 2 (backs)."
     )
+
+
+#: The forms ``--sheets`` and the print dialog's sheet box accept, for refusals.
+SHEET_SELECTION_EXAMPLE = (
+    "sheet numbers like 0, 2,0 or 0,2-4 -- counting from 0, as the "
+    "schedule and the warnings do"
+)
+
+
+def parse_index_selection(
+    value: str, *, noun: str, example: str, offset: int = 0
+) -> list[int]:
+    """Comma-separated numbers and inclusive ranges, as a list of indices.
+
+    Order is preserved and repeats are kept, because
+    :func:`deckle.core.export.export` documents both for its ``sheets``
+    argument. Open-ended ranges (``2-``) are not accepted: neither the sheet
+    count nor the page count is known where a CLI flag is read.
+
+    :param value: the text typed.
+    :param noun: what the numbers name, for the messages.
+    :param example: the forms that are accepted, for the messages.
+    :param offset: the base the user counts from.
+    :returns: the indices, in the order named.
+    :raises ValueError: empty, malformed, a range that runs backwards, or a
+        number below ``offset``.
+    """
+    selection: list[int] = []
+    items = [item.strip() for item in value.split(",")]
+    if not value.strip() or any(not item for item in items):
+        raise ValueError(
+            f"invalid {noun} {value!r}: expected {example}"
+        )
+    for item in items:
+        bounds = [part.strip() for part in item.split("-")]
+        if len(bounds) > 2 or any(not part.isdigit() for part in bounds):
+            raise ValueError(
+                f"invalid {noun} {value!r}: {item!r} is not a {noun[:-1]} "
+                "number or an inclusive range like 2-4"
+            )
+        start = int(bounds[0])
+        end = int(bounds[-1])
+        if start < offset or end < offset:
+            raise ValueError(
+                f"invalid {noun} {value!r}: {noun} are numbered from {offset}"
+            )
+        if len(bounds) == 1:
+            selection.append(start - offset)
+            continue
+        if end < start:
+            raise ValueError(
+                f"invalid {noun} {value!r}: the range {item!r} runs backwards"
+            )
+        selection.extend(range(start - offset, end - offset + 1))
+    return selection
+
+
+def parse_sheet_selection(value: str) -> list[int]:
+    """The sheet indices a selection string names, in the order named.
+
+    **0-based**, like every other sheet number Deckle prints. A sheet number
+    typed in the print dialog and one passed to ``--sheets`` mean the same
+    sheet.
+
+    :param value: the text typed.
+    :returns: the indices, in the order named.
+    :raises ValueError: empty, malformed, or a range that runs backwards.
+    """
+    return parse_index_selection(value, noun="sheets", example=SHEET_SELECTION_EXAMPLE)
+
+
+def sheet_selection_text(indices: Sequence[int]) -> str:
+    """The shortest selection string naming exactly ``indices``, in order.
+
+    The inverse of :func:`parse_sheet_selection`: ``(4, 5, 6, 7)`` gives
+    ``"4-7"`` and ``(0, 3, 4)`` gives ``"0,3-4"``. Neither sorted nor
+    de-duplicated, because a prettier string that reorders a print run is a
+    silent correctness change.
+
+    :param indices: the sheet indices.
+    :returns: the text, ``""`` for none.
+    """
+    runs: list[list[int]] = []
+    for index in indices:
+        if runs and index == runs[-1][1] + 1:
+            runs[-1][1] = index
+        else:
+            runs.append([index, index])
+    return ",".join(str(a) if a == b else f"{a}-{b}" for a, b in runs)
 
 
 def plan_passes(

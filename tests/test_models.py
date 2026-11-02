@@ -129,9 +129,9 @@ def test_layout_warning_fields():
 
 def test_sheet_plan_fields():
     plan = SheetPlan(sheets=[], paper_pt=(612.0, 792.0), warnings=[])
-    assert plan.sheets == []
+    assert plan.sheets == ()
     assert plan.paper_pt == (612.0, 792.0)
-    assert plan.warnings == []
+    assert plan.warnings == ()
     assert plan.signatures == ()
 
 
@@ -234,6 +234,55 @@ def test_project_fields():
         binding_edge="left",
     )
     project = Project(pages=[page], layout=settings, printer=None)
-    assert project.pages == [page]
+    assert project.pages == (page,)
     assert project.layout is settings
     assert project.printer is None
+
+
+# -- M8: frozen means frozen ------------------------------------------------------
+
+
+def test_a_plan_cannot_be_changed_through_its_sequences():
+    plan = SheetPlan(sheets=[], paper_pt=(612.0, 792.0), warnings=[], signatures=[])
+    assert (plan.sheets, plan.warnings, plan.signatures) == ((), (), ())
+    with pytest.raises(AttributeError):
+        plan.sheets.append(None)
+
+
+def test_a_project_cannot_be_changed_through_its_pages():
+    project = Project(
+        pages=[],
+        layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0, binding_edge="left"),
+        printer=None,
+    )
+    assert project.pages == ()
+    with pytest.raises(TypeError):
+        project.pages[:] = []
+
+
+def test_a_pass_cannot_be_reordered():
+    from deckle.core.printing import PrintPass
+
+    print_pass = PrintPass(
+        index=0, sheet_order=[1, 0], side="front", reload_instruction="", rotate_backs=False
+    )
+    assert print_pass.sheet_order == (1, 0)
+    with pytest.raises(AttributeError):
+        print_pass.sheet_order.reverse()
+
+
+def test_a_project_still_saves_its_pages_as_a_list(tmp_path):
+    import json
+
+    from deckle.core.project_io import save_project
+
+    path = tmp_path / "p.deckle"
+    save_project(
+        Project(
+            pages=[],
+            layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0, binding_edge="left"),
+            printer=None,
+        ),
+        str(path),
+    )
+    assert json.loads(path.read_text())["pages"] == []

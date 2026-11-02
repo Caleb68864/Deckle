@@ -34,13 +34,19 @@ from deckle.core.paper import PAPER_PRESETS as PAPER_STOCKS
 from deckle.core.paper import (
     GRADE_BASIS_SIZES_IN,
     PAPER_BULK,
-    caliper_pt_from_gsm,
-    gsm_from_pounds,
+    PAPER_SIZES,
+    caliper_from_weight,
     suggest_sheets_per_signature,
 )
 from deckle.core.models import Project, SheetPlan
 from deckle.core.outputs import describe_write_failure, output_path_problem
-from deckle.core.schedule import build_schedule, format_schedule_text
+from deckle.app.workers import run_in_thread
+from deckle.core.schedule import (
+    build_schedule,
+    format_read_back,
+    format_schedule_text,
+    read_back_order,
+)
 
 BINDING_EDGES: tuple[str, ...] = ("left", "right")
 
@@ -135,6 +141,26 @@ def set_margins_linked(project: Project, linked: bool) -> Project:
     return replace(project, layout=replace(project.layout, margins_linked=linked))
 
 
+def set_all_margins(project: Project, points: float) -> Project:
+    """Set head, tail and fore-edge to the same value, in one step.
+
+    So that a control changing all three is one step of undo.
+
+    :param project: the project to derive a new one from.
+    :param points: the margin, in points, for all three edges.
+    :returns: a new project.
+    """
+    return replace(
+        project,
+        layout=replace(
+            project.layout,
+            margin_top_pt=points,
+            margin_bottom_pt=points,
+            margin_outer_pt=points,
+        ),
+    )
+
+
 #: Where spare horizontal width goes. Index 0 is the panel default.
 SLACK_TARGETS: tuple[tuple[str, str], ...] = (
     ("gutter", "Gutter"),
@@ -224,13 +250,7 @@ def set_binding_edge(project: Project, binding_edge: Literal["left", "right"]) -
 #: same tuple swapped -- see :func:`set_paper`. These mirror
 #: ``deckle/cli/values.py``'s ``--paper`` presets so both front ends offer
 #: the same stock.
-PAPER_PRESETS: tuple[tuple[str, tuple[float, float]], ...] = (
-    ("Letter", (612.0, 792.0)),
-    ("A4", (595.28, 841.89)),
-    ("Legal", (612.0, 1008.0)),
-    ("A3", (841.89, 1190.55)),
-    ("Tabloid", (792.0, 1224.0)),
-)
+PAPER_PRESETS = PAPER_SIZES
 
 ORIENTATIONS: tuple[str, ...] = ("Portrait", "Landscape")
 
@@ -383,6 +403,11 @@ def set_paper_thickness_pt(project: Project, paper_thickness_pt: float) -> Proje
 
 
 CUSTOM_STOCK_LABEL = "Custom (set thickness below)"
+
+#: The paper-combo entry that opens the size dialog. A verb, distinct from the
+#: generated ``Custom (W x Hpt)`` entry, which names a size the project has.
+#: It stays last, so the generated entry goes in before it.
+CUSTOM_PAPER_LABEL = "Custom..."
 """The stock dropdown's escape hatch.
 
 Anyone whose paper is not on the list, or who owns calipers, sets the
@@ -588,16 +613,9 @@ def set_paper_from_weight(
     :raises ValueError: an unknown unit, type or grade, or pounds without
         a grade.
     """
-    if unit == "lb":
-        if grade is None:
-            raise ValueError(
-                "a weight in pounds also needs a paper grade: 20lb is "
-                "75gsm as bond but 54gsm as cover"
-            )
-        weight = gsm_from_pounds(weight, grade)
-    elif unit != "gsm":
-        raise ValueError(f"unknown weight unit {unit!r}: expected gsm or lb")
-    return set_paper_thickness_pt(project, caliper_pt_from_gsm(weight, paper_type))
+    return set_paper_thickness_pt(
+        project, caliper_from_weight(weight, unit, paper_type, grade)
+    )
 
 
 def signature_suggestion(layout: LayoutSettings):
@@ -694,6 +712,19 @@ def binding_readout_str(plan: SheetPlan) -> str:
         f"{len(plan.signatures)} signatures · {len(plan.sheets)} sheets · "
         f"{blank_count} blanks"
     )
+
+
+def read_back_str(plan: SheetPlan) -> str:
+    """One line of what the first gathering reads, for the Signatures tab.
+
+    :param plan: the recomputed plan.
+    :returns: the line, or ``""`` when nothing is folded. The first gathering
+        only: a panel label is not a schedule.
+    """
+    order = read_back_order(plan)
+    if not order:
+        return ""
+    return "reads " + format_read_back(order[0])
 
 
 def apply_layout_change(state: AppState, mutator) -> SheetPlan:
@@ -1099,7 +1130,10 @@ CONTROLS: tuple[Control, ...] = (
         kind="choice",
         tab="paper",
         label="Paper:",
-        choices=lambda: tuple((n, n) for n, _ in PAPER_PRESETS),
+        choices=lambda: (
+            *((n, n) for n, _ in PAPER_PRESETS),
+            (CUSTOM_PAPER_LABEL, CUSTOM_PAPER_LABEL),
+        ),
         handler="_on_paper_changed",
         refresh="_refresh_paper_combo",
         tooltip=(
@@ -1625,6 +1659,21 @@ CONTROLS: tuple[Control, ...] = (
             "pages the fold count forced."
         ),
     ),
+    Control(
+        name="read_back_label",
+        kind="label",
+        tab="signature",
+        label="Read back:",
+        word_wrap=True,
+        tooltip=(
+            "What the first gathering will read once it is folded and "
+            "nested, by the page numbers in the source file, worked out a "
+            "second time from how the paper folds rather than from the "
+            "arithmetic that imposed it.\n\n"
+            "Two derivations that agree are worth having and are still not "
+            "paper. Fold a numbered dummy before committing a real book."
+        ),
+    ),
 )
 
 
@@ -1869,11 +1918,19 @@ class LayoutPanel:
     :ivar widget: the ``QWidget`` to place in a layout.
     """
 
-    def __init__(self, state: AppState, parent=None, profile=None) -> None:
+    def __init__(
+        self, state: AppState, parent=None, profile=None, *, custom_paper_dialog_cls=None
+    ) -> None:
         # `profile` supplies the printer's imageable inset for the
         # "Use printer margins" button. Optional so the panel stays
         # constructible without a printer.
         self.profile = profile
+        # Injectable, so a test never opens a modal.
+        self._custom_paper_dialog_cls = custom_paper_dialog_cls
+        #: How a job is started. A seam for a caller with no event loop. The
+        #: thread is parented to `widget`, which is where shutdown looks.
+        self._job_runner = run_in_thread
+        self._auto_crop_job = None
         QObject, QThread, Signal = _qt_core()
         (
             QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout,
@@ -2069,9 +2126,7 @@ class LayoutPanel:
             else self._single_tab_index
         )
         self._sync_signature_tab()
-        self.binding_readout_label.setText(
-            binding_readout_str(recompute_plan(state.project))
-        )
+        self._refresh_binding_readout(recompute_plan(state.project))
 
         for spec in CONTROLS:
             self._connect_control(spec)
@@ -2642,15 +2697,20 @@ class LayoutPanel:
 
     def _on_link_margins_toggled(self, linked: bool) -> None:
         self._sync_margin_enabled()
-        plan = apply_layout_change(
-            self.state, lambda project: set_margins_linked(project, linked)
-        )
         if linked:
             # Adopt the head margin for all three, so linking is a visible,
-            # predictable action rather than a silent mode change.
+            # predictable action rather than a silent mode change. Composed
+            # into one mutation, because one click is one step of undo.
             head = self.margin_spinboxes["margin_top_pt"].points()
-            self._on_margin_changed("margin_top_pt", head)
-            return
+            plan = apply_layout_change(
+                self.state,
+                lambda project: set_all_margins(set_margins_linked(project, True), head),
+            )
+            self._refresh_margin_boxes()
+        else:
+            plan = apply_layout_change(
+                self.state, lambda project: set_margins_linked(project, False)
+            )
         self.layout_changed.emit(plan)
 
     def _on_margin_changed(self, field: str, points: float) -> None:
@@ -2709,11 +2769,13 @@ class LayoutPanel:
         inset = imageable_inset_pt(profile.imageable_area_pt)
         # Set every margin, regardless of link state -- the printer's dead
         # border applies to all four edges, so a partial application would
-        # leave some edge still unprintable.
-        self.margin_spinboxes["margin_top_pt"].set_points(inset)
-        if not self.link_margins_check.isChecked():
-            for field in ("margin_bottom_pt", "margin_outer_pt"):
-                self.margin_spinboxes[field].set_points(inset)
+        # leave some edge still unprintable. One mutation, because one click
+        # is one step of undo.
+        plan = apply_layout_change(
+            self.state, lambda project: set_all_margins(project, inset)
+        )
+        self._refresh_margin_boxes()
+        self.layout_changed.emit(plan)
 
     def _refresh_paper_combo(self) -> None:
         """Select the entry that names the project's paper.
@@ -2807,8 +2869,9 @@ class LayoutPanel:
             self._custom_paper_label = None
 
         if wanted is not None and self._custom_paper_label is None:
-            self.paper_combo.addItem(wanted)
-            self._paper_names.append(wanted)
+            index = len(PAPER_PRESETS)
+            self.paper_combo.insertItem(index, wanted)
+            self._paper_names.insert(index, wanted)
             self._custom_paper_label = wanted
 
         return wanted if wanted is not None else preset
@@ -2822,11 +2885,16 @@ class LayoutPanel:
         # The custom entry: keep whatever the project already has.
         return self.state.project.layout.paper
 
-    def _on_paper_changed(self, _name: str) -> None:
+    def _on_paper_changed(self, name: str) -> None:
         """Apply a new sheet size, preserving the chosen orientation.
 
+        :param name: the entry chosen. ``Custom...`` names no size: it asks
+            for one.
         :returns: nothing.
         """
+        if name == CUSTOM_PAPER_LABEL:
+            self._prompt_custom_paper()
+            return
         landscape = self.orientation_combo.currentText() == "Landscape"
         plan = apply_layout_change(
             self.state,
@@ -2836,6 +2904,45 @@ class LayoutPanel:
         )
         self._refresh_binding_readout(plan)
         self.layout_changed.emit(plan)
+
+    def _prompt_custom_paper(self) -> None:
+        """Ask for a size and apply it, or put the combo back on a cancel.
+
+        :returns: nothing.
+        """
+        dialog_cls = self._custom_paper_dialog_cls
+        if dialog_cls is None:
+            from deckle.app.views.custom_paper import CustomPaperDialog as dialog_cls
+        current = self.state.project.layout.paper
+        dialog = dialog_cls(current, unit=self._unit, parent=self.widget)
+        dialog.widget.exec()
+        paper = dialog.paper_pt
+        if paper is None:
+            self._select_paper_entry(current)
+            return
+        landscape = self.orientation_combo.currentText() == "Landscape"
+        plan = apply_layout_change(
+            self.state, lambda project: set_paper(project, paper, landscape=landscape)
+        )
+        self._select_paper_entry(self.state.project.layout.paper)
+        self._refresh_binding_readout(plan)
+        self.layout_changed.emit(plan)
+
+    def _select_paper_entry(self, paper: tuple[float, float]) -> None:
+        """Point the combo at the entry naming ``paper``, silently.
+
+        Blocked because selecting fires the handler: a cancel would reopen
+        the dialog, and an accept would push a second undo entry.
+
+        :param paper: the size to select.
+        :returns: nothing.
+        """
+        label = self._sync_paper_choices(paper)
+        blocked = self.paper_combo.blockSignals(True)
+        try:
+            self.paper_combo.setCurrentIndex(self._paper_names.index(label))
+        finally:
+            self.paper_combo.blockSignals(blocked)
 
     def _on_orientation_changed(self, value: str) -> None:
         """Turn the sheet, keeping its size.
@@ -3003,15 +3110,47 @@ class LayoutPanel:
         self.layout_changed.emit(plan)
 
     def _on_auto_crop(self) -> None:
-        """Fill the crop boxes from where the ink actually is."""
+        """Measure where the ink is, off the GUI thread: it rasterises every page.
+
+        :returns: nothing. The result arrives in :meth:`_on_auto_crop_done`.
+        """
         from deckle.core.render import auto_crop_insets
 
-        try:
-            odd, even = auto_crop_insets(self.state.project.pages)
-        except Exception as exc:  # noqa: BLE001 -- reported, never a crash
+        state = self.state
+        pages = list(state.project.pages)
+        if not pages:
+            return
+        self.auto_crop_button.setEnabled(False)
+        self.schedule_saved.emit(f"Measuring the ink on {len(pages)} page(s)...")
+
+        def on_error(exc: Exception) -> None:
+            self.auto_crop_button.setEnabled(True)
             log_exception("auto_crop_failed", exc)
             self.schedule_saved.emit(f"Could not measure the ink: {exc}")
+
+        self._auto_crop_job = self._job_runner(
+            lambda _cancel: auto_crop_insets(pages),
+            lambda insets: self._on_auto_crop_done(state, pages, insets),
+            on_error,
+            self.widget,
+        )
+
+    def _on_auto_crop_done(self, state, pages, insets) -> None:
+        """Fill the crop boxes, unless the document moved on underneath.
+
+        :param state: the state the measurement was started against.
+        :param pages: the pages it measured.
+        :param insets: ``(odd, even)``.
+        :returns: nothing.
+        """
+        self.auto_crop_button.setEnabled(True)
+        if state is not self.state or list(state.project.pages) != pages:
+            self.schedule_saved.emit(
+                "The document changed while the ink was being measured -- "
+                "measure it again."
+            )
             return
+        odd, even = insets
         for parity, insets in (("odd", odd), ("even", even)):
             if insets is None:
                 continue
@@ -3051,3 +3190,4 @@ class LayoutPanel:
 
     def _refresh_binding_readout(self, plan: SheetPlan) -> None:
         self.binding_readout_label.setText(binding_readout_str(plan))
+        self.read_back_label.setText(read_back_str(plan))

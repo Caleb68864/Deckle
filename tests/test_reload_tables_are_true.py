@@ -161,7 +161,7 @@ def test_the_stack_order_table_matches_plan_passes(name):
     for reverse_stack, documented_reversed in rows:
         profile = dataclasses.replace(preset, reverse_stack=reverse_stack)
         back = plan_passes(_plan(PAPER["portrait"]), profile)[1]
-        actually_reversed = back.sheet_order == list(reversed(range(4)))
+        actually_reversed = back.sheet_order == tuple(reversed(range(4)))
         assert actually_reversed is documented_reversed, (
             f"{name} says reverse_stack={reverse_stack} feeds the backs in "
             f"{'reverse' if documented_reversed else 'the same'} order, but "

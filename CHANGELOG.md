@@ -9,11 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing released yet. The gutter-shift path is functional and hardened.
 Saddle-stitch signature imposition is implemented but **experimental** --
-see the README. The calibration wizard is not built; its printed half,
-`calibration-sheet`, is.
+see the README. The calibration wizard is built and has not yet been confirmed
+against a real printer.
 
 ### Added
 
+- **Calibration wizard** — File > Calibrate a printer... writes the sheets, asks
+  what you saw on each orientation, and saves a measured profile.
+- **Printer profile editor** — Edit profile... in the Print dialog sets a
+  printer's reload behaviour, printable border and registration offset by hand.
+- **Printing part of a job** — a Sheets box in the print dialog, taking the
+  `--sheets` grammar.
+- **Custom paper sizes in the app** — Custom... at the end of the Paper list.
+- **Read it back** — the schedule and the Signatures tab say what each gathering
+  reads once folded, from the fold simulator.
+- **CLI** — `--margin-top`, `--margin-bottom`, `--margin-outer`, `--slack-to`,
+  `--start-on-verso`, `--landscape-policy`; `export --signature N` and `--split`;
+  `--paper a3` and `--paper tabloid`.
 - **Trading card sheets** — New card-deck workspace with folder-imported
   fronts, shared or individually paired backs, filename/order pairing,
   per-face rotation, copies and skips, configurable card size and sheet
@@ -112,6 +124,20 @@ see the README. The calibration wizard is not built; its printed half,
   including a *Measure crop from the ink* button.
 
 ### Fixed
+
+- Print-session state moved out of the temp dir, which on Linux does not survive
+  the crash it is kept for. A state file that cannot be written now stops the
+  run with a message rather than a traceback.
+- Saving no longer makes a shared project or PDF owner-only.
+- Save PDF, single-pass export, Auto-crop and opening a project no longer freeze
+  the window.
+- A printer turned on after launch is noticed without a restart.
+- Two quick imports no longer apply in completion order, and an import running
+  while a project is opened no longer announces pages that are nowhere.
+- Importing no longer blocks previews while the file is hashed, and an image
+  folder no longer holds every image in memory.
+- A project carrying settings this build does not know now says so.
+- Accepting an autosave recovery no longer asks again on the next open.
 
 Defects found during development, each with a full write-up in
 `docs/decisions.md`:

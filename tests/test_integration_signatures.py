@@ -171,7 +171,7 @@ def test_end_to_end_folio_signature_impose_export_fold_and_print(tmp_path):
     profile = _profile()
     passes = plan_passes(plan, profile, sheets=second_sig_sheets)
     assert len(passes) == 2
-    assert passes[0].sheet_order == list(second_sig_sheets)
+    assert passes[0].sheet_order == tuple(second_sig_sheets)
 
     backend = _StubPrintBackend()
     for pass_ in passes:

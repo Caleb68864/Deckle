@@ -171,7 +171,7 @@ def test_reverse_stack_true_reverses_back_pass_order():
     passes = plan_passes(_make_plan(4), profile)
     front = next(p for p in passes if p.side == "front")
     back = next(p for p in passes if p.side == "back")
-    assert back.sheet_order == list(reversed(front.sheet_order))
+    assert back.sheet_order == tuple(reversed(front.sheet_order))
 
 
 def test_reverse_stack_false_keeps_back_pass_order():
@@ -186,7 +186,7 @@ def test_plan_passes_with_explicit_sheets_covers_only_those_sheets():
     profile = _profile()
     passes = plan_passes(_make_plan(10), profile, sheets=[7])
     for p in passes:
-        assert p.sheet_order == [7]
+        assert p.sheet_order == (7,)
 
 
 def test_every_pass_has_a_nonempty_reload_instruction_naming_axis_and_face():
@@ -362,7 +362,7 @@ def test_pass_export_carries_the_sheet_order_the_pass_would_feed():
     back = pass_export(plan, profile, "back")
     expected = next(p for p in plan_passes(plan, profile) if p.side == "back")
 
-    assert back.sheets == expected.sheet_order
+    assert back.sheets == list(expected.sheet_order)
     assert back.sheets == [3, 2, 1, 0]
 
 

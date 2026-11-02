@@ -49,9 +49,10 @@ its warnings. They are worth ten minutes.
 
 ### Size and orientation
 
-Presets: `letter`, `a4`, `legal` in the CLI; Letter, A4, Legal, A3 and Tabloid
-in the app. Any other size goes in as `WxH` with a unit — `--paper 500x700pt`,
-`--paper 210x297mm`.
+Presets: Letter, A4, Legal, A3 and Tabloid, in the app and, lowercase, in the CLI
+(`--paper a3`). Any other size goes in as `WxH` with a unit — `--paper 500x700pt`,
+`--paper 210x297mm` — or, in the app, through **Custom...** at the end of the
+Paper list.
 
 Orientation is stored as the paper tuple itself, not as a separate flag, so
 nothing downstream has to know about it. Changing the size in the app
@@ -178,11 +179,8 @@ body pages, with gutter 0.75in and fore-edge 0.25in, the measured inner
 margins across pages come out `[0.93, 0.75, 0.75, 0.75]` under `gutter`,
 `[0.75, 0.75, 0.75, 0.75]` under `outer`, and `[0.84, …]` under `split`.
 
-> **Note.** `slack_to` and the three non-gutter margins are configurable in
-> the desktop app and stored in the `.deckle` project file, but the CLI
-> currently exposes only `--gutter`. If you need specific head, tail or
-> fore-edge margins from the command line, set them in the app and save the
-> project. This is a genuine gap, not an omission from this guide.
+On the command line these are `--slack-to`, `--margin-top`, `--margin-bottom`
+and `--margin-outer`, alongside `--gutter`.
 
 ### One scale for the whole document
 
@@ -366,6 +364,10 @@ Sheets are numbered from 0, the same as everywhere else Deckle counts them.
 ```bash
 python -m deckle.cli export book.pdf -o proof.pdf --gutter 0.75in --sheets 0 --rule
 ```
+
+`--signature N` exports one gathering, counting from 1 as the schedule does, and
+`--split` writes every gathering to its own file (`out-sig-01.pdf`,
+`out-sig-02.pdf`, ...). Neither combines with `--sheets`.
 
 `--sheets` takes single numbers, comma lists and inclusive ranges — `0`,
 `2,0`, `0,2-4`. Asking for a sheet the document does not have is an error, not
@@ -717,10 +719,15 @@ Deckle turns that into a sentence before you touch the stack — for example:
 before reloading, flip each sheet on its long edge, face down, and print pass
 2 (backs)."*
 
-**The calibration wizard is not built — but its printed half is.** Until it
-is, Deckle uses two built-in generic presets covering the two common reload
-behaviours: a face-down printer whose stack comes out reversed, and a face-up
-printer that keeps its order.
+**File > Calibrate a printer...** walks you through it: it writes the sheets
+below, asks what you saw on each, refuses to guess if the portrait and landscape
+readings disagree or if a reading is one Deckle cannot explain, and saves the
+result under the printer's name. It has not yet been confirmed against a real
+printer. It does not ask for the registration offsets; recalibrating keeps the
+ones already saved, and **Edit profile...** in the Print dialog is where you
+type them in, along with anything else you have measured yourself. Until a printer is calibrated, Deckle uses two built-in
+generic presets covering the two common reload behaviours: a face-down printer
+whose stack comes out reversed, and a face-up printer that keeps its order.
 
 ### Measuring your printer instead of guessing it
 
@@ -772,6 +779,13 @@ one survives.
 Tick it. It prints a single sheet, stops, and waits for you to confirm. A
 minute spent here is the difference between discovering a bad profile on one
 sheet and discovering it on sixty.
+
+### Printing part of a job
+
+The **Sheets** box takes the same numbers `--sheets` does, counting from 0 as
+the schedule and the warnings do: `41`, `4-7`, `0,2-4`. Empty means all of them.
+The **Signature** dropdown fills it in for you, so reprinting one ruined sheet
+of a gathering is choosing the gathering and then narrowing the box.
 
 ### Resume, and when Deckle refuses
 
@@ -902,6 +916,13 @@ visible in your terminal.
 
 Print it. Hands covered in PVA do not scroll.
 
+Under `READ IT BACK`, each gathering is listed in the order a reader will turn
+its leaves, by the page numbers in the source file. The same line for the first
+gathering appears as **Read back** on the Signatures tab, and moves with the
+controls. It is the fold simulator working the order out a second time from how
+the paper folds. Two derivations that agree are worth having and are still not
+paper, so fold a numbered dummy before a real book.
+
 Real output, annotated:
 
 ```
@@ -1017,8 +1038,8 @@ you set up, previewed and saved, and silently overriding it from flag defaults
 would make `deckle-cli export project.deckle` produce a different book from the
 one the project describes. Layout flags typed beside a project are reported as
 ignored on stderr rather than quietly dropped — and rather than applied, which
-would be worse. `--sheets`, `--pass`, `--profile`, `--back-offset`, `--rule`
-and `--printer` are not layout, and are honoured. (`dummy`, `profile` and
+would be worse. `--sheets`, `--signature`, `--split`, `--pass`, `--profile`, `--back-offset`,
+`--rule` and `--printer` are not layout, and are honoured. (`dummy`, `profile` and
 `calibration-sheet` are the exceptions to all of this: none of them has a
 `SOURCE`.)
 
@@ -1042,6 +1063,12 @@ anything:
 | Option | Default | Notes |
 |---|---|---|
 | `--gutter LENGTH` | `0` | The spine margin. |
+| `--margin-top LENGTH` | `0` | The head margin. |
+| `--margin-bottom LENGTH` | `0` | The tail margin. |
+| `--margin-outer LENGTH` | `0` | The fore-edge margin. `0` prints to the paper edge, which the printer will clip. |
+| `--slack-to {gutter,outer,split}` | `gutter` | Which margin absorbs spare width. See §3. |
+| `--start-on-verso` | off | Begin on a left-hand page, at the cost of one leading blank. |
+| `--landscape-policy {rotate,scale}` | `rotate` | Turn a landscape page, or leave it upright and fit it to the width. |
 | `--paper PAPER` | `letter` | `letter`, `a4`, `legal`, or `WxH[unit]` such as `500x700pt`. |
 | `--landscape` | off | Turns the sheet on its side. Folio wants this. Applied to whatever you asked for, so `--paper 792x612pt --landscape` stays landscape rather than flipping back. |
 | `--binding-edge {left,right}` | `left` | Which edge the gutter shifts toward. Under folio this means reading direction. |
@@ -1071,6 +1098,8 @@ anything:
 | Option | Default | Notes |
 |---|---|---|
 | `--sheets SPEC` | every sheet | Export only these, counting from 0 — `0`, `2,0`, `0,2-4`. Print sheet 0 on its own to proof a job before committing the stack. |
+| `--signature N` | every signature | Export one gathering, counting from 1 as the schedule does. Not with `--sheets` or `--split`. |
+| `--split` | off | Write every gathering to its own file: `out-sig-01.pdf`, `out-sig-02.pdf`, and so on. Not with `--sheets` or `--signature`. |
 | `--rule` | off | Draw a ruler of known length on every sheet, to check whether the printer scaled the page. Use it on a proof, not on the job. |
 | `--pass {front,back}` | both faces | Write one manual-duplex pass instead of both: every front, or every back in the order your printer's reload behaviour demands. Requires `--profile`. |
 | `--profile NAME` | none | The printer profile describing your reload behaviour: one saved under the printer's name, or a built-in — `generic_face_down_reversed` or `generic_face_up_in_order`. |
@@ -1159,10 +1188,6 @@ the desktop app. Reaching it from the CLI would invert the dependency the CLI
 exists to keep — and would break the promise at the top of this section, that
 the CLI runs on a server with no display libraries at all. So `print` does
 everything up to the spooler and hands you two files and an instruction.
-
-**Not available from the CLI:** head, tail and fore-edge margins; `slack_to`;
-`start_on_recto`; landscape policy. Those are app-and-project-file settings
-today.
 
 ### Exit codes and streams
 

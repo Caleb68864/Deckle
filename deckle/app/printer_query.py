@@ -124,6 +124,8 @@ class _PrinterQuery:
     :ivar settled: whether either outcome has already been applied.
     :ivar timed_out: whether the deadline, rather than the worker, settled
         it.
+    :ivar worker_finished: whether the worker has returned, which a timed-out
+        query may be waiting on forever.
     """
 
     def __init__(self, worker: _PrinterQueryWorker, apply_result, timeout_ms: int) -> None:
@@ -132,6 +134,7 @@ class _PrinterQuery:
         self.timeout_ms = timeout_ms
         self.settled = False
         self.timed_out = False
+        self.worker_finished = False
 
     def complete(self) -> None:
         """Settle with the worker's names. Ignored if already settled.
@@ -140,6 +143,7 @@ class _PrinterQuery:
             unblocks is logged and discarded rather than re-enabling Print
             underneath a user who has since moved on.
         """
+        self.worker_finished = True
         if self.settled:
             log_event(
                 "printer_enumeration_late_result",

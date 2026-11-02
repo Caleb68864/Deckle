@@ -22,11 +22,11 @@ from __future__ import annotations
 
 import pikepdf
 
+from deckle.core.paper import LETTER_PT
 from deckle.core.paths import atomic_output
 from pikepdf import Name
 from pikepdf.canvas import ContentStreamBuilder
 
-LETTER_PT = (612.0, 792.0)
 
 _NUMERAL_SIZE_PT = 144.0
 """Big enough to read at arm's length on a bench, folded."""

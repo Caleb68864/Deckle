@@ -791,7 +791,7 @@ def test_removing_everything_leaves_no_current_row():
 
     view.remove_selection()
 
-    assert state.project.pages == []
+    assert state.project.pages == ()
 
 
 def test_remove_with_nothing_selected_does_nothing():

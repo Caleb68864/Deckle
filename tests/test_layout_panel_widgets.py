@@ -582,3 +582,21 @@ def test_the_weight_controls_are_declared_in_the_table(panel):
         "paper_type_combo",
     ):
         assert name in declared, f"{name} was added outside the CONTROLS table"
+
+
+def test_the_signatures_tab_shows_what_the_gathering_reads(panel):
+    """F10. One sheet per signature here, so a gathering is four pages."""
+    assert panel.read_back_label.text() == "reads 1  2  3  4"
+
+
+def test_moving_the_sheet_count_moves_the_read_back(panel):
+    panel.sheets_per_signature_spinbox.setValue(2)
+    assert panel.read_back_label.text() == "reads 1  2  3  4  5  6  7  8"
+
+
+def test_the_read_back_is_empty_for_flat_sheets():
+    from deckle.app.views.layout_panel import read_back_str
+    from deckle.core.models import SheetPlan
+
+    plan = SheetPlan(sheets=[], signatures=[], warnings=[], paper_pt=(612.0, 792.0))
+    assert read_back_str(plan) == ""

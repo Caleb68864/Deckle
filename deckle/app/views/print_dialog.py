@@ -23,6 +23,7 @@ import time
 from typing import Callable, Mapping, Sequence
 
 from deckle.app.printer_capabilities import profile_with_driver_margins
+from deckle.core.printing import parse_sheet_selection, sheet_selection_text
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import proof_rule_advice
 from deckle.core.models import SheetPlan
@@ -426,6 +427,7 @@ def _qt_widgets():
         QDialog,
         QHBoxLayout,
         QLabel,
+        QLineEdit,
         QMessageBox,
         QPushButton,
         QVBoxLayout,
@@ -437,6 +439,7 @@ def _qt_widgets():
         QDialog,
         QHBoxLayout,
         QLabel,
+        QLineEdit,
         QMessageBox,
         QPushButton,
         QVBoxLayout,
@@ -509,6 +512,7 @@ class PrintDialog:
         confirm_reload: Callable[[str], None] | None = None,
         confirm_test_sheet: Callable[[], bool] | None = None,
         show_offline_error: Callable[[str, str], None] | None = None,
+        profile_editor_cls=None,
     ) -> None:
         if backend_cls is None:
             from deckle.app.backend import QtPrintBackend
@@ -542,12 +546,14 @@ class PrintDialog:
             QDialog,
             QHBoxLayout,
             QLabel,
+            QLineEdit,
             QMessageBox,
             QPushButton,
             QVBoxLayout,
         ) = _qt_widgets()
         self._QMessageBox = QMessageBox
 
+        self._profile_editor_cls = profile_editor_cls
         self.widget = QDialog(parent)
         self.widget.setWindowTitle("Print")
 
@@ -564,6 +570,14 @@ class PrintDialog:
         if preselected is not None:
             self.printer_combo.setCurrentIndex(names.index(preselected))
         printer_row.addWidget(self.printer_combo)
+        self.edit_profile_button = QPushButton("Edit profile...", self.widget)
+        self.edit_profile_button.setToolTip(
+            "Record how this printer behaves on the reload, its printable "
+            "border, and the registration offset that puts the back behind "
+            "the front."
+        )
+        self.edit_profile_button.clicked.connect(self.edit_profile)
+        printer_row.addWidget(self.edit_profile_button)
         layout.addLayout(printer_row)
 
         # Which reload instruction this run will give. The app resolved the
@@ -604,19 +618,38 @@ class PrintDialog:
         )
         layout.addWidget(self.proof_checkbox)
 
-        # Signature selector: "All" (the default -- prints the whole plan)
-        # or one signature by index, so a binder can reprint a single
-        # gathering without touching pass/sheet-order arithmetic. That
-        # arithmetic already lives in `plan_passes`/`PrintSession` -- this
-        # combo only ever supplies a `sheets=` subset, never computes one.
+        # Signature selector: a shortcut that fills in the Sheets box below,
+        # so a subset lives in exactly one place. "All" (the default) clears
+        # it. The pass/sheet-order arithmetic stays in `plan_passes` and
+        # `PrintSession` -- this dialog only ever supplies a `sheets=` subset.
         signature_row = QHBoxLayout()
         signature_row.addWidget(QLabel("Signature:", self.widget))
         self.signature_combo = QComboBox(self.widget)
         self.signature_combo.addItem("All", None)
         for signature in self.plan.signatures:
             self.signature_combo.addItem(f"Signature {signature.index}", signature.sheet_indices)
+        self.signature_combo.setToolTip(
+            "A shortcut that fills in the Sheets box below. Edit that box to "
+            "narrow it further."
+        )
         signature_row.addWidget(self.signature_combo)
         layout.addLayout(signature_row)
+
+        # A typed range rather than a list: the grammar is the CLI's, so a
+        # number typed here and one passed to `--sheets` mean the same sheet,
+        # and `2,0` -- print sheet 2 first -- is sayable at all.
+        sheets_row = QHBoxLayout()
+        sheets_row.addWidget(QLabel("Sheets:", self.widget))
+        self.sheets_edit = QLineEdit(self.widget)
+        self.sheets_edit.setPlaceholderText("all")
+        self.sheets_edit.setToolTip(
+            "Which sheets to print, counting from 0 -- 41, or 4-7, or 0,2-4. "
+            "Leave empty for all of them.\n\n"
+            "Sheet numbers are the ones the binding schedule and the layout "
+            "warnings use."
+        )
+        sheets_row.addWidget(self.sheets_edit)
+        layout.addLayout(sheets_row)
 
         self.status_label = QLabel("", self.widget)
         layout.addWidget(self.status_label)
@@ -624,6 +657,12 @@ class PrintDialog:
         self.print_button = QPushButton("Print", self.widget)
         self.print_button.clicked.connect(self.start_print)
         layout.addWidget(self.print_button)
+
+        #: The subset the box names, ``None`` for all of them.
+        self._sheets: list[int] | None = None
+        self._sheets_problem = ""
+        self.sheets_edit.textChanged.connect(self._on_sheets_changed)
+        self.signature_combo.currentIndexChanged.connect(self._on_signature_chosen)
 
         lister = resumable_lister or self._session_cls.list_resumable
         self._resumable = lister()
@@ -683,6 +722,22 @@ class PrintDialog:
             profile, printer_name, is_saved, self._imageable_areas
         )
 
+    def edit_profile(self) -> None:
+        """Open the profile editor on what is selected for this printer.
+
+        :returns: nothing. A save re-reads the picker, so the new profile is
+            preselected and the next print uses it.
+        """
+        printer_name = self.printer_combo.currentText()
+        cls = self._profile_editor_cls
+        if cls is None:
+            from deckle.app.views.profile_editor import ProfileEditorDialog as cls
+        editor = cls(printer_name, self.widget, start_from=self.selected_profile())
+        editor.widget.exec()
+        if editor.saved_profile is not None:
+            self._sync_profile_choices(printer_name)
+            self.status_label.setText(f"Saved the profile for {printer_name!r}.")
+
     def selected_profile(self) -> PrinterProfile:
         """The profile the dialog is currently set to print with.
 
@@ -740,10 +795,49 @@ class PrintDialog:
 
     # -- starting a fresh print run ------------------------------------------
 
+    def _on_signature_chosen(self, _index: int) -> None:
+        """Write the chosen signature's sheets into the box.
+
+        :param _index: the combo's new index, read back as its data.
+        :returns: nothing.
+        """
+        self.sheets_edit.setText(sheet_selection_text(self.signature_combo.currentData() or ()))
+
+    def _on_sheets_changed(self, text: str) -> None:
+        """Validate the typed selection and gate Print on it.
+
+        ``PrintSession`` does not check ``sheets``, so a number the document
+        has not got would otherwise submit an empty pass and report success.
+
+        :param text: what the box now holds.
+        :returns: nothing.
+        """
+        self._sheets = None
+        self._sheets_problem = ""
+        message = ""
+        if text.strip():
+            try:
+                selection = parse_sheet_selection(text)
+            except ValueError as exc:
+                self._sheets_problem = str(exc)
+            else:
+                have = {sheet.index for sheet in self.plan.sheets}
+                missing = sorted({i for i in selection if i not in have})
+                if missing:
+                    self._sheets_problem = (
+                        f"No sheet {', '.join(str(i) for i in missing)} in this "
+                        f"document -- it has {len(self.plan.sheets)}, numbered from 0."
+                    )
+                else:
+                    self._sheets = selection
+                    message = f"{len(selection)} of {len(self.plan.sheets)} sheet(s) selected."
+        self.status_label.setText(self._sheets_problem or message)
+        self.print_button.setEnabled(not self._sheets_problem)
+
     def start_print(self) -> None:
         """Construct a fresh ``PrintSession`` for the selected printer and run it.
 
-        The signature combo supplies a ``sheets=`` subset and nothing more
+        The Sheets box supplies a ``sheets=`` subset and nothing more
         -- reprinting one gathering is the normal path with a smaller
         input, and the pass/sheet-order arithmetic stays in
         ``plan_passes``/``PrintSession``.
@@ -753,11 +847,15 @@ class PrintDialog:
             session on disk, rather than raising. A plan with no sheets is
             refused before a session exists.
         """
+        if self._sheets_problem:
+            # Refused here as well as at the button, like an empty plan below.
+            self.status_label.setText(self._sheets_problem)
+            return
         printer_name = self.printer_combo.currentText()
         profile = self._selected_profile(printer_name)
         self._remember_profile_choice(printer_name)
         backend = self._backend_cls(profile)
-        sheets = self.signature_combo.currentData()
+        sheets = self._sheets
         if self.proof_checkbox.isChecked():
             self.print_proof(backend, printer_name, sheets)
             return

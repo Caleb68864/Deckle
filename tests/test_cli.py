@@ -394,3 +394,80 @@ def test_the_cli_module_never_reaches_for_the_defaults_store():
         assert "core.defaults" not in source, path
         assert "load_defaults" not in source, path
         assert "defaults_path" not in source, path
+
+
+# -- F5: the rest of the page box --------------------------------------------
+
+
+def _layout_after_impose(tmp_path, *flags):
+    from deckle.core.project_io import load_project
+
+    out = tmp_path / "book.deckle"
+    assert main(["impose", FIXTURE, "-o", str(out), *flags]) == 0
+    return load_project(str(out), allowed_roots=(os.path.dirname(FIXTURE),)).layout
+
+
+def test_the_cli_reaches_every_margin(tmp_path):
+    layout = _layout_after_impose(
+        tmp_path, "--margin-top", "0.5in", "--margin-bottom", "36pt", "--margin-outer", "1in"
+    )
+    assert (layout.margin_top_pt, layout.margin_bottom_pt, layout.margin_outer_pt) == (
+        36.0, 36.0, 72.0
+    )
+
+
+def test_the_cli_reaches_the_other_three_settings(tmp_path):
+    layout = _layout_after_impose(
+        tmp_path, "--slack-to", "split", "--start-on-verso", "--landscape-policy", "scale"
+    )
+    assert layout.slack_to == "split"
+    assert layout.start_on_recto is False
+    assert layout.landscape_policy == "scale"
+
+
+def test_the_new_flags_default_to_the_models_defaults(tmp_path):
+    from deckle.core.models import LayoutSettings
+
+    layout = _layout_after_impose(tmp_path)
+    model = LayoutSettings(paper=layout.paper, gutter_pt=0.0, binding_edge="left")
+    for name in (
+        "margin_top_pt", "margin_bottom_pt", "margin_outer_pt",
+        "slack_to", "start_on_recto", "landscape_policy",
+    ):
+        assert getattr(layout, name) == getattr(model, name), name
+
+
+def test_a_margin_moves_the_page_on_the_sheet(tmp_path):
+    """Reaching the model is not the point; moving the paper is."""
+    from deckle.core.layout import GutterShiftStrategy
+    from deckle.core.loader import load_pdf
+
+    pages = load_pdf(FIXTURE)
+    plain = GutterShiftStrategy().impose(pages, _layout_after_impose(tmp_path))
+    margined = GutterShiftStrategy().impose(
+        pages, _layout_after_impose(tmp_path, "--margin-top", "1in", "--margin-outer", "1in")
+    )
+    assert plain.sheets[0].front.pages[0].placement != margined.sheets[0].front.pages[0].placement
+
+
+@pytest.mark.parametrize(
+    "flags, named",
+    [
+        (("--margin-top", "1in"), "--margin-top"),
+        (("--slack-to", "split"), "--slack-to"),
+        (("--start-on-verso",), "--start-on-verso"),
+        (("--landscape-policy", "scale"), "--landscape-policy"),
+    ],
+)
+def test_the_new_flags_are_reported_as_ignored_against_a_project(tmp_path, capsys, flags, named):
+    project = tmp_path / "p.deckle"
+    assert main(["impose", FIXTURE, "-o", str(project)]) == 0
+    capsys.readouterr()
+    assert main(["info", str(project), *flags]) == 0
+    err = capsys.readouterr().err
+    assert named in err and "ignored" in err
+
+
+def test_a_negative_margin_is_refused(tmp_path):
+    with pytest.raises(SystemExit):
+        main(["impose", FIXTURE, "-o", str(tmp_path / "x.deckle"), "--margin-top=-1in"])

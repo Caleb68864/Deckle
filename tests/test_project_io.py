@@ -471,3 +471,45 @@ def test_the_private_aliases_still_name_the_same_functions():
 
     assert project_io._layout_to_dict is project_io.layout_to_dict
     assert project_io._layout_from_dict is project_io.layout_from_dict
+
+
+# -- B28: the last field nothing checked ------------------------------------
+
+
+def _written_with_printer(path, *printer):
+    from deckle.core.models import LayoutSettings, Project
+    from deckle.core.project_io import save_project
+
+    save_project(
+        Project(
+            pages=[],
+            layout=LayoutSettings(paper=(612.0, 792.0), gutter_pt=0.0, binding_edge="left"),
+            printer=None,
+        ),
+        path,
+    )
+    data = json.loads(path.read_text())
+    if printer:
+        data["printer"] = printer[0]
+    else:
+        del data["printer"]
+    path.write_text(json.dumps(data))
+
+
+@pytest.mark.parametrize("printer", [{"a": 1}, 7, ["Brother"], True])
+def test_a_project_whose_printer_is_not_text_is_refused(tmp_path, printer):
+    from deckle.core.project_io import load_project
+
+    path = tmp_path / "book.deckle"
+    _written_with_printer(path, printer)
+    with pytest.raises(ValueError, match="'printer'"):
+        load_project(str(path))
+
+
+@pytest.mark.parametrize("printer", [(), (None,), ("Brother",)])
+def test_a_project_with_a_name_or_no_printer_still_opens(tmp_path, printer):
+    from deckle.core.project_io import load_project
+
+    path = tmp_path / "book.deckle"
+    _written_with_printer(path, *printer)
+    assert load_project(str(path)).printer == (printer[0] if printer else None)

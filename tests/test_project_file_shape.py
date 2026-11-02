@@ -197,5 +197,5 @@ def test_a_well_formed_project_is_unaffected(tmp_path):
 
     project = load_project(path, check_sources=False)
 
-    assert project.pages == []
+    assert project.pages == ()
     assert project.layout.paper == (792.0, 612.0)

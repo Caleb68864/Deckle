@@ -40,9 +40,10 @@ app = QApplication([])
 
 import deckle.app.main as am
 import deckle.app.printer_query as pq
+from deckle.app.workers import run_inline
 pq.available_printer_names = lambda: []
 am.MainWindow.refresh_printers = (
-    lambda self, blocking=False, timeout_ms=None: self._apply_printers([])
+    lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers([])
 )
 
 from dataclasses import replace
@@ -52,6 +53,7 @@ fixture, workdir = sys.argv[1], sys.argv[2]
 report = {}
 
 window = am.MainWindow()
+window._job_runner = run_inline
 
 # -- the menu bar exists at all ---------------------------------------
 bar = window.window.menuBar()

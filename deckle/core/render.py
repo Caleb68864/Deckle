@@ -268,7 +268,9 @@ def thumbnails(
                     # raised FileNotFoundError, which failed the WHOLE
                     # window -- one inserted blank left every thumbnail
                     # beside it missing too.
-                    result.append(_blank_thumbnail(ref, dpi))
+                    result.append(
+                        _blank_thumbnail(ref, dpi, rotate_deg=source_page.rotate_deg)
+                    )
                     continue
                 doc = open_docs.get(ref.path)
                 if doc is None:
@@ -290,11 +292,13 @@ def thumbnails(
     return result
 
 
-def _blank_thumbnail(ref: SourceRef, dpi: int) -> RenderedPage:
+def _blank_thumbnail(ref: SourceRef, dpi: int, *, rotate_deg: int) -> RenderedPage:
     """A white thumbnail matching a blank page's shape.
 
     :param ref: the blank's reference, for its dimensions.
     :param dpi: the render resolution the rest of the window used.
+    :param rotate_deg: the user's rotation for this page. No default, so a
+        new call site cannot drop it silently.
     :returns: an opaque white page.
 
     White rather than a zero-size page: a degenerate ``RenderedPage`` means
@@ -303,8 +307,12 @@ def _blank_thumbnail(ref: SourceRef, dpi: int) -> RenderedPage:
     deliberately inserted should look like a blank sheet.
     """
     scale = dpi / 72.0
-    width = max(1, int(round(ref.width_pt * scale)))
-    height = max(1, int(round(ref.height_pt * scale)))
+    width_pt, height_pt = ref.width_pt, ref.height_pt
+    # pdfium turns a real page's bitmap; a blank is drawn, so swap by hand.
+    if rotate_deg % 360 in (90, 270):
+        width_pt, height_pt = height_pt, width_pt
+    width = max(1, int(round(width_pt * scale)))
+    height = max(1, int(round(height_pt * scale)))
     return RenderedPage(
         width=width,
         height=height,
@@ -329,7 +337,9 @@ def _pdfium_rotation(rotate_deg: int) -> int:
     return (round(rotate_deg / 90.0) * 90) % 360
 
 
-_ink_bbox_cache: OrderedDict[SourceRef, tuple[float, float, float, float]] = OrderedDict()
+_ink_bbox_cache: OrderedDict[
+    tuple[SourceRef, int], tuple[float, float, float, float]
+] = OrderedDict()
 _ink_bbox_cache_lock = threading.Lock()
 
 
@@ -350,8 +360,10 @@ def _rasterize_for_bbox(ref: SourceRef, dpi: int):
 def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]:
     """The bounding box of non-background content on ``ref``, in PDF points.
 
-    Cached per ``SourceRef`` -- calling this twice for the same ref
-    rasterizes only once. A page with no non-background pixels (blank)
+    Cached per ``(ref, dpi)`` -- calling this twice for the same ref at the
+    same resolution rasterizes only once. ``dpi`` is in the key because it
+    changes the answer: re-measuring at a higher one after a crop clipped a
+    descender must not hand back the old measurement. A page with no non-background pixels (blank)
     returns a degenerate ``(0.0, 0.0, 0.0, 0.0)`` box rather than raising.
 
     The cache is LRU-bounded at :data:`_INK_BBOX_CACHE_MAX` entries; past
@@ -367,10 +379,11 @@ def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]
     :raises pypdfium2.PdfiumError: the source cannot be opened or
         rasterized.
     """
+    key = (ref, dpi)
     with _ink_bbox_cache_lock:
-        cached = _ink_bbox_cache.get(ref)
+        cached = _ink_bbox_cache.get(key)
         if cached is not None:
-            _ink_bbox_cache.move_to_end(ref)
+            _ink_bbox_cache.move_to_end(key)
             return cached
 
     pil_image = _rasterize_for_bbox(ref, dpi)
@@ -388,8 +401,8 @@ def ink_bbox(ref: SourceRef, dpi: int = 36) -> tuple[float, float, float, float]
         result = _scale_bbox_to_points(bbox_px, pil_image.size, ref)
 
     with _ink_bbox_cache_lock:
-        _ink_bbox_cache[ref] = result
-        _ink_bbox_cache.move_to_end(ref)
+        _ink_bbox_cache[key] = result
+        _ink_bbox_cache.move_to_end(key)
         while len(_ink_bbox_cache) > _INK_BBOX_CACHE_MAX:
             _ink_bbox_cache.popitem(last=False)
     return result

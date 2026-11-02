@@ -50,6 +50,21 @@ into two cells at the fold -- see ``cell_geometry``.
 """
 
 
+def _require(condition: bool, message: str) -> None:
+    """An invariant check that ``python -O`` cannot strip.
+
+    A plain ``assert`` vanishes under ``-O``, which is how a frozen build may
+    run, and these guard the order pages reach paper in.
+
+    :param condition: what must hold.
+    :param message: what it means if it does not.
+    :returns: nothing.
+    :raises AssertionError: ``condition`` is false.
+    """
+    if not condition:
+        raise AssertionError(message)
+
+
 def _full_sheet_cell(paper: tuple[float, float]) -> Cell:
     return (0.0, 0.0, paper[0], paper[1])
 
@@ -696,8 +711,9 @@ def actual_margins_pt(
     ``0`` -- and pass ``spine_side`` instead of ``is_recto``, since the
     folio spine is a function of cell position, not page parity.
 
-    :param output_page: the placed page to measure. A filler page has no
-        content, so it measures as all zeros rather than raising.
+    :param output_page: the placed page to measure. Its ``crop_pt`` is
+        honoured. A filler page has no content, so it measures as all zeros
+        rather than raising.
     :param paper: the sheet size, used only to derive the default cell.
     :param is_recto: whether this is a right-hand page. Ignored when
         ``spine_side`` is given.
@@ -718,7 +734,12 @@ def actual_margins_pt(
     if ref is None:
         return (0.0, 0.0, 0.0, 0.0)
 
-    src_w, src_h = ref.width_pt, ref.height_pt
+    # The imposer scales the CROPPED page and the exporter draws it, so that
+    # is the footprint. Insets come off first: they are named in the source
+    # page's own frame, not the rotated one.
+    crop = output_page.crop_pt or (0.0, 0.0, 0.0, 0.0)
+    src_w = ref.width_pt - crop[0] - crop[2]
+    src_h = ref.height_pt - crop[1] - crop[3]
     if p.rotate_deg in (90, 270):
         src_w, src_h = src_h, src_w
     scaled_w = src_w * p.scale_x
@@ -1183,20 +1204,24 @@ class SaddleStitchStrategy:
 
         # Invariants, verified rather than trusted -- the SS-03 precedent.
         all_sheet_indices = [i for sig in signatures for i in sig.sheet_indices]
-        assert all_sheet_indices == list(range(len(sheets))), (
+        _require(
+            all_sheet_indices == list(range(len(sheets))),
             "signature sheet_indices must be contiguous, gapless, and cover "
-            "every sheet exactly once, in binding order"
+            "every sheet exactly once, in binding order",
         )
-        assert all(len(sig_slice) % 4 == 0 for sig_slice in signature_slices), (
-            "every signature's slot count must be a multiple of 4"
+        _require(
+            all(len(sig_slice) % 4 == 0 for sig_slice in signature_slices),
+            "every signature's slot count must be a multiple of 4",
         )
-        assert sum(len(sig_slice) for sig_slice in signature_slices) == len(slots), (
-            "signature slot counts must sum to the padded page count"
+        _require(
+            sum(len(sig_slice) for sig_slice in signature_slices) == len(slots),
+            "signature slot counts must sum to the padded page count",
         )
         concatenated = [slot for sig_slice in signature_slices for slot in sig_slice]
-        assert concatenated == slots, (
+        _require(
+            concatenated == slots,
             "concatenating the signatures' source slices must reproduce the "
-            "padded page list in order"
+            "padded page list in order",
         )
 
         return SheetPlan(

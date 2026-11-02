@@ -202,7 +202,7 @@ from deckle.core.loader import load_pdf
 # enumeration thread with no event loop to finish on would never answer.
 pq.available_printer_names = lambda: ["Fake Printer"]
 am.MainWindow.refresh_printers = (
-    lambda self, blocking=False, timeout_ms=None: self._apply_printers(["Fake Printer"])
+    lambda self, blocking=False, timeout_ms=None, quiet=False: self._apply_printers(["Fake Printer"])
 )
 
 fixture = sys.argv[1]
