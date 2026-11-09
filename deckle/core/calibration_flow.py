@@ -33,7 +33,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from deckle.core.calibration import ANSWER_VALUES, derive_profile
-from deckle.core.calibration_sheet import SHEETS
+import math
+
+from deckle.core.calibration_sheet import MM_PT, REGISTRATION_SCALE_MM, SHEETS
 from deckle.core.profiles import PrinterProfile
 
 
@@ -173,6 +175,41 @@ def reconcile(
     return left
 
 
+def registration_offset_pt(x_mm: float, y_mm: float) -> tuple[float, float]:
+    """The profile's registration offsets, from the two numbers on the target (F3).
+
+    The back face of the calibration sheet carries two numbered millimetre
+    scales, and the front's heavy cross is read through the paper against
+    them (:func:`deckle.core.calibration_sheet._registration_scale`). The
+    scales are numbered so that what the operator reads **is** the
+    correction, sign included, in the frame
+    :attr:`~deckle.core.profiles.PrinterProfile.back_offset_x_pt` is stored
+    in -- so this is a unit conversion and a range check, and nothing else.
+    A sign flip added here would be a second place the convention lives.
+
+    :param x_mm: the number the front's vertical line crosses on the back's
+        left-right scale.
+    :param y_mm: the number the front's horizontal line crosses on the
+        back's up-down scale.
+    :returns: ``(back_offset_x_pt, back_offset_y_pt)``.
+    :raises ValueError: a reading is not a finite number, or lies past the
+        end of the printed scale. Off the scale is refused rather than
+        clamped: a clamped reading saves a correction known to be short, and
+        the remedy -- set a rough offset by hand, reprint, read again -- is
+        in the message.
+    """
+    for axis, value in (("X", x_mm), ("Y", y_mm)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f"registration reading {axis}={value!r} is not a number")
+        if abs(value) > REGISTRATION_SCALE_MM:
+            raise ValueError(
+                f"registration reading {axis}={value:g} mm is off the printed "
+                f"scale (+/-{REGISTRATION_SCALE_MM} mm). Set a rough offset by "
+                f"hand, reprint the sheet, and read it again."
+            )
+    return (x_mm * MM_PT, y_mm * MM_PT)
+
+
 #: The screens, in order, as `(key, heading, body)`.
 #:
 #: Declared here rather than in the Qt shell so the order and the wording are
@@ -208,8 +245,13 @@ SCREENS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "measure",
-        "Measure the printable border",
-        "Measure the unprinted border on any of the four sheets, on each edge.",
+        "Measure the printable border and read the registration",
+        "Measure the unprinted border on any of the four sheets, on each edge. "
+        "Then hold sheet 1 up to a bright light with its BACK towards you, "
+        "reading upright: the FRONT's heavy cross shows through across two "
+        "numbered scales. Tick the box and enter the two numbers it crosses, "
+        "with their sign -- they are the correction, in millimetres. Leave it "
+        "unticked to keep the registration already saved.",
     ),
     (
         "save",
