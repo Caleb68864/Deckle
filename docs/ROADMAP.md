@@ -362,7 +362,19 @@ for that reason. Kept for the record.
 
 ---
 
-## 6. A suggested order
+## 5a. Hardening pass, 2026-11-09
+
+Branch `harden/2026-11-09`. Looked for swallowed exceptions, unclear failure
+messages, missing logging on the print and export paths, flaky tests, and
+state reached through `MainWindow.__dict__`. Each fix has a test that was run
+against the pre-fix tree and failed there.
+
+| ID | Finding | Status |
+|---|---|---|
+| **H1** ✅ | **`test_shutdown.py::test_a_probe_run_cleans_up_its_scratch_data_root` flaked when several suites ran at once.** Its leak check diffed a glob of the *shared* system temp directory for `deckle-shutdown-data-*`, so another pytest process's live probe, created between the two listings, read as a leak here. Probe data roots now go under a per-process parent (`_PROBE_PARENT`, removed at exit) and the check globs only that. `test_the_leak_check_does_not_count_another_processes_probe` fails on the old helper; `test_probe_data_roots_are_created_where_the_leak_check_looks` proves the scoped check still sees a real leak. | Fixed |
+| **H6** | **`MainWindow.__dict__`**: no access through `__dict__`, `vars()` or `MainWindow.__new__` exists in `deckle/` or `tests/` on `main` at `3073071` (grepped). Nothing to fix on this branch; if it exists, it is on an unmerged branch. | Checked, none found |
+
+
 
 Not a commitment; a starting point for the conversation.
 

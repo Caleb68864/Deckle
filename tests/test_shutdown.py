@@ -17,6 +17,7 @@ be caught, only observed as an exit code.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
@@ -29,6 +30,17 @@ import pytest
 #: the creation and the test that checks nothing is left behind all have
 #: to agree about it, and three copies of a string is how they stop.
 _DATA_ROOT_PREFIX = "deckle-shutdown-data-"
+
+#: Where this process puts its probes' data roots: a directory of its own,
+#: not the system temp directory. The leak check diffs a listing, and a
+#: listing of the shared temp directory is a diff against every *other*
+#: pytest process on the machine. Run four suites at once (four worktrees,
+#: say) and another process's probe creates ``deckle-shutdown-data-*``
+#: between this test's two listings, so the test reported a leak that was
+#: someone else's directory, alive and about to be removed by its owner.
+#: Removed at exit, so it cannot become the leak it exists to catch.
+_PROBE_PARENT = tempfile.mkdtemp(prefix="deckle-shutdown-probes-")
+atexit.register(shutil.rmtree, _PROBE_PARENT, True)
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(REPO_ROOT, "tests", "fixtures", "sample.pdf")
@@ -104,7 +116,7 @@ def _run(how: str) -> subprocess.CompletedProcess:
     # cannot answer. Point the data root at a scratch directory so the
     # probe sees an empty store -- and so it cannot leave recovery offers
     # in the developer's real one either.
-    data_root = tempfile.mkdtemp(prefix=_DATA_ROOT_PREFIX)
+    data_root = tempfile.mkdtemp(prefix=_DATA_ROOT_PREFIX, dir=_PROBE_PARENT)
     env["XDG_DATA_HOME"] = data_root
     env["APPDATA"] = data_root
     try:
@@ -126,17 +138,52 @@ def _run(how: str) -> subprocess.CompletedProcess:
 
 
 def _scratch_roots() -> set[str]:
-    """Every scratch data root this module has left in the temp directory.
+    """Every scratch data root this process's probes have left behind.
 
-    Globbed on the same prefix ``_run`` creates, taken from the one
-    constant rather than retyped, so a renamed prefix cannot make this
-    check quietly look at nothing.
+    Globbed on the same prefix and parent ``_run`` creates, taken from the
+    constants rather than retyped, so a renamed prefix cannot make this
+    check quietly look at nothing -- and scoped to :data:`_PROBE_PARENT`,
+    so another process's live probe is not counted as this one's leak.
     """
     import glob
 
-    return set(
-        glob.glob(os.path.join(tempfile.gettempdir(), f"{_DATA_ROOT_PREFIX}*"))
+    return set(glob.glob(os.path.join(_PROBE_PARENT, f"{_DATA_ROOT_PREFIX}*")))
+
+
+def test_the_leak_check_does_not_count_another_processes_probe():
+    """The flake behind ``test_a_probe_run_cleans_up_its_scratch_data_root``.
+
+    It failed whenever several suites ran at once: the check globbed the
+    shared temp directory, so a concurrent run's probe -- created between
+    the two listings and removed moments later by its own process -- read
+    as a leak here. Simulated directly: a directory exactly like another
+    process's probe root must not appear in this process's listing.
+    """
+    foreign = tempfile.mkdtemp(prefix=_DATA_ROOT_PREFIX)
+    try:
+        assert foreign not in _scratch_roots()
+    finally:
+        shutil.rmtree(foreign, ignore_errors=True)
+
+
+def test_probe_data_roots_are_created_where_the_leak_check_looks(monkeypatch):
+    """The other half: scoping the check must not blind it. A root ``_run``
+    creates and fails to remove has to show up in ``_scratch_roots()``."""
+    pytest.importorskip("PySide6")
+    real_rmtree = shutil.rmtree
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "", "")
     )
+    before = _scratch_roots()
+    _run("close")
+    monkeypatch.undo()
+    leaked = _scratch_roots() - before
+    try:
+        assert len(leaked) == 1
+    finally:
+        for path in leaked:
+            real_rmtree(path, ignore_errors=True)
 
 
 def test_a_probe_run_cleans_up_its_scratch_data_root():
