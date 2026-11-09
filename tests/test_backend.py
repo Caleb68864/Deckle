@@ -417,3 +417,43 @@ def test_the_session_tells_the_backend_which_side_to_paint():
             f"PrintSession._submit_sheets does not pass {fragment!r}; a back "
             "pass submitted without it paints fronts"
         )
+
+
+# -- 2026-11-09 hardening: a failure must never read as a success -----------
+
+
+class _SilentFailureBackend(QtPrintBackend):
+    """Fails every chunk with an exception that carries no message."""
+
+    def _submit_chunk(self, plan, sheets, printer_name, copies, dpi, side, rotate_backs, **_):
+        raise RuntimeError()
+
+
+def test_a_message_less_failure_is_still_an_error():
+    """``str(RuntimeError())`` is ``""``, and ``PrintSession`` tests
+    ``if result.error:`` -- so a chunk that printed nothing came back
+    looking like success and the cursor walked past it."""
+    backend = _SilentFailureBackend(_profile(), chunk_size=10)
+
+    result = backend.submit(plan=None, sheets=[0, 1], printer_name="P", copies=1, dpi=300)
+
+    assert result.error, f"empty error reads as success: {result.error!r}"
+    assert "RuntimeError" in result.error
+
+
+def test_a_message_less_failure_stops_the_pass():
+    backend = _SilentFailureBackend(_profile(), chunk_size=10)
+
+    result = backend.submit_pass(
+        plan=None, print_pass=_pass(range(25)), printer_name="P", copies=1, dpi=300
+    )
+
+    assert result.submitted == 0
+    assert result.error
+
+
+def test_a_failure_with_a_message_is_passed_through_unchanged():
+    from deckle.app.backend import failure_text
+
+    assert failure_text(OSError("printer offline")) == "printer offline"
+    assert failure_text(KeyError()) == "KeyError (no message from the print system)"

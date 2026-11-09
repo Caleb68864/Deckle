@@ -389,6 +389,25 @@ class DuplexModes:
     single_pass_duplex: bool
 
 
+def failure_text(exc: BaseException) -> str:
+    """``PrintResult.error`` for a caught exception -- never empty.
+
+    ``PrintSession`` and ``submit_pass`` test ``if result.error:``, so an
+    error of ``""`` reads as *success*. ``str(exc)`` is ``""`` for any
+    exception raised without a message (a bare ``RuntimeError()`` from a
+    driver shim, a ``KeyError()``), and a chunk that put nothing on paper was
+    then counted as printed: the cursor walked past it and the run went on,
+    eventually to the back pass. Naming the type keeps the failure a failure
+    and gives the operator something to quote. A message that
+    exists is passed through unchanged -- it is what the driver said.
+
+    :param exc: what the submission raised.
+    :returns: a non-empty, one-line description.
+    """
+    detail = str(exc).strip()
+    return detail or f"{type(exc).__name__} (no message from the print system)"
+
+
 class QtPrintBackend:
     """Implements ``PrintBackend`` by painting rasterized sheets via Qt.
 
@@ -533,7 +552,7 @@ class QtPrintBackend:
                 copies=copies,
                 dpi=dpi,
             )
-            return PrintResult(submitted=0, job_id=None, error=str(exc))
+            return PrintResult(submitted=0, job_id=None, error=failure_text(exc))
 
         # The paper is already out by this point, so a logging failure is a
         # different animal from a print failure and has to be reported as
@@ -723,7 +742,7 @@ class QtPrintBackend:
             log_exception(
                 "proof_failed", exc, printer=printer_name, sheet=sheet_index, dpi=dpi
             )
-            return PrintResult(submitted=0, job_id=None, error=str(exc))
+            return PrintResult(submitted=0, job_id=None, error=failure_text(exc))
         # No `log_print_job`: the session log records the paper a *job*
         # consumed, and a proof is not part of one. Counting it there would
         # put a sheet in the record that no pass ever fed.
@@ -967,7 +986,7 @@ class QtPrintBackend:
                     uncertain_sheets=list(chunk),
                     unsubmitted_sheets=remaining,
                 )
-                return PrintResult(submitted=submitted_total, job_id=None, error=str(exc))
+                return PrintResult(submitted=submitted_total, job_id=None, error=failure_text(exc))
             # `submit_duplex` paints both faces of every sheet in one go,
             # so there is no single `side` and no half turn to record --
             # the duplexer performs the turn, not Deckle.
