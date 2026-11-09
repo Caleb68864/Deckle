@@ -833,11 +833,18 @@ Store them on the profile once you know them, as `back_offset_x_pt` and
 every desktop print run applies them without the flag. `--back-offset`
 overrides the stored value, which is what makes trial-and-error bearable.
 
-**Finding your two numbers.** The calibration sheet above carries a crosshair
-at the exact centre of every face, with 1 mm ticks along its arms — hold sheet
-1 up to a bright light and read the gap between the front cross and the back
-one straight off the paper. That is usually enough. Failing that, or to
-confirm it, the iterative version:
+**Finding your two numbers.** The calibration sheet above is a registration
+target you read the numbers straight off. Every FRONT carries a plain heavy
+cross at the exact centre; every BACK carries two numbered millimetre scales
+through the centre (0.5 mm ticks, labelled every 5 mm, `+` to the right and
+`+` upwards). Hold sheet 1 up to a bright light **with its back towards you,
+reading upright**: the front's cross shows through, and the two numbers it
+crosses are the correction itself, sign included — enter them in the
+calibration wizard's measure screen (**I read the registration scales**), or
+give them as `--back-offset Xmm,Ymm`. No sign to flip: the scales are numbered
+in the frame the profile stores. The scales run ±10 mm; a printer off by more
+than that needs a rough offset set by hand first, then a reprint. Failing that,
+or to confirm it, the iterative version:
 
 1. Print one sheet, both sides, with a ruler on each face:
    `--sheets 0 --rule`, once with `--pass front` and once with `--pass back`.

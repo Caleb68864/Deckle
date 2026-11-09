@@ -70,7 +70,19 @@ if one jams.
 _BAND_INSET_PT = 12.0
 _BAND_HEIGHT_PT = 16.0
 _REG_ARM_PT = 40.0
-_REG_TICKS_MM = 10
+
+REGISTRATION_SCALE_MM = 10
+"""How far the back face's numbered registration scales run either side of
+zero, in millimetres. A reading outside this is off the scale, and
+:func:`deckle.core.calibration_flow.registration_offset_pt` refuses it rather
+than clamping it to the end -- a clamped reading would save a correction that
+is known to be short."""
+
+REGISTRATION_STEP_MM = 0.5
+"""The finest graduation on the back's scales. The operator reads to the
+nearest one, so a saved correction is good to about a quarter of this."""
+
+_REG_LABEL_EVERY_MM = 5
 
 _FACE_LABELS = ("FRONT", "BACK")
 
@@ -178,40 +190,122 @@ def _filled_triangle(
     builder.pop()
 
 
-def _registration_cross(
+def _registration_index(
     builder: ContentStreamBuilder, centre_x: float, centre_y: float
 ) -> None:
-    """Crosshairs with millimetre ticks, at the sheet's exact centre.
+    """The FRONT's registration mark: a plain, heavy cross at the exact centre.
 
-    **The centre is not decoration.** A flip about any centre axis maps
-    the centre to itself, so a cross there coincides with the back's cross
-    whatever the operator did with the stack -- and any gap between the
-    two, held up to a light, is the registration offset itself rather than
-    a consequence of where the mark was put. An off-centre mark would
-    measure the flip instead.
+    **The centre is not decoration.** A flip about either centre axis, and a
+    half turn, map the centre to itself and a line through it onto a line
+    through it -- so however the operator turned the stack, this cross lands
+    on the back's zero when registration is perfect, and any gap is the
+    registration error itself rather than a consequence of where the mark was
+    put. An off-centre mark would measure the flip instead.
+
+    Deliberately carries no ticks. It is read *through the paper* against the
+    back's numbered scales (:func:`_registration_scale`), and ticks of its own
+    would show through as a second, mirrored scale to misread.
     """
     builder.push()
-    builder.set_line_width(0.7)
+    builder.set_line_width(1.2)
     builder.line(centre_x - _REG_ARM_PT, centre_y, centre_x + _REG_ARM_PT, centre_y)
     builder.stroke_and_close()
     builder.line(centre_x, centre_y - _REG_ARM_PT, centre_x, centre_y + _REG_ARM_PT)
     builder.stroke_and_close()
-
-    for step in range(1, _REG_TICKS_MM + 1):
-        offset = step * MM_PT
-        length = 7.0 if step % 5 == 0 else 3.0
-        for sign in (-1.0, 1.0):
-            builder.line(
-                centre_x + sign * offset, centre_y - length,
-                centre_x + sign * offset, centre_y + length,
-            )
-            builder.stroke_and_close()
-            builder.line(
-                centre_x - length, centre_y + sign * offset,
-                centre_x + length, centre_y + sign * offset,
-            )
-            builder.stroke_and_close()
     builder.pop()
+
+
+def registration_scale_ticks() -> tuple[float, ...]:
+    """The back scales' graduations, in millimetres from zero, ascending.
+
+    Exposed so the tests can state the scale's extent and resolution without
+    restating the loop that draws it.
+
+    :returns: every tick position from ``-REGISTRATION_SCALE_MM`` to
+        ``+REGISTRATION_SCALE_MM`` in steps of :data:`REGISTRATION_STEP_MM`.
+    """
+    steps = int(round(REGISTRATION_SCALE_MM / REGISTRATION_STEP_MM))
+    return tuple(k * REGISTRATION_STEP_MM for k in range(-steps, steps + 1))
+
+
+def registration_scale_labels() -> tuple[str, ...]:
+    """The numbers printed along each back scale, left/bottom first.
+
+    :returns: e.g. ``("-10", "-5", "0", "+5", "+10")``. The sign is printed
+        because it is the sign of the correction, and an operator who copies
+        down "3" off the left arm has saved the wrong one.
+    """
+    return tuple(
+        "0" if mm == 0 else f"{mm:+d}"
+        for mm in range(-REGISTRATION_SCALE_MM, REGISTRATION_SCALE_MM + 1, _REG_LABEL_EVERY_MM)
+    )
+
+
+def _registration_scale(
+    builder: ContentStreamBuilder,
+    font: Name,
+    centre_x: float,
+    centre_y: float,
+) -> None:
+    """The BACK's registration target (F3): two numbered millimetre scales.
+
+    One runs left-right through the centre and one up-down, zero at the
+    centre, numbered **+ to the right and + upwards as this face reads**.
+    Held up to a light with this face towards the operator, the front's heavy
+    cross shows through, and the two numbers it crosses are the correction
+    itself, in millimetres, sign included: if the front's vertical line sits
+    at +3 the back content is 3 mm left of where it belongs and has to move
+    3 mm right, which is what a positive ``back_offset_x_pt`` does
+    (:attr:`deckle.core.profiles.PrinterProfile.back_offset_x_pt`).
+
+    The frame is this face's own unrotated page frame -- the frame
+    :func:`deckle.core.export._apply_back_offset` takes the correction in,
+    negating it itself when a back is given a half turn -- so the reading
+    needs no translation whichever way the stack was turned.
+    """
+    builder.push()
+    builder.set_line_width(0.5)
+    span = REGISTRATION_SCALE_MM * MM_PT
+    builder.line(centre_x - span, centre_y, centre_x + span, centre_y)
+    builder.stroke_and_close()
+    builder.line(centre_x, centre_y - span, centre_x, centre_y + span)
+    builder.stroke_and_close()
+    builder.set_line_width(0.35)
+    for mm in registration_scale_ticks():
+        if mm == 0:
+            continue
+        whole = float(mm).is_integer()
+        labelled = whole and int(mm) % _REG_LABEL_EVERY_MM == 0
+        length = 6.0 if labelled else (3.5 if whole else 2.0)
+        offset = mm * MM_PT
+        # x scale: ticks hang below the axis; y scale: ticks to its left.
+        builder.line(centre_x + offset, centre_y, centre_x + offset, centre_y - length)
+        builder.stroke_and_close()
+        builder.line(centre_x, centre_y + offset, centre_x - length, centre_y + offset)
+        builder.stroke_and_close()
+    builder.pop()
+
+    size = 6.0
+    labels = registration_scale_labels()
+    for index, text in enumerate(labels):
+        mm = -REGISTRATION_SCALE_MM + index * _REG_LABEL_EVERY_MM
+        offset = mm * MM_PT
+        if mm == 0:
+            # Beside the crossing rather than on it: centred, the y axis
+            # would run through the numeral.
+            _show(builder, font, size, centre_x + 3.0, centre_y - 14.0, text)
+            continue
+        # The x labels sit below the axis and the y labels well out to its
+        # left, clear of the x scale's own labels, so the lower-left quadrant
+        # does not stack two numbers on one spot.
+        _show_centred(builder, font, size, centre_x + offset, centre_y - 14.0, text, False)
+        _show(
+            builder, font, size,
+            centre_x - span - 10.0 - _text_width(text, size, False),
+            centre_y + offset - size * 0.35, text,
+        )
+    _show(builder, font, size, centre_x + span + 3.0, centre_y - size * 0.35, "X mm")
+    _show_centred(builder, font, size, centre_x, centre_y + span + 4.0, "Y mm", False)
 
 
 # -- one test face -----------------------------------------------------
@@ -278,7 +372,12 @@ def _draw_face(
     )
 
     # -- the centre: registration -------------------------------------
-    _registration_cross(builder, centre_x, centre_y)
+    # The front carries the index the back's scales are read against. See
+    # `_registration_scale` for the reading and its sign.
+    if side == "FRONT":
+        _registration_index(builder, centre_x, centre_y)
+    else:
+        _registration_scale(builder, regular, centre_x, centre_y)
 
     # -- above the cross: up-marker and sheet number -------------------
     # The markers are split either side of the centre rather than stacked
@@ -380,9 +479,10 @@ _COVER_BODY: tuple[tuple[float, float, bool, str], ...] = (
     (14, 10, False, "and the big triangle points"),
     (28, 10, True, "UP  /  DOWN                                      -> flip_axis"),
     (0, 6, False, ""),
-    (0, 10, False, "F.  Hold sheet 1 up to a bright light so both crosses show through. The BACK"),
-    (14, 10, False, "cross sits  ______ mm to the left/right  and  ______ mm up/down"),
-    (14, 10, False, "of the FRONT cross. Ticks on the crosshair arms are 1 mm, long ones 5 mm."),
+    (0, 10, False, "F.  Hold sheet 1 up to a bright light with its BACK towards you, reading upright."),
+    (14, 10, False, "The FRONT's heavy cross shows through across the numbered scales. Write down"),
+    (14, 10, False, "the numbers it crosses, with their sign (ticks 0.5 mm, longer ones 1 mm):"),
+    (14, 10, True, "X  ______ mm      Y  ______ mm"),
     (28, 10, True, "-> back_offset_x_pt / back_offset_y_pt"),
     (0, 6, False, ""),
     (0, 10, False, "G.  This file is the  PORTRAIT  /  LANDSCAPE  one (circle one)."),

@@ -14,6 +14,12 @@ against a real printer.
 
 ### Added
 
+- **A registration target you read numbers off (F3).** The calibration sheet's
+  backs now carry two numbered millimetre scales, and its fronts a plain heavy
+  cross. Held to a light, back towards you, the cross lands on the two numbers
+  that are the registration correction. The calibration wizard's measure screen
+  takes them. This has not yet been confirmed on paper.
+
 - **Calibration wizard** — File > Calibrate a printer... writes the sheets, asks
   what you saw on each orientation, and saves a measured profile.
 - **Printer profile editor** — Edit profile... in the Print dialog sets a

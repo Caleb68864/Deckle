@@ -1189,6 +1189,12 @@ def _cmd_calibration_sheet(args: argparse.Namespace) -> int:
             "inverts between portrait and landscape."
         )
     print("Then record what you found with: deckle-cli profile set NAME ...")
+    # F3: the two numbers off the back's scales are already the correction,
+    # sign included, so they go in as typed -- no conversion, no sign flip.
+    print(
+        "Question F's two numbers (X, Y) are the registration correction as "
+        "read: deckle-cli profile set NAME --back-offset Xmm,Ymm"
+    )
     return 0
 
 

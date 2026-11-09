@@ -11,9 +11,10 @@ print from whatever the operator normally uses, for the reason
 :mod:`deckle.core.calibration_sheet` gives: a target run through Deckle's own
 print path would only report that Deckle agrees with itself.
 
-The registration offsets are not asked for here. A saved calibration's offsets
-are carried over unchanged rather than reset to zero, because they are measured
-by hand and F3 is where measuring them belongs.
+The registration offsets (F3) are read off the sheet's numbered back scales on
+the measure screen, behind a checkbox that starts unticked. Unticked, a saved
+calibration's offsets are carried over unchanged rather than reset to zero,
+because an operator who skipped the step has not measured zero.
 """
 
 from __future__ import annotations
@@ -27,8 +28,13 @@ from deckle.core.calibration_flow import (
     UnexplainableResult,
     answers_for,
     reconcile,
+    registration_offset_pt,
 )
-from deckle.core.calibration_sheet import make_calibration_pdf
+from deckle.core.calibration_sheet import (
+    REGISTRATION_SCALE_MM,
+    REGISTRATION_STEP_MM,
+    make_calibration_pdf,
+)
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.outputs import describe_write_failure
 from deckle.core.paper import LETTER_PT
@@ -240,6 +246,7 @@ class CalibrationWizard:
                     form.addRow(f"{edge}:", spin)
                     self.border_spins[edge] = spin
                 layout.addLayout(form)
+                self._build_registration_inputs(page, layout, QDoubleSpinBox, QFormLayout)
             self.stack.addWidget(page)
 
         buttons = QHBoxLayout()
@@ -292,6 +299,68 @@ class CalibrationWizard:
         elif key == "measure":
             self._seed_borders()
         self._sync_buttons()
+
+    def _build_registration_inputs(self, page, layout, QDoubleSpinBox, QFormLayout) -> None:
+        """The two registration readings (F3), off by default.
+
+        Unticked keeps whatever registration is already saved, which is what
+        the wizard did before it could read one: a hand-measured offset must
+        not be zeroed by an operator who skipped the step. Ticked, the two
+        numbers are what the sheet's back scales show, and
+        :func:`~deckle.core.calibration_flow.registration_offset_pt` turns
+        them into the profile's offsets.
+
+        :returns: nothing. Sets :attr:`registration_check` and
+            :attr:`registration_spins` (``{"X": spin, "Y": spin}``).
+        """
+        from PySide6.QtWidgets import QCheckBox
+
+        self.registration_check = QCheckBox(
+            "I read the registration scales on sheet 1", page
+        )
+        layout.addWidget(self.registration_check)
+        form = QFormLayout()
+        self.registration_spins = {}
+        for axis, label in (("X", "Left-right scale (X):"), ("Y", "Up-down scale (Y):")):
+            spin = QDoubleSpinBox(page)
+            spin.setDecimals(1)
+            spin.setSingleStep(REGISTRATION_STEP_MM)
+            spin.setRange(-float(REGISTRATION_SCALE_MM), float(REGISTRATION_SCALE_MM))
+            spin.setSuffix(" mm")
+            spin.setEnabled(False)
+            form.addRow(label, spin)
+            self.registration_spins[axis] = spin
+        layout.addLayout(form)
+        self.registration_check.toggled.connect(
+            lambda on: [s.setEnabled(on) for s in self.registration_spins.values()]
+        )
+
+    def _registration_offset(self, known: PrinterProfile | None) -> tuple[float, float] | None:
+        """The offsets to save, or ``None`` with the reason on screen.
+
+        :param known: the calibration already saved for this printer.
+        :returns: the readings converted, when the box is ticked; otherwise
+            the saved offsets carried over (zero when there are none).
+        """
+        if not self.registration_check.isChecked():
+            return (
+                (known.back_offset_x_pt, known.back_offset_y_pt)
+                if known is not None
+                else (0.0, 0.0)
+            )
+        x_mm = self.registration_spins["X"].value()
+        y_mm = self.registration_spins["Y"].value()
+        try:
+            offset = registration_offset_pt(x_mm, y_mm)
+        except ValueError as exc:
+            self.status_label.setText(str(exc))
+            log_event("calibration_registration_refused", detail=str(exc))
+            return None
+        log_event(
+            "calibration_registration_read",
+            x_mm=x_mm, y_mm=y_mm, x_pt=round(offset[0], 3), y_pt=round(offset[1], 3),
+        )
+        return offset
 
     def _sync_buttons(self) -> None:
         """Say what can be done from here.
@@ -448,13 +517,12 @@ class CalibrationWizard:
         if known is not None and not self._ask_overwrite(name):
             self.status_label.setText(f"Kept the calibration already saved for {name}.")
             return
+        back_offset_pt = self._registration_offset(known)
+        if back_offset_pt is None:
+            return
         profile = self._reconcile(
             imageable_area_pt=tuple(self.border_spins[e].value() for e in BORDER_EDGES),
-            back_offset_pt=(
-                (known.back_offset_x_pt, known.back_offset_y_pt)
-                if known is not None
-                else (0.0, 0.0)
-            ),
+            back_offset_pt=back_offset_pt,
             calibrated_at=self._now(),
         )
         if profile is None:
