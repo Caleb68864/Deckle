@@ -758,6 +758,51 @@ def test_a_calibration_is_never_overwritten_by_the_picker():
     assert dialog._session.profile is FACE_UP, "but the run still honours the choice"
 
 
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        ValueError("flip_axis: 'diagonal' is not one of 'long', 'short'"),
+        PermissionError("profile.json"),
+    ],
+    ids=["corrupt-value", "permission-denied"],
+)
+def test_an_unreadable_calibration_is_not_overwritten_by_the_picker(monkeypatch, unreadable):
+    """2026-11-09 hardening pass. A stored profile that *exists* but will not
+    read was treated exactly like no profile at all -- ``except
+    (FileNotFoundError, OSError, ValueError): pass`` -- so picking a preset
+    wrote it over the file. A typo in a hand-edited calibration cost the
+    calibration. Only ``FileNotFoundError`` means there is nothing to lose.
+    """
+    from deckle.app.views import print_dialog
+
+    logged: list[str] = []
+    monkeypatch.setattr(
+        print_dialog, "log_exception", lambda event, exc, **f: logged.append(event)
+    )
+    writes: list[str] = []
+
+    def loader(name):
+        raise unreadable
+
+    dialog = _make_dialog(builtin_presets=PRESETS, profile_loader=loader)
+    face_up_index = next(
+        i for i in range(dialog.profile_combo.count())
+        if dialog.profile_combo.itemData(i)[0] is FACE_UP
+    )
+    dialog.profile_combo.setCurrentIndex(face_up_index)
+    profile, _is_saved = dialog.profile_combo.currentData()
+    # Frozen dataclass: set and remove the instance attribute by hand.
+    object.__setattr__(profile, "save", lambda name: writes.append(name))
+    try:
+        dialog.start_print()
+    finally:
+        object.__delattr__(profile, "save")
+
+    assert writes == [], "the picker overwrote a stored profile it could not read"
+    assert "profile_not_remembered" in logged
+    assert dialog._session.profile is FACE_UP, "the run still honours the choice"
+
+
 def test_changing_printer_reoffers_that_printer_s_own_profile():
     """A calibration belongs to one printer; offering another printer's is
     worse than offering none."""

@@ -784,8 +784,16 @@ class PrintDialog:
             return
         try:
             self._profile_loader(printer_name)
-        except (FileNotFoundError, OSError, ValueError):
-            pass
+        except FileNotFoundError:
+            pass  # Nothing stored: the only case where remembering is safe.
+        except (OSError, ValueError) as exc:
+            # Something *is* stored and it would not read -- a hand-edit
+            # with a typo, a value this build cannot honour, a permissions
+            # problem. That file is still somebody's calibration. This used
+            # to fall through with the not-found case and write the preset
+            # over it, the clobber this method exists to refuse.
+            log_exception("profile_not_remembered", exc, printer=printer_name)
+            return
         else:
             return  # A stored profile exists. Never overwrite it from here.
         try:
