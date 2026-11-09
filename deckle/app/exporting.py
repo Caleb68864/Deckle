@@ -70,6 +70,23 @@ def _start_export(window, fn, on_done, on_error) -> None:
     )
 
 
+def unexpected_failure_message(exc: BaseException) -> str:
+    """The status-bar line for an export failure that is not an ``OSError``.
+
+    ``f"Export failed: {exc}"`` reads ``"Export failed: "`` for any
+    exception raised without a message -- a bare ``AssertionError``, a
+    ``KeyError()`` -- which tells the person nothing and gives a bug report
+    nothing to quote. The exception's type is always named, so the line is
+    never empty after the colon.
+
+    :param exc: what the export raised.
+    :returns: one line for the status bar.
+    """
+    detail = str(exc).strip()
+    kind = type(exc).__name__
+    return f"Export failed ({kind}): {detail}" if detail else f"Export failed ({kind})."
+
+
 def _output_ready(window) -> bool:
     project = window.state.project
     if not project_has_content(project): return False
@@ -171,15 +188,18 @@ def save_pdf_as(window) -> None:
             window.status_bar.showMessage(describe_write_failure(path, exc))
             log_exception("output_write_failed", exc, path=path)
             return
-        window.status_bar.showMessage(f"Export failed: {exc}")
+        window.status_bar.showMessage(unexpected_failure_message(exc))
         log_exception("export_failed", exc, path=path)
 
-    _start_export(
-        window,
-        lambda: export(plan, path),
-        lambda: window.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}"),
-        on_error,
-    )
+    def on_done() -> None:
+        window.status_bar.showMessage(f"Saved {sheets} sheet(s) to {path}")
+        # The pass export has always logged its success; the whole-document
+        # save did not, so the diagnostics log could show a failure and
+        # never the success before or after it -- "did the PDF they printed
+        # come from this run?" had no answer in the log.
+        log_event("pdf_exported", path=path, sheets=sheets)
+
+    _start_export(window, lambda: export(plan, path), on_done, on_error)
 
 
 def export_single_pass(window) -> None:
@@ -268,7 +288,7 @@ def export_single_pass(window) -> None:
             window.status_bar.showMessage(describe_write_failure(path, exc))
             log_exception("pass_write_failed", exc, path=path, side=side)
             return
-        window.status_bar.showMessage(f"Export failed: {exc}")
+        window.status_bar.showMessage(unexpected_failure_message(exc))
         log_exception("pass_export_failed", exc, path=path, side=side)
 
     _start_export(
