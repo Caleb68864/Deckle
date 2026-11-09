@@ -16,6 +16,7 @@ at a glance, without folding anything.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -284,7 +285,22 @@ def test_the_title_appears_when_given():
 # -- the CLI -------------------------------------------------------------
 
 
-FIXTURE = "tests/fixtures/sample.pdf"
+#: Absolute, not ``"tests/fixtures/sample.pdf"``. The relative spelling only
+#: resolved when pytest was started from the repository root; from anywhere
+#: else (another worktree's shell, an IDE runner, ``pytest /path/to/tests``)
+#: the CLI reported "cannot read tests/fixtures/sample.pdf: no such file" and
+#: two tests failed for a reason that had nothing to do with the schedule.
+FIXTURE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "tests", "fixtures", "sample.pdf",
+)
+
+
+def test_the_cli_fixture_does_not_depend_on_the_working_directory():
+    """2026-11-09 hardening pass: these CLI tests failed when the suite was
+    run from outside the repository root."""
+    assert os.path.isabs(FIXTURE)
+    assert os.path.isfile(FIXTURE)
 
 
 def test_cli_schedule_prints_to_stdout():
