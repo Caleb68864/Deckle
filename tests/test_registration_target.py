@@ -88,6 +88,22 @@ def test_the_cover_asks_for_the_two_numbers(pages):
     assert "back_offset_x_pt" in cover and "back_offset_y_pt" in cover
 
 
+def test_the_command_says_where_the_two_readings_go(tmp_path, capsys):
+    """The CLI path for F3: the readings are typed as they were read."""
+    from deckle.cli.options import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["calibration-sheet", "-o", str(tmp_path / "cal.pdf")])
+    assert args.func(args) == 0
+    out = capsys.readouterr().out
+    assert "--back-offset Xmm,Ymm" in out
+
+    # And that spelling is one `profile set` accepts, as the same points
+    # `registration_offset_pt` would produce.
+    parsed = parser.parse_args(["profile", "set", "Brother", "--back-offset", "2.5mm,-1mm"])
+    assert parsed.back_offset == pytest.approx(registration_offset_pt(2.5, -1.0))
+
+
 # -- the reading -> the profile ----------------------------------------
 
 
