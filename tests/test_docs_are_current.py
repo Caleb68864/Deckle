@@ -536,3 +536,35 @@ def test_run_bat_deps_installs_what_run_bat_test_runs():
         "run.bat installs test tooling by hand instead of `.[dev]`, so the "
         "extra and the batch file are two lists that must agree"
     )
+
+
+# -- the Python floor, said in four places ----------------------------------
+#
+# Roadmap D12 fixed `run.bat`'s "Install Python 3.12+" to 3.11+, matching
+# `requires-python` and the CI matrix. The comment above that matrix went
+# on saying "`run.bat` says 3.12+" for two months afterwards (D13), so the
+# floor is now read from each place rather than remembered.
+
+
+def test_every_statement_of_the_python_floor_agrees():
+    pyproject = _read(os.path.join(ROOT, "pyproject.toml"))
+    workflow = _read(os.path.join(ROOT, ".github", "workflows", "test.yml"))
+
+    floor = re.search(r'requires-python\s*=\s*">=\s*(3\.\d+)"', pyproject)
+    assert floor, "pyproject.toml no longer states requires-python as >=3.N"
+    floor = floor.group(1)
+
+    run_bat = re.findall(r"Install Python (3\.\d+)\+", _read(RUN_BAT))
+    assert run_bat, "run.bat no longer says which Python to install"
+    assert set(run_bat) == {floor}, (run_bat, floor)
+
+    matrix = re.search(r"python-version:\s*\[([^\]]*)\]", workflow)
+    assert matrix, "the CI matrix moved; this guard reads it"
+    versions = re.findall(r'"(3\.\d+)"', matrix.group(1))
+    assert min(versions, key=lambda v: int(v.split(".")[1])) == floor, versions
+
+    # Prose about another file's floor must quote the floor that file states.
+    for quoted in re.findall(r"`run\.bat` says (3\.\d+)\+", workflow):
+        assert quoted == floor, (
+            f"test.yml says run.bat asks for {quoted}+; run.bat asks for {floor}+"
+        )
