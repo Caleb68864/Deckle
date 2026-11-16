@@ -934,3 +934,34 @@ def test_one_unreadable_file_does_not_hide_the_healthy_sessions(tmp_path, monkey
     summaries = PrintSession.list_resumable()
 
     assert [s.session_id for s in summaries] == [good_id]
+
+
+@dataclass
+class _EmptyErrorBackend(StubBackend):
+    """Fails the way H5's backend did: ``error=""`` with nothing printed."""
+
+    def submit(self, plan, sheets, printer_name, copies, dpi, **kwargs) -> PrintResult:
+        super().submit(plan, sheets, printer_name, copies, dpi, **kwargs)
+        return PrintResult(submitted=0, job_id=None, error="")
+
+
+@pytest.mark.parametrize("test_first", [False, True], ids=["chunk", "test-sheet"])
+def test_an_empty_error_is_still_a_failure(test_first):
+    """H7. ``PrintResult.error`` is ``None`` on success; anything else is a
+    failure. ``PrintSession`` tested its truthiness, so a backend returning
+    ``error=""`` had a chunk that put nothing on paper counted as printed:
+    the cursor walked past it and ``last_error`` stayed ``None``, which the
+    dialog reads as "carry on"."""
+    plan = _make_plan(5)
+    backend = _EmptyErrorBackend()
+    session = PrintSession(
+        plan, _profile(), backend, test_first=test_first, printer_name="P"
+    )
+
+    session.start()
+
+    assert session.last_error, "an empty error must still stop the run, in words"
+    assert session._state.sheet_cursor == 0
+    assert not session.finished
+    assert session.state_path.exists()
+
