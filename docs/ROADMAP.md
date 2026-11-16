@@ -157,6 +157,23 @@ nothing else. Start at that directory's `index.md`; read its
 > from is disabled in exactly the case it is for. Still needs a real printer:
 > F2 Phase 5, and B30 by hand.
 
+> **§1 re-audited against the code, 2026-11-16** (branch
+> `harden/followups-and-b-bugs`). All 40 B rows were checked: 39 are ✅ (B6 and B19 among them, already decided by the owner and untouched here) and
+> **B17 is the only one still open** (◐). No row was marked done that is not
+> — every test file and test name a row cites exists and passes, and every
+> commit a row cites is an ancestor of `HEAD`; the rows citing no test were
+> matched to their fixing commit (`git log --grep`) and its tests. The
+> 2026-09-08 drift of done-but-open rows did not recur. Four were also
+> re-run live on the CLI: B18 (`--sheets-per-signature 0` under `balanced` is
+> refused), B20 (`--sheets 7` of a one-sheet plan is refused), B24 (`--sheets
+> 0 --rule` against a `.deckle` prints no *ignored* note) and B25 (`--paper
+> "21 x 29.7 cm"` is accepted). Closed in this pass:
+> B17's *"accepting an autosave recovery still hashes on the GUI thread"*
+> clause, and four §5 test-gap lines for B-series bugs (three found already
+> covered, one plus the CLI-flag line written). B17's print-submission half
+> is left as its row says: it holds the paper, its modal prompts would have
+> to cross threads, and it cannot be proved without a printer.
+
 Each item carries an ID so it can be referred to in that conversation.
 Sizes: **S** under a day, **M** a few days, **L** a week or more, or gated on
 hardware. Findings marked *verified* were reproduced by running code, not
@@ -349,17 +366,17 @@ for that reason. Kept for the record.
 
 ## 5. Test gaps that would have caught the above
 
-- Impose + export a page with `rotate_deg` 90/180/270 under every landscape policy (B1, B2).
-- A landscape source under folio (B5).
+- ~~Impose + export a page with `rotate_deg` 90/180/270 under every landscape policy (B1, B2).~~ ✅ Done 2026-11-16: `tests/test_export.py::test_an_imposed_turn_reaches_the_exported_sheet_under_every_policy`, 16 cases (0/90/180/270 × `rotate`/`scale` × portrait/landscape source), `GutterShiftStrategy.impose` into `render_sheet`, checking the ink's corner and that it arrives whole. Run against `d16969d~1` (before B1): 13 of 16 fail, including `0-rotate-landscape`, which is the counter-clockwise matrix rather than the dropped turn.
+- ~~A landscape source under folio (B5).~~ ✅ Found done 2026-11-16: `9262fff` added four, e.g. `tests/test_layout_saddle.py::test_a_landscape_source_is_scaled_for_the_cell_it_is_rotated_into`.
 - ~~Resume a print session after changing gutter / paper / crop, expect `StaleSessionError` (B3).~~ ✅ Done 2026-09-08 — gutter, margins, paper and rotation as a parametrized set, a different document with identical pagination, an end-to-end refusal through `load`, and a test that the session and the exporter cannot drift apart again. All seven fail against the old hash.
 - ~~Session-side `log_print_job` raising after a successful chunk (B4).~~ ✅ Done 2026-09-08.
 - ~~Mutate after Save project, expect `<path>.autosave` written (B9).~~ ✅ Done 2026-09-08, plus the Save As case.
 - ~~`state.can_redo` after undoing a trim/crop change; `refresh_from_project` leaves the undo stack length unchanged (B12). `test_refreshing_never_changes_the_document_in_any_unit` should include trim and crop (B11).~~ ✅ Done 2026-09-08, both exactly as specified, plus a unit-change-then-nudge test driving B11's failure end to end. Nine tests in this file fail against the pre-fix panel.
 - ~~Two overlapping imports; import during shutdown (B13).~~ ✅ Done 2026-11-02.
 - ~~Cancelled resume-count prompt (B14).~~ ✅ Done 2026-09-08, with its twin: `0` must still resume.
-- Schedule numbering with skipped pages or two sources (B7); `signature_lengths` + creep (B8); `sheets_per_signature <= 0` under `balanced` (B18).
+- ~~Schedule numbering with skipped pages or two sources (B7); `signature_lengths` + creep (B8); `sheets_per_signature <= 0` under `balanced` (B18).~~ ✅ Found done 2026-11-16: `tests/test_schedule.py::test_two_sources_are_numbered_by_the_reader_not_by_the_file` and `::test_a_skipped_page_is_not_counted_by_the_reader` (B7, `b66e62d`); `::test_the_advisory_judges_the_signatures_actually_built` and `::test_the_two_opinions_agree_on_every_combination` (B8, `b66e62d`); `tests/test_layout_saddle.py::test_a_nonpositive_gathering_is_refused_by_both_blank_modes` (B18, `e397769`).
 - ~~A parity test over the GUI and CLI paper-preset tables (M5).~~ ✅ Done 2026-11-02. ~~An "every emitted warning kind is declared" test (B31).~~ ✅ Done 2026-09-11 (W1) — `tests/test_models.py` walks `deckle/` for `kind="..."` and requires an emitter for every declared member, in both directions.
-- No CLI test exercises `--crop`, `--crop-even`, `--trim`, `--binding-edge`, `--blank-mode`, `--grain`, `--signatures`, or `--back-offset`. ~~`impose --printer`~~ ✅ Done 2026-09-11 (W1) — `tests/test_recorded_printer.py` runs the real CLI, reads the `.deckle` back, and asserts the dialog preselects the recorded printer. It had no test because it had no *consumer*: the name was stored and read by nothing.
+- ~~No CLI test exercises `--crop`, `--crop-even`, `--trim`, `--binding-edge`, `--blank-mode`, `--grain`, `--signatures`, or `--back-offset`.~~ ✅ Closed 2026-11-16. `--signatures` and `--back-offset` had gained tests since (`tests/test_cli_dry_run.py`, `tests/test_cli_passes.py`, `tests/test_registration.py`, among others); `--crop` and `--trim` were reached only by their refusal paths in `tests/test_custom_signatures.py`. The rest are now in `tests/test_cli.py`: `test_the_cli_reaches_the_binding_and_paper_flags`, `test_the_cli_reaches_both_crops_in_the_order_its_help_gives` (distinct insets, so a swapped pair fails) and `test_the_binding_edge_flag_moves_the_gutter`. ~~`impose --printer`~~ ✅ Done 2026-09-11 (W1) — `tests/test_recorded_printer.py` runs the real CLI, reads the `.deckle` back, and asserts the dialog preselects the recorded printer. It had no test because it had no *consumer*: the name was stored and read by nothing.
 - **No test drove `PrintDialog._drive` against a real `PrintSession`** until W1; every one of them injected a stub whose `start()` leaves `pass_index` at 0, which the real one does not do. That is what hid the missing reload prompt. Any new dialog test that needs a session boundary should use the real class, as `tests/test_reload_prompt.py` does.
 - ~~`list_resumable` with a valid-JSON, missing-keys file; `_delete_state` failing; profile with a missing field or a path separator in the name; `write_text_atomic` preserving mode (B27, B28, B34).~~ ✅ Done 2026-11-02.
 

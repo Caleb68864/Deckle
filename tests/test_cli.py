@@ -471,3 +471,48 @@ def test_the_new_flags_are_reported_as_ignored_against_a_project(tmp_path, capsy
 def test_a_negative_margin_is_refused(tmp_path):
     with pytest.raises(SystemExit):
         main(["impose", FIXTURE, "-o", str(tmp_path / "x.deckle"), "--margin-top=-1in"])
+
+
+# -- §5 test gap: the layout flags no CLI test exercised ------------------------
+
+
+def test_the_cli_reaches_the_binding_and_paper_flags(tmp_path):
+    layout = _layout_after_impose(
+        tmp_path,
+        "--binding-edge", "right",
+        "--grain", "short",
+        "--fold-scheme", "folio",
+        "--blank-mode", "balanced",
+        "--trim", "0.25in",
+    )
+    assert layout.binding_edge == "right"
+    assert layout.grain == "short"
+    assert layout.blank_mode == "balanced"
+    assert layout.trim_pt == 18.0
+
+
+def test_the_cli_reaches_both_crops_in_the_order_its_help_gives(tmp_path):
+    """``--crop L,B,R,T``: the order is the whole contract, and a test that
+    used four equal insets could not tell a swapped pair."""
+    layout = _layout_after_impose(
+        tmp_path, "--crop", "1pt,2pt,3pt,4pt", "--crop-even", "0.5in,0,0,0.25in"
+    )
+    assert layout.crop_odd_pt == (1.0, 2.0, 3.0, 4.0)
+    assert layout.crop_even_pt == (36.0, 0.0, 0.0, 18.0)
+
+
+def test_the_binding_edge_flag_moves_the_gutter(tmp_path):
+    """Reaching the model is not the point; moving the paper is."""
+    from deckle.core.layout import GutterShiftStrategy
+    from deckle.core.loader import load_pdf
+
+    pages = load_pdf(FIXTURE)
+    flags = ("--gutter", "1in")
+    left = GutterShiftStrategy().impose(pages, _layout_after_impose(tmp_path, *flags))
+    right = GutterShiftStrategy().impose(
+        pages, _layout_after_impose(tmp_path, *flags, "--binding-edge", "right")
+    )
+    assert (
+        left.sheets[0].front.pages[0].placement.tx
+        != right.sheets[0].front.pages[0].placement.tx
+    )
