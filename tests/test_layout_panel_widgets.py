@@ -318,7 +318,7 @@ def test_saving_a_flat_sheet_schedule_writes_the_block_thickness(
         staticmethod(lambda *a, **k: (str(out), "")),
     )
     messages = []
-    flat_panel.schedule_saved.connect(messages.append)
+    flat_panel.status_message.connect(messages.append)
 
     flat_panel.save_schedule_button.click()
 
@@ -353,7 +353,7 @@ def test_saving_defaults_writes_the_current_layout(panel, config_root):
     from deckle.core.defaults import load_defaults
 
     messages = []
-    panel.schedule_saved.connect(messages.append)
+    panel.status_message.connect(messages.append)
 
     panel.save_defaults_button.click()
 
@@ -368,7 +368,7 @@ def test_forgetting_defaults_says_so(panel, config_root):
     from deckle.core.defaults import defaults_path
 
     messages = []
-    panel.schedule_saved.connect(messages.append)
+    panel.status_message.connect(messages.append)
     panel.save_defaults_button.click()
     messages.clear()
 
@@ -382,7 +382,7 @@ def test_forgetting_defaults_says_so(panel, config_root):
 
 def test_forgetting_nothing_says_so(panel, config_root):
     messages = []
-    panel.schedule_saved.connect(messages.append)
+    panel.status_message.connect(messages.append)
 
     panel.forget_defaults_button.click()
 
@@ -395,7 +395,7 @@ def test_a_failed_save_is_reported_not_raised(panel, config_root, monkeypatch):
 
     monkeypatch.setattr("deckle.app.views.layout_panel.save_defaults", boom)
     messages = []
-    panel.schedule_saved.connect(messages.append)
+    panel.status_message.connect(messages.append)
 
     panel.save_defaults_button.click()
 

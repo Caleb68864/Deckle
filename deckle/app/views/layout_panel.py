@@ -1940,13 +1940,22 @@ class LayoutPanel:
 
         class _Signals(QObject):
             layout_changed = Signal(object)  # SheetPlan
-            schedule_saved = Signal(str)  # a user-facing outcome message
+            status_message = Signal(str)  # a user-facing outcome message
 
         self._signals = _Signals()
         self.layout_changed = self._signals.layout_changed
-        self.schedule_saved = self._signals.schedule_saved
+        self.status_message = self._signals.status_message
 
         self.state = state
+        # Declared before any widget exists, because building the tabs
+        # selects one and that fires ``currentChanged``.
+        #
+        # ``None`` until the window calls :meth:`set_document_loaded`; until
+        # then "a document is loaded" means the project has pages.
+        self._document_loaded: bool | None = None
+        # True while code, not a person, is selecting the mode tab, so
+        # :meth:`_on_mode_tab_changed` does not write the scheme back.
+        self._syncing_mode = False
         self.widget = QWidget(parent)
         outer = QVBoxLayout(self.widget)
 
@@ -2377,7 +2386,7 @@ class LayoutPanel:
         """
         if spec.kind in ("text", "unit_text"):
             self.controls[spec.name].setToolTip(str(exc))
-        self.schedule_saved.emit(f"{spec.error_prefix}: {exc}")
+        self.status_message.emit(f"{spec.error_prefix}: {exc}")
 
     def _on_control_changed(self, spec: Control) -> None:
         """Apply an edit to a control the table describes completely.
@@ -2592,10 +2601,10 @@ class LayoutPanel:
             save_defaults(self.state.project.layout)
         except OSError as exc:
             log_exception("defaults_write_failed", exc, path=str(defaults_path()))
-            self.schedule_saved.emit(describe_write_failure(str(defaults_path()), exc))
+            self.status_message.emit(describe_write_failure(str(defaults_path()), exc))
             return
         log_event("defaults_saved", path=str(defaults_path()))
-        self.schedule_saved.emit(
+        self.status_message.emit(
             "Saved these settings as your defaults for new projects."
         )
 
@@ -2607,11 +2616,11 @@ class LayoutPanel:
         """
         if forget_defaults():
             log_event("defaults_forgotten", path=str(defaults_path()))
-            self.schedule_saved.emit(
+            self.status_message.emit(
                 "Forgot your defaults. New projects start from Deckle's own."
             )
         else:
-            self.schedule_saved.emit("You have no saved defaults.")
+            self.status_message.emit("You have no saved defaults.")
 
     def _on_save_schedule_clicked(self) -> None:
         """Write the binding schedule beside wherever the source came from.
@@ -2639,7 +2648,7 @@ class LayoutPanel:
         problem = output_path_problem(path, source)
         if problem is not None:
             log_event("schedule_path_rejected", path=path, detail=problem)
-            self.schedule_saved.emit(problem)
+            self.status_message.emit(problem)
             return
 
         settings = self.state.project.layout
@@ -2652,9 +2661,9 @@ class LayoutPanel:
                 handle.write(text)
         except OSError as exc:
             log_exception("schedule_write_failed", exc, path=path)
-            self.schedule_saved.emit(describe_write_failure(path, exc))
+            self.status_message.emit(describe_write_failure(path, exc))
             return
-        self.schedule_saved.emit(f"Saved binding schedule to {path}")
+        self.status_message.emit(f"Saved binding schedule to {path}")
 
     def _sync_signature_tab(self) -> None:
         """Keep the Signatures tab consistent with the current mode.
@@ -2666,7 +2675,11 @@ class LayoutPanel:
         the schedule button on having a document to schedule.
         """
         folio = self.state.project.layout.fold_scheme == "folio"
-        loaded = getattr(self, "_document_loaded", bool(self.state.project.pages))
+        loaded = (
+            bool(self.state.project.pages)
+            if self._document_loaded is None
+            else self._document_loaded
+        )
 
         wanted = self._signature_tab_index if folio else self._single_tab_index
         if self.tabs.currentIndex() != wanted:
@@ -2969,7 +2982,7 @@ class LayoutPanel:
         construction, or from :meth:`refresh`, must not write the value back
         and push a redundant undo entry.
         """
-        if getattr(self, "_syncing_mode", False):
+        if self._syncing_mode:
             return
         scheme = "folio" if index == self._signature_tab_index else "none"
         if scheme == self.state.project.layout.fold_scheme:
@@ -3035,7 +3048,7 @@ class LayoutPanel:
         except ValueError as exc:
             # A refused weight is a number the user can correct, not a
             # traceback -- the same contract every other control here has.
-            self.schedule_saved.emit(f"Paper weight: {exc}")
+            self.status_message.emit(f"Paper weight: {exc}")
             return
         # The named stock can no longer describe this paper. Leaving it
         # selected is B29 exactly: the panel said "80gsm copier (0.104
@@ -3104,7 +3117,7 @@ class LayoutPanel:
             # a message naming both numbers. Reported rather than raised:
             # it is a number the user can correct, in the box they are
             # already looking at.
-            self.schedule_saved.emit(f"Crop: {exc}")
+            self.status_message.emit(f"Crop: {exc}")
             return
         self._schedule_composite()
         self.layout_changed.emit(plan)
@@ -3121,12 +3134,12 @@ class LayoutPanel:
         if not pages:
             return
         self.auto_crop_button.setEnabled(False)
-        self.schedule_saved.emit(f"Measuring the ink on {len(pages)} page(s)...")
+        self.status_message.emit(f"Measuring the ink on {len(pages)} page(s)...")
 
         def on_error(exc: Exception) -> None:
             self.auto_crop_button.setEnabled(True)
             log_exception("auto_crop_failed", exc)
-            self.schedule_saved.emit(f"Could not measure the ink: {exc}")
+            self.status_message.emit(f"Could not measure the ink: {exc}")
 
         self._auto_crop_job = self._job_runner(
             lambda _cancel: auto_crop_insets(pages),
@@ -3145,7 +3158,7 @@ class LayoutPanel:
         """
         self.auto_crop_button.setEnabled(True)
         if state is not self.state or list(state.project.pages) != pages:
-            self.schedule_saved.emit(
+            self.status_message.emit(
                 "The document changed while the ink was being measured -- "
                 "measure it again."
             )
@@ -3161,7 +3174,7 @@ class LayoutPanel:
                 box.blockSignals(False)
             self._commit_crop(parity)
         self._schedule_composite()
-        self.schedule_saved.emit(
+        self.status_message.emit(
             "Crop measured from the ink -- check it before printing."
         )
 

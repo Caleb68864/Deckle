@@ -44,10 +44,10 @@ jobs:
       # makes it diagnosable.
       fail-fast: false
       matrix:
-        # 3.11 is the floor `pyproject.toml` and the README both claim, so
-        # it is tested rather than merely asserted. `run.bat` says 3.12+;
-        # that is a documentation drift item, not a second opinion about
-        # what the code supports.
+        # 3.11 is the floor `pyproject.toml`, the README and `run.bat` all
+        # claim, so it is tested rather than merely asserted. (`run.bat`
+        # once said 3.12+; that was documentation drift, fixed as roadmap
+        # D12, not a second opinion about what the code supports.)
         python-version: ["3.11", "3.12", "3.14"]
 
     steps:

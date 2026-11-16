@@ -698,9 +698,9 @@ def test_the_panel_reports_schedule_outcomes_through_a_signal(qapp):
 
     panel = layout_panel.LayoutPanel(AppState(_project(8, fold_scheme="folio")))
     seen = []
-    panel.schedule_saved.connect(seen.append)
+    panel.status_message.connect(seen.append)
 
-    panel.schedule_saved.emit("Saved binding schedule to book-schedule.txt")
+    panel.status_message.emit("Saved binding schedule to book-schedule.txt")
 
     assert seen == ["Saved binding schedule to book-schedule.txt"]
 

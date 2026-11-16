@@ -276,7 +276,7 @@ def _panel(qapp, monkeypatch, insets=((1.0, 2.0, 3.0, 4.0), None), runner=run_in
 def test_auto_crop_fills_the_boxes_through_the_job(qapp, monkeypatch):
     panel = _panel(qapp, monkeypatch)
     said = []
-    panel.schedule_saved.connect(said.append)
+    panel.status_message.connect(said.append)
 
     panel._on_auto_crop()
 
@@ -294,7 +294,7 @@ def test_auto_crop_failure_is_said_and_gives_the_button_back(qapp, monkeypatch):
 
     monkeypatch.setattr(render, "auto_crop_insets", _boom)
     said = []
-    panel.schedule_saved.connect(said.append)
+    panel.status_message.connect(said.append)
 
     panel._on_auto_crop()
 
@@ -319,7 +319,7 @@ def test_a_measurement_of_a_document_that_moved_on_is_dropped(qapp, monkeypatch)
 
     panel.state.mutate(lambda p: replace(p, pages=p.pages[:1]))
     said = []
-    panel.schedule_saved.connect(said.append)
+    panel.status_message.connect(said.append)
     fn, on_done = held[0]
     on_done(fn(threading.Event()))
 
