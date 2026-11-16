@@ -117,6 +117,35 @@ def _project_output_ready(project) -> bool:
         return False
 
 
+def card_output_ready(project, plan_problem) -> bool:
+    """Whether a card project can be saved as a PDF or printed.
+
+    The seam behind :meth:`MainWindow._output_is_ready` for card projects,
+    kept free of the window so it can be tested without one (H8).
+
+    :param project: a card project.
+    :param plan_problem: ``(project) -> str``. Plans the project and says
+        why it cannot be output, ``""`` when it can. The *expected*
+        failures -- the ``ValueError``/``TypeError`` imposing raises for a
+        deck that does not fit -- come back as that text and are not
+        logged; the window shows them. Anything it raises is a bug: it
+        used to be swallowed by a bare ``except Exception: return False``,
+        which greyed out Save PDF and Print with no message and no log
+        line. It is now logged as ``card_output_check_failed`` and still
+        answers ``False``, because enabling output on a plan that could not
+        be made is worse.
+    :returns: ``True`` only when the deck is complete and plans cleanly.
+    """
+    if project.card_deck is None or card_output_problems(project.card_deck):
+        return False
+    try:
+        problem = plan_problem(project)
+    except Exception as exc:  # noqa: BLE001 -- logged; see above
+        log_exception("card_output_check_failed", exc)
+        return False
+    return not problem
+
+
 NO_DOCUMENT_MESSAGE = "Import a PDF or a folder of images to begin."
 """The first thing Deckle says when it opens with nothing loaded.
 
@@ -658,11 +687,17 @@ class MainWindow:
     def _output_is_ready(self) -> bool:
         project = self.state.project
         if project.kind == "cards":
-            if project.card_deck is None or card_output_problems(project.card_deck): return False
-            try: self._plan_for_project(project)
-            except Exception: return False
-            return not self._output_problem
+            return card_output_ready(project, self._card_plan_problem)
         return bool(project.pages)
+
+    def _card_plan_problem(self, project) -> str:
+        """Plan ``project`` and return why it cannot be output, or ``""``.
+
+        :param project: the card project.
+        :returns: :attr:`_output_problem` as :meth:`_plan_for_project` left it.
+        """
+        self._plan_for_project(project)
+        return self._output_problem
 
     def _sync_kind_views(self) -> None:
         cards = self.state.project.kind == "cards"
