@@ -142,7 +142,7 @@ class _Stoppable:
 
     def __init__(self, query, thread):
         empty = SimpleNamespace(_worker=None, _thread=None)
-        self.preview_view = self.arrange_view = self.layout_panel = self.import_view = empty
+        self.preview_view = self.arrange_view = self.layout_panel = self.import_view = self.cards_view = empty
         self._jobs = {}
         self._stopping = False
         self._printer_query = query

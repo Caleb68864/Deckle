@@ -424,7 +424,7 @@ def _check_state(
 
 
 
-def _failure_text(result: PrintResult) -> str:
+def result_failure_text(result: PrintResult) -> str:
     """The text to record for a submission that failed -- never empty.
 
     Failure is ``result.error is not None``: that is the contract
@@ -433,6 +433,9 @@ def _failure_text(result: PrintResult) -> str:
     chunk that put nothing on paper counted as printed (H7). An empty
     error is still a failure, so it gets words the operator can read and
     :attr:`PrintSession.last_error` stays non-empty for the dialog.
+
+    Public because the Print dialog's proof sheet submits outside a session
+    and needs the same answer for the same result.
 
     :param result: a failed submission's result.
     :returns: the backend's own text, or a stand-in when it gave none.
@@ -907,7 +910,7 @@ class PrintSession:
             side=pass_.side,
             sheets=tuple(chunk),
             submitted=result.submitted,
-            error=_failure_text(result),
+            error=result_failure_text(result),
         )
         answer = self.ask_sheets_printed(question)
         if answer is None:
@@ -954,7 +957,7 @@ class PrintSession:
             first = pass_.sheet_order[:1]
             result = self._submit_sheets(pass_, first)
             if result.error is not None:
-                self._last_error = _failure_text(result)
+                self._last_error = result_failure_text(result)
                 # One sheet is still a sheet. A test sheet that printed and
                 # then could not be recorded is the same paper in the same
                 # tray as any other chunk's, so it is counted the same way.
@@ -996,7 +999,7 @@ class PrintSession:
         chunk = remaining[: self.chunk_size]
         result = self._submit_sheets(pass_, chunk)
         if result.error is not None:
-            self._last_error = _failure_text(result)
+            self._last_error = result_failure_text(result)
             # The cursor follows the paper. Sheets that came out are behind
             # the cursor even though the run stopped -- otherwise a resume
             # feeds them through a second time, onto a stack the operator

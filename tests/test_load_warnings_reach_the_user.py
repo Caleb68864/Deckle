@@ -71,7 +71,7 @@ def test_the_desktop_app_shows_which_fields_it_dropped(tmp_path, monkeypatch):
     window = SimpleNamespace(
         status_bar=SimpleNamespace(showMessage=shown.append),
         state=SimpleNamespace(mark_unsaved=lambda: None),
-        _recover_autosave_if_offered=lambda p, project: project,
+        _recover_autosave_if_offered=lambda p, project, *_prepared: project,
         _refresh_recent_menu=lambda: None,
         _sync_title=lambda: None,
         _flush_outgoing_state=lambda: None,

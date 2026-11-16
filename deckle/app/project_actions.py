@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import warnings
+from dataclasses import dataclass
 
 from deckle.app.state import (
     AppState,
@@ -131,7 +132,114 @@ def confirm_discard(window, action: str) -> bool:
     return window.save_project()
 
 
-def recover_autosave_if_offered(window, path: str, project: Project) -> Project:
+@dataclass(frozen=True)
+class PreparedRecovery:
+    """An autosave read on the GUI thread and checked by the open job.
+
+    Accepting a recovery used to load the autosave with
+    ``check_sources=True`` *after* the job, on the GUI thread, hashing every
+    source a second time with the window frozen (B17). The open job now
+    checks it alongside the project, and the offer uses what it found.
+
+    :ivar path: the autosave that was read.
+    :ivar stamp: its ``(st_mtime_ns, st_size)`` when it was read. Used only
+        if the file still matches, because a flush between the job and the
+        offer rewrites it.
+    :ivar project: what was read, or ``None`` if it could not be.
+    :ivar error: why it could not be read, or why its sources did not
+        check out; ``None`` when it is usable.
+    """
+
+    path: str
+    stamp: tuple[int, int]
+    project: Project | None
+    error: Exception | None = None
+
+
+def _autosave_stamp(path: str) -> tuple[int, int]:
+    """``(st_mtime_ns, st_size)`` of ``path``. Raises ``OSError``."""
+    status = os.stat(path)
+    return (status.st_mtime_ns, status.st_size)
+
+
+def read_recovery_candidate(path: str) -> PreparedRecovery | None:
+    """Read the autosave that opening ``path`` would offer, without hashing.
+
+    GUI thread: it is a JSON read, and loading warns, which must not happen
+    on a thread (``warnings.catch_warnings`` is process-global).
+
+    :param path: the project being opened.
+    :returns: ``None`` when nothing would be offered. Otherwise the autosave,
+        or the reason it could not be read. Never raises.
+    """
+    autosave_path = autosave_recovery_offer(path)
+    if autosave_path is None:
+        return None
+    try:
+        stamp = _autosave_stamp(autosave_path)
+    except OSError:
+        return None
+    try:
+        # Recorded and logged rather than left to print: this runs on every
+        # open that has an offer, accepted or not, and a bare warning names
+        # a line inside Deckle (see `open_project`).
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            candidate = load_project(
+                autosave_path, check_sources=False, allowed_roots=(os.path.dirname(path),)
+            )
+    except Exception as exc:  # noqa: BLE001 -- reported if the offer is accepted
+        return PreparedRecovery(autosave_path, stamp, None, exc)
+    for warning in caught:
+        log_event(
+            "autosave_recovery_warning", path=autosave_path,
+            kind=warning.category.__name__, detail=str(warning.message),
+        )
+    return PreparedRecovery(autosave_path, stamp, candidate)
+
+
+def check_recovery_candidate(
+    prepared: PreparedRecovery | None, project: Project
+) -> PreparedRecovery | None:
+    """Check an autosave's sources. For the open job, off the GUI thread.
+
+    :param prepared: from :func:`read_recovery_candidate`.
+    :param project: the project the same job has just checked; sources it
+        shares are not hashed twice.
+    :returns: ``prepared``, with :attr:`PreparedRecovery.error` set if a
+        source of the autosave is missing or changed. Never raises: a bad
+        autosave must not stop the saved project opening.
+    """
+    if prepared is None or prepared.project is None:
+        return prepared
+    try:
+        check_project_sources(prepared.project, already_checked=project)
+    except Exception as exc:  # noqa: BLE001 -- reported if the offer is accepted
+        return PreparedRecovery(prepared.path, prepared.stamp, None, exc)
+    return prepared
+
+
+def _prepared_project(prepared: PreparedRecovery | None, autosave_path: str) -> Project | None:
+    """The checked autosave, if ``prepared`` is still what is on disk.
+
+    :returns: the project, or ``None`` to read the file again.
+    :raises Exception: the error the job recorded for this same file.
+    """
+    if prepared is None or prepared.path != autosave_path:
+        return None
+    try:
+        if _autosave_stamp(autosave_path) != prepared.stamp:
+            return None
+    except OSError:
+        return None
+    if prepared.error is not None:
+        raise prepared.error
+    return prepared.project
+
+
+def recover_autosave_if_offered(
+    window, path: str, project: Project, prepared: PreparedRecovery | None = None
+) -> Project:
     """Offer a newer autosave in place of the project just loaded.
 
     Autosave was written on every edit and flushed on close and never
@@ -148,6 +256,10 @@ def recover_autosave_if_offered(window, path: str, project: Project) -> Project:
 
     :param path: the project file just opened.
     :param project: what was loaded from it.
+    :param prepared: the autosave as the open job read and checked it. Used
+        when it is still the file on disk, so accepting hashes nothing on
+        the GUI thread; otherwise the autosave is read and checked here, as
+        it always was.
     :returns: the recovered project, or ``project`` unchanged.
     """
     autosave_path = autosave_recovery_offer(path)
@@ -160,9 +272,11 @@ def recover_autosave_if_offered(window, path: str, project: Project) -> Project:
             log_exception("autosave_discard_failed", exc, path=autosave_path)
         return project
     try:
-        recovered = load_project(
-            autosave_path, allowed_roots=(os.path.dirname(path),)
-        )
+        recovered = _prepared_project(prepared, autosave_path)
+        if recovered is None:
+            recovered = load_project(
+                autosave_path, allowed_roots=(os.path.dirname(path),)
+            )
     except Exception as exc:  # noqa: BLE001 -- reported, never a crash
         window.status_bar.showMessage(
             f"Could not read the recovered changes for "
@@ -348,7 +462,14 @@ def open_project(window, path: str) -> bool:
     started_from = getattr(window.state, "project", None)
     outcome: list[bool] = []
 
-    def on_done(_result) -> None:
+    # Read now, checked in the job: accepting it used to hash on this thread.
+    candidate = read_recovery_candidate(path)
+
+    def check(_cancel):
+        check_project_sources(project)
+        return check_recovery_candidate(candidate, project)
+
+    def on_done(prepared) -> None:
         current = getattr(window.state, "project", None)
         if current is not started_from and not window._confirm_discard(
             "opening another project"
@@ -357,7 +478,9 @@ def open_project(window, path: str) -> bool:
             outcome.append(False)
             return
         outcome.append(
-            _apply_loaded_project(window, path, project, newer_format or dropped_fields)
+            _apply_loaded_project(
+                window, path, project, newer_format or dropped_fields, prepared
+            )
         )
 
     def on_error(exc: Exception) -> None:
@@ -372,7 +495,7 @@ def open_project(window, path: str) -> bool:
     window.status_bar.showMessage(f"Opening {os.path.basename(path)}...")
     runner = getattr(window, "_job_runner", run_inline)
     jobs["open"] = runner(
-        lambda _cancel: check_project_sources(project),
+        check,
         on_done,
         on_error,
         getattr(window, "window", None),
@@ -406,7 +529,9 @@ def _report_open_failure(window, path: str, exc: Exception) -> None:
         log_exception("project_open_failed", exc, path=path)
 
 
-def _apply_loaded_project(window, path: str, project, advisory: str | None) -> bool:
+def _apply_loaded_project(
+    window, path: str, project, advisory: str | None, prepared=None
+) -> bool:
     """Swap a project whose sources have checked out into the window.
 
     GUI thread only.
@@ -415,10 +540,11 @@ def _apply_loaded_project(window, path: str, project, advisory: str | None) -> b
     :param path: the project.
     :param project: what was loaded from it.
     :param advisory: a load warning that outranks the page count, or ``None``.
+    :param prepared: the autosave the open job checked, or ``None``.
     :returns: ``True``.
     """
     loaded = project
-    project = window._recover_autosave_if_offered(path, project)
+    project = window._recover_autosave_if_offered(path, project, prepared)
     recovered = project is not loaded
 
     recent.record(path)

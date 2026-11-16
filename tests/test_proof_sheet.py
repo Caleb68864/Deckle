@@ -239,6 +239,31 @@ def test_an_offline_printer_during_a_proof_is_reported_like_any_other():
     assert shown == [("Laser", "printer is offline")]
 
 
+@pytest.mark.parametrize("error", ["", "   "])
+def test_a_proof_failure_with_no_message_still_says_something(error):
+    """``error=""`` is a failure (``is not None``, the ``PrintResult``
+    contract), and the dialog took it as one -- then showed the operator
+    "offline or unreachable:" followed by nothing."""
+
+    class _Silent(_RecordingBackend):
+        def submit_proof(self, plan, sheet_index, printer_name, dpi):
+            return PrintResult(submitted=0, job_id=None, error=error)
+
+    shown = []
+    dialog = _dialog(
+        _make_plan(3),
+        backend_cls=_Silent,
+        show_offline_error=lambda printer, error: shown.append((printer, error)),
+    )
+    dialog.proof_checkbox.setChecked(True)
+    dialog.start_print()
+
+    assert len(shown) == 1
+    printer, said = shown[0]
+    assert printer == "Laser"
+    assert said.strip(), "the operator was shown an empty reason"
+
+
 def test_an_empty_plan_refuses_rather_than_submitting_nothing():
     dialog = _dialog(_make_plan(0))
     dialog.proof_checkbox.setChecked(True)

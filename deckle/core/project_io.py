@@ -613,7 +613,9 @@ def _check_source(ref: SourceRef) -> None:
         raise SourceChangedWarning(ref.path)
 
 
-def check_project_sources(project: Project) -> None:
+def check_project_sources(
+    project: Project, *, already_checked: Project | None = None
+) -> None:
     """Hash every source of a project loaded with ``check_sources=False``.
 
     Split from :func:`load_project` so the desktop app can read the file on the
@@ -622,15 +624,28 @@ def check_project_sources(project: Project) -> None:
     is the half that should not move to a thread.
 
     :param project: the project.
+    :param already_checked: a project whose sources the caller has just
+        checked. A source of ``project`` with the same path **and** the same
+        saved hash is not hashed again: the same file was just found to hold
+        the same content. Used for an autosave checked beside its project.
     :returns: nothing.
     :raises SourceMissingError: a source has gone or cannot be read.
     :raises SourceChangedWarning: a source has different content now.
     """
+    known: set[tuple[str, str]] = set()
+    if already_checked is not None:
+        known = {
+            (page.ref.path, page.ref.sha256)
+            for page in project_source_pages(already_checked)
+            if not is_blank_page(page)
+        }
     checked: set[str] = set()
     for page in project_source_pages(project):
         if is_blank_page(page) or page.ref.path in checked:
             continue
         checked.add(page.ref.path)
+        if (page.ref.path, page.ref.sha256) in known:
+            continue
         _check_source(page.ref)
 
 

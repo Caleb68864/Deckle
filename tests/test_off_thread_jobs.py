@@ -390,7 +390,7 @@ def _opening_window(monkeypatch, runner, *, confirm=True):
         _jobs={},
         _job_runner=runner,
         _confirm_discard=lambda action: confirm,
-        _recover_autosave_if_offered=lambda p, project: swapped.append(project) or project,
+        _recover_autosave_if_offered=lambda p, project, *_prepared: swapped.append(project) or project,
         _refresh_recent_menu=lambda: None,
         _sync_title=lambda: None,
         _flush_outgoing_state=lambda: None,
@@ -439,6 +439,117 @@ def test_opening_hashes_the_sources_off_the_gui_thread(tmp_path, monkeypatch):
     assert len(hashed) == 1
     assert len(swapped) == 1
     assert shown[-1].startswith("Opened book.deckle")
+
+
+def _autosave_beside(path, gutter_pt, extra_source=None):
+    """A newer autosave of ``path`` with a different gutter, so a recovery
+    is visible in what gets installed."""
+    from dataclasses import replace
+
+    from deckle.core.loader import load_pdf
+    from deckle.core.project_io import load_project, save_project
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        saved = load_project(path, check_sources=False)
+    pages = saved.pages + (tuple(load_pdf(extra_source)) if extra_source else ())
+    autosave = path + ".autosave"
+    save_project(replace(saved, pages=pages, layout=replace(saved.layout, gutter_pt=gutter_pt)), autosave)
+    then = os.path.getmtime(path)
+    os.utime(path, (then - 100, then - 100))
+    return autosave
+
+
+def _recovering_window(monkeypatch, runner, answer=True):
+    from deckle.app import project_actions
+
+    window, shown, swapped = _opening_window(monkeypatch, runner)
+    window.confirm_recovery = lambda name: answer
+    window._recover_autosave_if_offered = (
+        lambda p, project, *rest: project_actions.recover_autosave_if_offered(
+            window, p, project, *rest
+        )
+    )
+    return window, shown
+
+
+@pytest.mark.parametrize("extra", [False, True], ids=["same-sources", "a-new-source"])
+def test_accepting_a_recovery_hashes_nothing_on_the_gui_thread(tmp_path, monkeypatch, extra):
+    """B17's last Open-project clause: the recovery offer comes after the
+    job, on the GUI thread, and accepting it used to load the autosave with
+    ``check_sources=True`` -- every source hashed again, window frozen."""
+    import shutil
+
+    from deckle.app import project_actions
+    from deckle.core import project_io
+
+    path = _saved_project(tmp_path)
+    new_source = None
+    if extra:
+        new_source = str(tmp_path / "added.pdf")
+        shutil.copy(FIXTURE, new_source)
+    autosave = _autosave_beside(path, 9.0, new_source)
+    hashed = []
+    real = project_io._sha256_file
+    monkeypatch.setattr(project_io, "_sha256_file", lambda p: hashed.append(p) or real(p))
+    held = []
+    window, shown = _recovering_window(monkeypatch, _holding_runner(held))
+
+    assert project_actions.open_project(window, path) is True
+    _job, fn, on_done, _on_error = held[0]
+    result = fn(threading.Event())
+    hashed_in_the_job = list(hashed)
+    hashed.clear()
+    on_done(result)
+
+    assert hashed == [], "accepting the recovery hashed sources on the GUI thread"
+    assert window.state.project.layout.gutter_pt == 9.0
+    assert hashed_in_the_job.count(FIXTURE) == 1, "a source both files share was hashed twice"
+    if extra:
+        assert new_source in hashed_in_the_job, "the autosave's own source was never checked"
+    assert not os.path.exists(autosave), "an accepted recovery is moved aside"
+
+
+def test_a_recovery_whose_source_changed_falls_back_and_stays_offered(tmp_path, monkeypatch):
+    """The autosave is the damaged one, so the saved project opens -- and the
+    autosave is not archived, because these edits were never recovered."""
+    import shutil
+
+    from deckle.app import project_actions
+    from deckle.app.state import autosave_recovery_offer
+
+    path = _saved_project(tmp_path)
+    new_source = tmp_path / "added.pdf"
+    shutil.copy(FIXTURE, new_source)
+    autosave = _autosave_beside(path, 9.0, str(new_source))
+    new_source.write_bytes(new_source.read_bytes() + b"%changed")
+    window, shown = _recovering_window(monkeypatch, run_inline)
+
+    assert project_actions.open_project(window, path) is True
+
+    assert window.state.project.layout.gutter_pt == 0.0
+    assert any("Could not read the recovered changes" in m for m in shown)
+    assert autosave_recovery_offer(path) == autosave
+
+
+def test_an_autosave_rewritten_after_the_job_is_read_again(tmp_path, monkeypatch):
+    """What the job checked is used only if it is still what is on disk."""
+    from deckle.app import project_actions
+
+    path = _saved_project(tmp_path)
+    autosave = _autosave_beside(path, 9.0)
+    held = []
+    window, shown = _recovering_window(monkeypatch, _holding_runner(held))
+
+    assert project_actions.open_project(window, path) is True
+    _job, fn, on_done, _on_error = held[0]
+    result = fn(threading.Event())
+    _autosave_beside(path, 27.0)
+    on_done(result)
+
+    assert window.state.project.layout.gutter_pt == 27.0
 
 
 @pytest.mark.parametrize("damage, says", [("remove", "is missing"), ("rewrite", "has changed")])

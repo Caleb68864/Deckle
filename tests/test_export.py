@@ -1314,3 +1314,53 @@ def test_the_preview_of_a_missing_sheet_shows_nothing_rather_than_raising(tmp_pa
         export.clear_sheet_cache()
 
     assert rendered.width == 0 and rendered.height == 0
+
+
+# -- §5 test gap for B1/B2: impose, then export, every turn under every policy --
+
+_CORNER_AFTER_CLOCKWISE_TURN = {
+    0: "bottom-left", 90: "top-left", 180: "top-right", 270: "bottom-right",
+}
+
+
+def _expected_net_turn(user_deg: int, policy: str, size) -> int:
+    """What the reader should see: the user's turn, plus the policy's
+    quarter turn when that leaves a landscape page in a portrait cell."""
+    w, h = size if user_deg in (0, 180) else (size[1], size[0])
+    extra = 90 if policy == "rotate" and w > h else 0
+    return (user_deg + extra) % 360
+
+
+@pytest.mark.parametrize("size", [(400.0, 600.0), (600.0, 400.0)], ids=["portrait", "landscape"])
+@pytest.mark.parametrize("policy", ["rotate", "scale"])
+@pytest.mark.parametrize("user_deg", [0, 90, 180, 270])
+def test_an_imposed_turn_reaches_the_exported_sheet_under_every_policy(
+    tmp_path, size, policy, user_deg
+):
+    """B1 and B2 were both "the imposer decided a turn and the sheet did not
+    show it". Each half has its own tests; this drives the whole path --
+    `GutterShiftStrategy.impose` into `render_sheet` -- for every turn the
+    Rotate button can make, under both landscape policies, from both source
+    orientations, and checks the ink: which corner it lands in, and that it
+    arrives whole (a sideways page clipped by its cell would shrink it)."""
+    path = _write_corner_marked_pdf(tmp_path, 1, page_size=size)
+    page = SourcePage(ref=_make_ref(path, 0, *size), rotate_deg=user_deg, skipped=False)
+    settings = LayoutSettings(
+        paper=LETTER, gutter_pt=18.0, binding_edge="left", landscape_policy=policy
+    )
+    plan = GutterShiftStrategy().impose([page], settings)
+    placement = plan.sheets[0].front.pages[0].placement
+    net = _expected_net_turn(user_deg, policy, size)
+    assert placement.rotate_deg == net
+
+    dpi = 36
+    try:
+        rendered = render.render_sheet(plan, 0, "front", dpi)
+    finally:
+        export.clear_sheet_cache()
+
+    assert _corner_of_ink(rendered) == _CORNER_AFTER_CLOCKWISE_TURN[net]
+    left, top, right, bottom = _ink_bbox_px(rendered)
+    side_px = 100.0 * placement.scale_x * dpi / 72.0
+    assert abs((right - left + 1) - side_px) <= 2.0
+    assert abs((bottom - top + 1) - side_px) <= 2.0
