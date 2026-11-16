@@ -392,8 +392,9 @@ class DuplexModes:
 def failure_text(exc: BaseException) -> str:
     """``PrintResult.error`` for a caught exception -- never empty.
 
-    ``PrintSession`` and ``submit_pass`` test ``if result.error:``, so an
-    error of ``""`` reads as *success*. ``str(exc)`` is ``""`` for any
+    ``PrintSession`` tested ``if result.error:`` until H7 (it and
+    ``submit_pass`` both test ``is not None`` now), so an error of ``""``
+    read as *success*. ``str(exc)`` is ``""`` for any
     exception raised without a message (a bare ``RuntimeError()`` from a
     driver shim, a ``KeyError()``), and a chunk that put nothing on paper was
     then counted as printed: the cursor walked past it and the run went on,
