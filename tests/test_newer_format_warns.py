@@ -397,7 +397,7 @@ def test_the_desktop_app_shows_the_project_advisory_rather_than_the_page_count(
     window = SimpleNamespace(
         status_bar=SimpleNamespace(showMessage=shown.append),
         state=SimpleNamespace(mark_unsaved=lambda: None),
-        _recover_autosave_if_offered=lambda p, project: project,
+        _recover_autosave_if_offered=lambda p, project, *_prepared: project,
         _refresh_recent_menu=lambda: None,
         _sync_title=lambda: None,
         _flush_outgoing_state=lambda: None,

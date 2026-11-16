@@ -1714,15 +1714,18 @@ class MainWindow:
         self._set_gated_actions("undo", self.state.can_undo)
         self._set_gated_actions("redo", self.state.can_redo)
 
-    def _recover_autosave_if_offered(self, path: str, project: Project) -> Project:
+    def _recover_autosave_if_offered(
+        self, path: str, project: Project, prepared=None
+    ) -> Project:
         """Offer a newer autosave in place of the project just loaded.
 
         :param path: the project file just opened.
         :param project: what was loaded from it.
+        :param prepared: the autosave as the open job checked it, or ``None``.
         :returns: the recovered project, or ``project`` unchanged. See
             :func:`deckle.app.project_actions.recover_autosave_if_offered`.
         """
-        return project_actions.recover_autosave_if_offered(self, path, project)
+        return project_actions.recover_autosave_if_offered(self, path, project, prepared)
 
     def _offer_unsaved_recovery(self) -> None:
         """Offer back work from a session that never got as far as Save.
