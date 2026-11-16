@@ -31,6 +31,8 @@ exist to call -- they pin the choosing, which had no home at all before.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import json
 import os
 import subprocess
@@ -161,6 +163,7 @@ def test_the_dialog_reports_the_profile_it_is_set_to_print_with():
         printer_names=["Measured"],
         profile_loader=lambda name: measured,
         resumable_lister=lambda: [],
+        job_runner=run_inline,
     )
 
     assert dialog.selected_profile() == measured
@@ -174,6 +177,7 @@ def test_picking_a_different_paper_behaviour_changes_what_is_reported():
         printer_names=["Plain"],
         profile_loader=_missing,
         resumable_lister=lambda: [],
+        job_runner=run_inline,
     )
     assert dialog.profile_combo.count() >= 2
 

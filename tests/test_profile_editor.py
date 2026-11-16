@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import dataclasses
 import os
 
@@ -174,6 +176,7 @@ def _print_dialog(saved_profile, seen, **kwargs):
         resumable_lister=lambda: [],
         profile_editor_cls=_Editor,
         **kwargs,
+        job_runner=run_inline,
     )
 
 

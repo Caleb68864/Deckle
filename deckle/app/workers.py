@@ -6,7 +6,9 @@ status never painted: ``showMessage`` queues a repaint that cannot happen until
 control returns to the event loop, which is after the work (B17). Qt is imported
 only when a thread is made.
 
-Print submission still runs on the GUI thread. See B17 in ``docs/ROADMAP.md``.
+Print submission runs here too, and its prompts come back to the GUI thread
+through :class:`GuiCaller`, one at a time and in order. See B17 in
+``docs/ROADMAP.md``.
 """
 
 from __future__ import annotations
@@ -117,3 +119,105 @@ def run_inline(fn, on_done, on_error, parent=None) -> Job:
     job.run()
     _deliver(job, on_done, on_error)
     return job
+
+
+class Cancelled(Exception):
+    """A job's question could not be put because its job was cancelled.
+
+    Raised on the background thread by :meth:`GuiCaller.call` instead of
+    answering for the person: a default answer to "reload the paper" would
+    walk on to the back pass with nobody there.
+    """
+
+
+_BRIDGE_CLASS = None
+
+
+def _bridge_class():
+    """The ``QObject`` that carries a call from a job to the GUI thread.
+
+    Defined on first use, so importing this module needs no Qt.
+    """
+    global _BRIDGE_CLASS
+    if _BRIDGE_CLASS is None:
+        from PySide6.QtCore import QObject, Signal
+
+        class _Bridge(QObject):
+            requested = Signal(object)
+
+        _BRIDGE_CLASS = _Bridge
+    return _BRIDGE_CLASS
+
+
+class _Request:
+    def __init__(self, fn, args) -> None:
+        self.fn = fn
+        self.args = args
+        self.done = threading.Event()
+        self.abandoned = False
+        self.result: object = None
+        self.error: BaseException | None = None
+
+
+def _answer(request: _Request) -> None:
+    """Run one request on the GUI thread, and wake the job that asked."""
+    if request.abandoned:
+        return
+    try:
+        request.result = request.fn(*request.args)
+    except BaseException as exc:  # noqa: BLE001 -- handed back to the job
+        request.error = exc
+    finally:
+        request.done.set()
+
+
+class GuiCaller:
+    """Lets a background job ask the GUI thread something and wait for the answer.
+
+    A print run asks the person things between chunks -- did the test sheet
+    print, reload the paper, how many sheets came out -- and each answer
+    decides what is painted next. So a call blocks the job until the GUI
+    thread has answered, which keeps the questions in exactly the order the
+    job asks them. Called on the GUI thread itself (a job run by
+    :func:`run_inline`), it simply calls.
+
+    Not ``Qt.BlockingQueuedConnection``: a job blocked that way cannot be
+    released, and the window, waiting for the job on close, would wait for
+    a question nobody can now answer. Here the job waits on an event and
+    gives up with :class:`Cancelled` as soon as its job is cancelled.
+
+    :param parent: a ``QObject`` living on the GUI thread. Construct this on
+        the GUI thread.
+    """
+
+    #: How often a waiting job looks at its cancel event, in seconds.
+    POLL_S = 0.05
+
+    def __init__(self, parent) -> None:
+        from PySide6.QtCore import Qt
+
+        self._bridge = _bridge_class()(parent)
+        self._bridge.requested.connect(_answer, Qt.ConnectionType.QueuedConnection)
+        self._gui_thread = threading.current_thread()
+
+    def call(self, fn, *args, cancel: threading.Event | None = None):
+        """``fn(*args)`` on the GUI thread; its return value, or what it raised.
+
+        :param fn: the question. Touches widgets freely.
+        :param cancel: the asking job's cancel event.
+        :returns: what ``fn`` returned.
+        :raises Cancelled: ``cancel`` was set before or while waiting.
+        """
+        if cancel is not None and cancel.is_set():
+            raise Cancelled()
+        if threading.current_thread() is self._gui_thread:
+            return fn(*args)
+        request = _Request(fn, args)
+        self._bridge.requested.emit(request)
+        while not request.done.wait(self.POLL_S):
+            if cancel is not None and cancel.is_set():
+                request.abandoned = True
+                raise Cancelled()
+        if request.error is not None:
+            raise request.error
+        return request.result

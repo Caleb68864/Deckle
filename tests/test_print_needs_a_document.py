@@ -25,6 +25,8 @@ position"*. Print was the only one of the four that misbehaved.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import json
 import os
 import subprocess
@@ -133,6 +135,7 @@ def _dialog(plan, session_cls):
         confirm_reload=lambda instruction: None,
         confirm_test_sheet=lambda: True,
         show_offline_error=lambda printer, error: None,
+        job_runner=run_inline,
     )
 
 

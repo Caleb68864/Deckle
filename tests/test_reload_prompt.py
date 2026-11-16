@@ -29,6 +29,8 @@ the real class and only the *printer* is a stand-in.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 from typing import Literal, Sequence
 
 import pytest
@@ -117,6 +119,10 @@ class _Drive:
         from deckle.app.views.print_dialog import PrintDialog
 
         PrintDialog._drive(self, session)
+
+    def _ask(self, fn, *args, cancel=None):
+        # The dialog's way of reaching the GUI thread; this is on it.
+        return fn(*args)
 
     def _confirm_reload(self, instruction):
         self.reloads.append(instruction)
@@ -339,6 +345,7 @@ def _dialog_resuming(plan, reloads, count):
         confirm_reload=reloads.append,
         confirm_test_sheet=lambda: True,
         show_offline_error=lambda printer, error: None,
+        job_runner=run_inline,
     )
 
 

@@ -15,6 +15,13 @@ so headless tests can drive the full flow without blocking on a real modal
 event loop. Two of them ask the same question -- how many sheets came out
 -- because it is the same question: software cannot see the output tray,
 and the person at the printer can. The wording is shared on purpose.
+
+The run itself -- ``start``/``resume`` and every chunk after -- is painted
+and spooled off the GUI thread through ``deckle.app.workers`` (B17), so the
+window keeps painting while a large job spools. The prompts are still
+shown on the GUI thread, one at a time and in the order the run asks them,
+through a ``workers.GuiCaller``; closing the dialog stops the run after the
+chunk in the printer and waits for that chunk.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import time
 from typing import Callable, Mapping, Sequence
 
 from deckle.app.printer_capabilities import profile_with_driver_margins
+from deckle.app.workers import Cancelled, GuiCaller, run_in_thread
 from deckle.core.printing import parse_sheet_selection, sheet_selection_text
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import proof_rule_advice
@@ -490,6 +498,12 @@ class PrintDialog:
         correctly.
     :param show_offline_error: shown ``(printer_name, error)`` when a run
         stalls, and reused verbatim for a refused resume.
+    :param job_runner: how the submission is run, in the shape of
+        :func:`deckle.app.workers.run_in_thread` (the default: chunks are
+        painted and spooled off the GUI thread, B17). Every prompt above is
+        still shown on the GUI thread, in the order the run asks it, through
+        a :class:`deckle.app.workers.GuiCaller`. Tests pass
+        :func:`~deckle.app.workers.run_inline`.
     :ivar widget: the ``QDialog`` to show. This class is not itself a
         widget.
     """
@@ -514,6 +528,7 @@ class PrintDialog:
         confirm_test_sheet: Callable[[], bool] | None = None,
         show_offline_error: Callable[[str, str], None] | None = None,
         profile_editor_cls=None,
+        job_runner=run_in_thread,
     ) -> None:
         if backend_cls is None:
             from deckle.app.backend import QtPrintBackend
@@ -531,12 +546,21 @@ class PrintDialog:
         self._session_cls = session_cls
         self._backend_cls = backend_cls
         self._session: PrintSession | None = None
+        self._job_runner = job_runner
+        #: The submission in flight, or ``None``. See :meth:`stop_background_work`.
+        self._print_job = None
 
         self._confirm_resume = confirm_resume or self._default_confirm_resume
         self._ask_resume_count = ask_resume_count or self._default_ask_resume_count
-        self._ask_sheets_printed = (
+        #: The question as given, asked on the GUI thread.
+        self._ask_sheets_printed_here = (
             ask_sheets_printed or self._default_ask_sheets_printed
         )
+        #: What a session is handed: the session asks it from inside a chunk,
+        #: which is in the submission job, so it has to cross threads.
+        self._ask_sheets_printed = self._sheets_printed_from_the_job
+        #: The running submission's cancel event, or ``None``.
+        self._job_cancel = None
         self._confirm_reload = confirm_reload or self._default_confirm_reload
         self._confirm_test_sheet = confirm_test_sheet or self._default_confirm_test_sheet
         self._show_offline_error = show_offline_error or self._default_show_offline_error
@@ -557,6 +581,10 @@ class PrintDialog:
         self._profile_editor_cls = profile_editor_cls
         self.widget = QDialog(parent)
         self.widget.setWindowTitle("Print")
+        self._gui = GuiCaller(self.widget)
+        # Closing the dialog mid-run stops it after the chunk in the printer
+        # and waits for that chunk; the state file keeps the run resumable.
+        self.widget.finished.connect(lambda _result: self.stop_background_work())
 
         layout = QVBoxLayout(self.widget)
 
@@ -841,7 +869,10 @@ class PrintDialog:
                     self._sheets = selection
                     message = f"{len(selection)} of {len(self.plan.sheets)} sheet(s) selected."
         self.status_label.setText(self._sheets_problem or message)
-        self.print_button.setEnabled(not self._sheets_problem)
+        # Not while a run is in flight: that one gives the button back itself.
+        self.print_button.setEnabled(
+            not self._sheets_problem and getattr(self, "_print_job", None) is None
+        )
 
     def start_print(self) -> None:
         """Construct a fresh ``PrintSession`` for the selected printer and run it.
@@ -856,6 +887,9 @@ class PrintDialog:
             session on disk, rather than raising. A plan with no sheets is
             refused before a session exists.
         """
+        if self._print_job is not None:
+            # One run at a time: the button is off while one is in flight.
+            return
         if self._sheets_problem:
             # Refused here as well as at the button, like an empty plan below.
             self.status_label.setText(self._sheets_problem)
@@ -889,8 +923,7 @@ class PrintDialog:
             **kwargs,
         )
         self._session = session
-        session.start()
-        self._drive(session)
+        self._run_submission(session, session.start)
 
     def print_proof(self, backend, printer_name: str, sheets=None) -> None:
         """Print one sheet with a ruler, and say what to measure.
@@ -904,13 +937,41 @@ class PrintDialog:
         :param printer_name: the target queue.
         :param sheets: the narrowed sheet selection, or ``None``.
         :returns: nothing. A failure is reported the same way a stalled run
-            is, through ``show_offline_error``.
+            is, through ``show_offline_error``. The sheet is painted and
+            spooled off the GUI thread, like a run (B17); what follows it
+            happens back on the GUI thread.
         """
         sheet_index = proof_sheet_index(self.plan, sheets)
         if sheet_index is None:
             self.status_label.setText("Nothing to proof -- this plan has no sheets.")
             return
-        result = backend.submit_proof(self.plan, sheet_index, printer_name, PROOF_DPI)
+        if self._print_job is not None:
+            return
+
+        def finished(result):
+            self._print_job = None
+            self.print_button.setEnabled(not self._sheets_problem)
+            self._proof_sent(result, printer_name, sheet_index)
+
+        def failed(exc):
+            self._print_job = None
+            self.print_button.setEnabled(not self._sheets_problem)
+            raise exc
+
+        self.print_button.setEnabled(False)
+        job = self._job_runner(
+            lambda _cancel: backend.submit_proof(
+                self.plan, sheet_index, printer_name, PROOF_DPI
+            ),
+            finished,
+            failed,
+            self.widget,
+        )
+        if job.thread is not None:
+            self._print_job = job
+
+    def _proof_sent(self, result, printer_name: str, sheet_index: int) -> None:
+        """Say what the proof did, on the GUI thread."""
         if result.error is not None:
             # Never `result.error` itself: `""` is still a failure, and the
             # box would read "offline or unreachable:" and then nothing.
@@ -974,13 +1035,103 @@ class PrintDialog:
             instruction = session.reload_instruction
             if instruction:
                 self._confirm_reload(instruction)
-        session.resume(count)
-        self._drive(session)
+        self._run_submission(session, lambda: session.resume(count))
 
     # -- the shared submit/confirm loop --------------------------------------
 
+    def _run_submission(self, session: PrintSession, first) -> None:
+        """Run ``first()`` and then :meth:`_drive` as one job off the GUI thread.
+
+        Everything the run paints and spools happens in the job; every
+        question it asks comes back to the GUI thread through
+        ``self._gui`` and blocks the job until answered, so the questions
+        keep the order they had when all of this ran on the GUI thread. The
+        Print button is off while the job runs, so a second run cannot
+        interleave with the first.
+
+        A failure the session reports still arrives as ``last_error``,
+        through ``show_offline_error``, with the session's own text. An
+        exception is logged by the job (``background_job_failed``) and raised
+        again on the GUI thread, which is where it used to surface.
+
+        :param session: the session to run.
+        :param first: ``session.start`` or a call to ``session.resume``.
+        :returns: nothing; the job is held on ``self._print_job``.
+        """
+        if self._print_job is not None:
+            return
+
+        def work(cancel):
+            self._job_cancel = cancel
+            try:
+                first()
+                self._drive(session)
+            except Cancelled:
+                log_event("print_run_cancelled", printer=session.printer_name)
+            finally:
+                self._job_cancel = None
+
+        def finished(_result=None):
+            self._print_job = None
+            self.print_button.setEnabled(not self._sheets_problem)
+
+        def failed(exc):
+            finished()
+            raise exc
+
+        self.print_button.setEnabled(False)
+        job = self._job_runner(work, finished, failed, self.widget)
+        if job.thread is not None:
+            self._print_job = job
+
+    def stop_background_work(self, timeout_ms: int = 120_000) -> None:
+        """Stop a run in flight after its current chunk, and wait for that chunk.
+
+        A chunk being painted has no cancellation point, and abandoning it
+        mid-page would leave the printer half a job. The run stops at the
+        next chunk or question instead, with its state file saved, so the
+        next Print offers to resume it. Called when the dialog closes and by
+        ``MainWindow.stop_background_work``.
+
+        :param timeout_ms: how long to wait for the chunk.
+        :returns: nothing. Never raises.
+        """
+        job = self._print_job
+        if job is None:
+            return
+        job.cancel.set()
+        try:
+            thread = job.thread
+            if thread is not None and thread.isRunning():
+                if not thread.wait(timeout_ms):
+                    log_event("shutdown_thread_timeout", view="print")
+        except Exception as exc:  # pragma: no cover - defensive
+            log_exception("shutdown_wait_failed", exc)
+        self._print_job = None
+
+    def _ask(self, fn, *args):
+        """``fn(*args)`` on the GUI thread, for the running job; see :class:`GuiCaller`.
+
+        :raises Cancelled: the job was cancelled; nothing was asked.
+        """
+        return self._gui.call(fn, *args, cancel=self._job_cancel)
+
+    def _sheets_printed_from_the_job(self, question: UnrecordedSheets) -> int | None:
+        """``ask_sheets_printed``, asked on the GUI thread from wherever the session is.
+
+        A cancelled run is not answered, which the session already treats as
+        declining: the cursor stays put and the resume asks again.
+        """
+        try:
+            return self._ask(self._ask_sheets_printed_here, question)
+        except Cancelled:
+            return None
+
     def _drive(self, session: PrintSession) -> None:
         """Advance ``session`` through chunks and pass boundaries.
+
+        Runs inside the submission job (:meth:`_run_submission`): every
+        prompt and every widget it touches goes through :meth:`_ask`.
 
         Reads only the public state ``PrintSession`` already exposes
         (``finished``, ``last_error``, ``reload_instruction``, and the
@@ -992,11 +1143,11 @@ class PrintDialog:
             session resumable rather than unwinding it.
         """
         if session.last_error is not None:
-            self._show_offline_error(session.printer_name, session.last_error)
+            self._ask(self._show_offline_error, session.printer_name, session.last_error)
             return
 
         if session.state["test_sheet_pending"]:
-            if self._confirm_test_sheet():
+            if self._ask(self._confirm_test_sheet):
                 session.confirm_test_sheet()
             else:
                 return
@@ -1009,22 +1160,26 @@ class PrintDialog:
         if pass_needs_reloading_first(session.state):
             instruction = session.reload_instruction
             if instruction:
-                self._confirm_reload(instruction)
+                self._ask(self._confirm_reload, instruction)
 
         prior_pass_index = session.state["pass_index"]
         while not session.finished and session.last_error is None:
+            cancel = getattr(self, "_job_cancel", None)
+            if cancel is not None and cancel.is_set():
+                # Between chunks: the state file already says where it got to.
+                raise Cancelled()
             session.advance()
             if session.last_error is not None:
-                self._show_offline_error(session.printer_name, session.last_error)
+                self._ask(self._show_offline_error, session.printer_name, session.last_error)
                 return
             if session.finished:
-                self.status_label.setText("Print job complete.")
+                self._ask(self.status_label.setText, "Print job complete.")
                 return
             if session.state["pass_index"] != prior_pass_index:
                 prior_pass_index = session.state["pass_index"]
                 instruction = session.reload_instruction
                 if instruction:
-                    self._confirm_reload(instruction)
+                    self._ask(self._confirm_reload, instruction)
                 # "Test one sheet first" is offered again for this new
                 # pass -- the checkbox stays enabled/visible throughout,
                 # and start()-time test_first handling is PrintSession's
