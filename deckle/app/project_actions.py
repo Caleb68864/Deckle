@@ -180,11 +180,21 @@ def read_recovery_candidate(path: str) -> PreparedRecovery | None:
     except OSError:
         return None
     try:
-        candidate = load_project(
-            autosave_path, check_sources=False, allowed_roots=(os.path.dirname(path),)
-        )
+        # Recorded and logged rather than left to print: this runs on every
+        # open that has an offer, accepted or not, and a bare warning names
+        # a line inside Deckle (see `open_project`).
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            candidate = load_project(
+                autosave_path, check_sources=False, allowed_roots=(os.path.dirname(path),)
+            )
     except Exception as exc:  # noqa: BLE001 -- reported if the offer is accepted
         return PreparedRecovery(autosave_path, stamp, None, exc)
+    for warning in caught:
+        log_event(
+            "autosave_recovery_warning", path=autosave_path,
+            kind=warning.category.__name__, detail=str(warning.message),
+        )
     return PreparedRecovery(autosave_path, stamp, candidate)
 
 
