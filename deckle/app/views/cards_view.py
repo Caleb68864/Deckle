@@ -12,10 +12,27 @@ from deckle.core.cards import (
     set_face_rotation, set_shared_back,
 )
 from deckle.core.models import CardFace, CardDeck
+from deckle.app.workers import run_in_thread
+
+
+def describe_failure(exc: BaseException) -> str:
+    """What a background card job's failure says to the person -- never empty.
+
+    Both card workers used to hand the UI ``str(exc)``, which is ``""`` for
+    an exception raised without a message, so the import showed an empty
+    error box and the thumbnails said *"Could not render card thumbnails: "*
+    (H9, the same shape as H3/H5). A real message passes through unchanged;
+    without one, the type is named so there is something to quote.
+
+    :param exc: what the job raised.
+    :returns: one non-empty line.
+    """
+    detail = str(exc).strip()
+    return detail or f"{type(exc).__name__} (no message)"
 
 
 class CardsView:
-    def __init__(self, state, parent=None, on_change=None):
+    def __init__(self, state, parent=None, on_change=None, job_runner=run_in_thread):
         from PySide6.QtCore import Qt, Signal
         from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QLabel,
             QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
@@ -25,7 +42,18 @@ class CardsView:
         self.on_selected = None
         self.widget = QWidget(parent)
         self._thumbnail_signature = None
-        self._thumbnail_worker = None
+        #: How the import and thumbnail jobs run: ``deckle.app.workers``, so a
+        #: failure is logged as ``background_job_failed`` with its type and
+        #: reaches the UI as the exception rather than ``str(exc)`` (H9).
+        #: Injectable so a test can run them inline.
+        self._job_runner = job_runner
+        #: The live thumbnail request, an identity token: a reply for any
+        #: other request is stale and dropped.
+        self._thumbnail_request = None
+        self._thumbnail_job = None
+        #: The live import's token, ``None`` when none is running.
+        self._import_request = None
+        self._import_job = None
         self._thumbnail_icons = OrderedDict()
         self._thumbnail_refs = {}
         layout = QVBoxLayout(self.widget)
@@ -111,32 +139,26 @@ class CardsView:
             self.on_advisory(" ".join(w.detail for w in result.warnings))
 
     def _start_import(self, function, args, fronts, replace_fronts=False):
-        from PySide6.QtCore import QThread, Signal
-        if getattr(self,"_worker",None) is not None and self._worker.isRunning():return
-        class Worker(QThread):
-            result=Signal(object); failure=Signal(str)
-            def run(worker):
-                try: worker.result.emit(function(*args))
-                except Exception as exc: worker.failure.emit(str(exc))
-        worker=Worker(self.widget); self._worker=worker
+        if self._import_request is not None:return
+        request=object(); self._import_request=request
         state=self.state
         original_cards=self.deck.cards
-        self._worker=worker
         for button in (self.import_fronts_button,self.import_back_button,self.import_back_folder_button):button.setEnabled(False)
         def finish():
             for button in (self.import_fronts_button,self.import_back_button,self.import_back_folder_button):button.setEnabled(True)
-            if self._worker is worker:self._worker=None
+            if self._import_request is request:
+                self._import_request=None; self._import_job=None
         def completed(result):
             if self.state is state:
                 if replace_fronts and self.deck.cards!=original_cards:self._show_error("The card list changed during import. No fronts were replaced; start the replacement again to review the current deck.")
                 else:self._import_done(result,fronts,replace_fronts)
             finish()
-        def failed(message):
-            if self.state is state:self._show_error(message)
+        def failed(exc):
+            if self.state is state:self._show_error(describe_failure(exc))
             finish()
-        worker.result.connect(completed)
-        worker.failure.connect(failed)
-        worker.start()
+        job=self._job_runner(lambda cancel:function(*args),completed,failed,self.widget)
+        # An inline runner has already finished and cleared the request.
+        if self._import_request is request:self._import_job=job
 
     def import_fronts(self):
         from PySide6.QtWidgets import QFileDialog
@@ -303,7 +325,6 @@ class CardsView:
         self._request_thumbnails()
 
     def _request_thumbnails(self):
-        from PySide6.QtCore import QThread, Signal
         deck=self.deck
         if deck is None or not deck.cards:return
         first=self.table.rowAt(0); last=self.table.rowAt(max(0,self.table.viewport().height()-1))
@@ -324,21 +345,19 @@ class CardsView:
         signature=tuple((asset.id,asset.page.ref) for asset in assets)
         if signature==self._thumbnail_signature:return
         self._thumbnail_signature=signature
-        class Worker(QThread):
-            ready=Signal(object); failed=Signal(str)
-            def run(worker):
-                try:
-                    from deckle.core.render import thumbnails
-                    worker.ready.emit((assets,thumbnails([asset.page for asset in assets],0,len(assets),dpi=36)))
-                except Exception as exc:worker.failed.emit(str(exc))
-        worker=Worker(self.widget); self._thumbnail_worker=worker
-        worker.ready.connect(lambda result:self._thumbnails_ready(worker,signature,*result))
-        worker.failed.connect(lambda message:self._thumbnails_failed(worker,signature,message))
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
+        def render(cancel):
+            from deckle.core.render import thumbnails
+            return thumbnails([asset.page for asset in assets],0,len(assets),dpi=36)
+        request=object(); self._thumbnail_request=request
+        self._thumbnail_job=self._job_runner(
+            render,
+            lambda rendered:self._thumbnails_ready(request,signature,assets,rendered),
+            lambda exc:self._thumbnails_failed(request,signature,exc),
+            self.widget,
+        )
 
-    def _thumbnails_ready(self,worker,signature,assets,rendered):
-        if worker is not self._thumbnail_worker:return
+    def _thumbnails_ready(self,request,signature,assets,rendered):
+        if request is not self._thumbnail_request:return
         from PySide6.QtGui import QImage,QPixmap,QIcon
         current={asset.id:asset.page.ref for asset in self.deck.assets} if self.deck else {}
         for asset,page in zip(assets,rendered):
@@ -355,12 +374,12 @@ class CardsView:
             self._thumbnail_refs.pop(expired,None)
         self.refresh()
 
-    def _thumbnails_failed(self,worker,signature,message):
-        if worker is not self._thumbnail_worker:return
+    def _thumbnails_failed(self,request,signature,exc):
+        if request is not self._thumbnail_request:return
         current={asset.id:asset.page.ref for asset in self.deck.assets} if self.deck else {}
         if any(current.get(asset_id)!=ref for asset_id,ref in signature):return
         self._thumbnail_signature=None
-        if self.on_advisory:self.on_advisory(f"Could not render card thumbnails: {message}")
+        if self.on_advisory:self.on_advisory(f"Could not render card thumbnails: {describe_failure(exc)}")
 
     def _show_selected_faces(self):
         from PySide6.QtCore import Qt
