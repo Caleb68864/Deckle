@@ -130,6 +130,8 @@ def test_clicking_print_rechecks_and_opens_against_the_cached_list(monkeypatch):
     window.preview_view.plan = object()
     window.state.project.printer = None
     window._output_is_ready = lambda: True
+    # Handed to the dialog, which this stub does not run.
+    window._job_runner = None
 
     app_main.MainWindow.print_document(window)
 

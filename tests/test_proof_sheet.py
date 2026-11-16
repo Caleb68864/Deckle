@@ -15,6 +15,8 @@ test here is that ticking the box prints a *proof* and not the job.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import os
 
 import pytest
@@ -113,7 +115,7 @@ def _dialog(plan, backend_cls=_RecordingBackend, **overrides):
         resumable_lister=lambda: [],
     )
     kwargs.update(overrides)
-    return PrintDialog(plan, None, **kwargs)
+    return PrintDialog(plan, None, **kwargs, job_runner=run_inline)
 
 
 @pytest.fixture(autouse=True)

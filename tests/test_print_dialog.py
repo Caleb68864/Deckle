@@ -11,6 +11,8 @@ against.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import os
 from dataclasses import dataclass, field
 
@@ -191,7 +193,7 @@ def _make_dialog(**kwargs):
         show_offline_error=lambda printer, error: None,
     )
     defaults.update(kwargs)
-    return PrintDialog(_make_plan(), **defaults)
+    return PrintDialog(_make_plan(), **defaults, job_runner=run_inline)
 
 
 # -- printer listing / preselection --------------------------------------

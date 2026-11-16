@@ -1458,3 +1458,10 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
 ## 2026-11-02 — M8: coerce in the dataclass, not at fifty call sites
 - `SheetPlan`, `Project`, `PrintPass` and `PreviewFrame` declare tuples and coerce in `__post_init__`, because the next caller to pass a list would otherwise simply be today's situation again. No production code relied on the mutability; the fallout was 25 tests comparing against a list or writing into `project.pages[:]`, and seven of those were using the exact shared mutation this forbids to set up their fixtures.
 - Commit: uncommitted, on `roadmap/2026-11-02`.
+
+## 2026-11-16 — B17: print submission off the GUI thread
+- Fix: `PrintDialog._run_submission` runs `start`/`resume` and `_drive` as one `workers.run_in_thread` job; the proof sheet is its own job. Prompts cross back through `workers.GuiCaller`.
+- Why one job for the whole run, not one per chunk: `_drive` stays the same sequential code, so the prompt order cannot drift, and the session's own question (`ask_sheets_printed`, asked mid-chunk) has to block the job anyway.
+- Why not `Qt.BlockingQueuedConnection`: a job blocked that way cannot be released, and closing, which waits for the job, would wait on a question nobody can answer. `GuiCaller` waits on an event and gives up when the job is cancelled.
+- Cancel means "stop after the chunk in the printer": a chunk has no cancellation point, and the state file already makes the run resumable from there. Closing waits up to two minutes for it, as an export does.
+- Commit: on `fix/b17-print-off-gui-thread`.

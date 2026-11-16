@@ -26,6 +26,8 @@ driven through the injectable seam ``tests/test_print_dialog.py`` uses.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import json
 import os
 import time
@@ -164,7 +166,7 @@ def _dialog(**kwargs):
         show_offline_error=lambda printer, error: None,
     )
     defaults.update(kwargs)
-    return PrintDialog(plan, **defaults)
+    return PrintDialog(plan, **defaults, job_runner=run_inline)
 
 
 def _stub_message_box(dialog, monkeypatch, answer):

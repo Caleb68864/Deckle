@@ -1316,6 +1316,9 @@ class MainWindow:
             # reported -- and both clip warnings are computed from it.
             imageable_areas=self._imageable_areas,
             profile_editor_cls=ProfileEditorDialog,
+            # The run is painted and spooled off the GUI thread (B17); its
+            # prompts come back to this one.
+            job_runner=self._job_runner,
         )
         self.print_dialog.widget.exec()
         # The dialog is where the printer and its paper behaviour are
@@ -1941,6 +1944,15 @@ class MainWindow:
             :func:`deckle.app.shutdown.stop_background_work`.
         """
         self._stopping = True
+        # A print run first: it is stopped rather than finished, after the
+        # chunk in the printer, because it may be waiting on a question
+        # nobody is left to answer. Its state file keeps it resumable.
+        print_dialog = getattr(self, "print_dialog", None)
+        if print_dialog is not None:
+            try:
+                print_dialog.stop_background_work(EXPORT_SHUTDOWN_WAIT_MS)
+            except Exception as exc:  # pragma: no cover - defensive
+                log_exception("shutdown_cancel_failed", exc)
         shutdown.stop_background_work(
             (self.preview_view, self.arrange_view, self.layout_panel, self.import_view,
              self.cards_view),

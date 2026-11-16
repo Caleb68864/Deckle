@@ -24,6 +24,8 @@ book.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import json
 import os
 from dataclasses import dataclass, field
@@ -321,6 +323,7 @@ def _real_dialog(plan):
         confirm_reload=lambda instruction: None,
         confirm_test_sheet=lambda: True,
         show_offline_error=lambda printer, error: None,
+        job_runner=run_inline,
     )
 
 

@@ -29,6 +29,8 @@ calibrated one.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import os
 from dataclasses import replace
 
@@ -203,6 +205,7 @@ def _dialog(printer_names, imageable_areas, profile_loader=_no_saved_profile):
         profile_loader=profile_loader,
         imageable_areas=imageable_areas,
         resumable_lister=lambda: [],
+        job_runner=run_inline,
     )
 
 

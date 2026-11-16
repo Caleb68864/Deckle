@@ -1,6 +1,7 @@
 """B17, the part that needs no printer: Save PDF, Auto-crop and Open project.
 
-Print submission is still synchronous, and its row in the roadmap says so.
+Print submission moved off the GUI thread too; its tests, with fake
+printers, are in ``tests/test_print_off_gui_thread.py``.
 """
 
 from __future__ import annotations

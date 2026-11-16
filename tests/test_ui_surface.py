@@ -11,6 +11,8 @@ uses.
 
 from __future__ import annotations
 
+from deckle.app.workers import run_inline
+
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -353,7 +355,7 @@ def _dialog(plan, **kwargs):
         show_offline_error=lambda printer, error: None,
     )
     defaults.update(kwargs)
-    return PrintDialog(plan, **defaults)
+    return PrintDialog(plan, **defaults, job_runner=run_inline)
 
 
 def test_signature_selection_enumerates_no_printers(qapp, monkeypatch):
