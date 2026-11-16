@@ -942,9 +942,6 @@ def _cmd_impose(args: argparse.Namespace) -> int:
     project = Project(pages=list(pages), layout=settings, printer=args.printer)
     try:
         save_project(project, args.output)
-    except SourceChangedWarning as exc:
-        print(f"error: source changed: {exc.path}", file=sys.stderr)
-        return 1
     except OSError as exc:
         report._report_write_failure(args.output, exc)
         return 1

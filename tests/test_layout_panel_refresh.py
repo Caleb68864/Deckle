@@ -392,7 +392,7 @@ def test_switching_units_redisplays_the_same_positions():
 def test_a_bad_position_is_reported_not_raised():
     state, panel = _panel()
     messages = []
-    panel.schedule_saved.connect(messages.append)
+    panel.status_message.connect(messages.append)
     panel.station_positions_edit.setText("two")
 
     panel.station_positions_edit.editingFinished.emit()

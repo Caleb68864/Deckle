@@ -663,7 +663,7 @@ class MainWindow:
         self.arrange_view.pages_changed.connect(self._on_pages_changed)
         self.arrange_view.page_selected.connect(self._on_page_selected)
         self.layout_panel.layout_changed.connect(self._on_layout_changed)
-        self.layout_panel.schedule_saved.connect(self.status_bar.showMessage)
+        self.layout_panel.status_message.connect(self.status_bar.showMessage)
         self.print_button.clicked.connect(self.print_document)
         self.save_pdf_button.clicked.connect(self.save_pdf)
         self.undo_button.clicked.connect(self.undo)
