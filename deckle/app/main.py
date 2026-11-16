@@ -107,14 +107,83 @@ Save project were gated on pages from the start; Print needs both, and
 this is the half that was missing.
 """
 
-def _project_output_ready(project) -> bool:
-    if getattr(project, "kind", "book") != "cards": return bool(project.pages)
-    if project.card_deck is None or card_output_problems(project.card_deck): return False
+OUTPUT_CHECK_FAILED_MESSAGE = (
+    "Deckle could not check whether this project can be printed -- "
+    "this is a bug; the details are in the diagnostics log."
+)
+"""What Save PDF and Print say when checking the plan raised something
+unexpected.
+
+Print used to fall back to :data:`NOTHING_TO_PRINT_MESSAGE` here, which
+told someone with a fully imported deck to go and import a document.
+"""
+
+
+def expected_problem_text(exc: BaseException) -> str:
+    """Why imposing refused, for an *expected* ``ValueError``/``TypeError``.
+
+    Never empty. An empty problem is how a plan says it is fine, and
+    ``str(ValueError())`` is ``""``, so a refusal with no message used to
+    enable output on a plan that could not be made.
+
+    :param exc: what imposing raised.
+    :returns: its message, or its type when it has none.
+    """
+    detail = str(exc).strip()
+    return detail or f"This project cannot be laid out ({type(exc).__name__})."
+
+
+def _impose_problem(project) -> str:
+    """Impose ``project`` and say why it cannot be output, ``""`` when it can.
+
+    :param project: a card project.
+    :returns: the expected refusal as text. Anything else propagates, for
+        :func:`card_output_blocker` to log.
+    """
     try:
         impose_project(project)
-        return True
-    except (ValueError, TypeError):
-        return False
+    except (ValueError, TypeError) as exc:
+        return expected_problem_text(exc)
+    return ""
+
+
+def _project_output_ready(project) -> bool:
+    """Whether Save PDF and Print should be live, for the button sync.
+
+    Card projects go through :func:`card_output_blocker`, the same seam as
+    :meth:`MainWindow._output_is_ready`, so an unexpected planning failure
+    is logged and answers "not ready" rather than escaping into whatever Qt
+    slot was syncing the buttons.
+
+    :param project: the current project.
+    :returns: ``True`` when the project can be output.
+    """
+    if getattr(project, "kind", "book") != "cards": return bool(project.pages)
+    return not card_output_blocker(project, _impose_problem)
+
+
+def card_output_blocker(project, plan_problem) -> str:
+    """Why a card project cannot be saved as a PDF or printed, ``""`` if it can.
+
+    :param project: a card project.
+    :param plan_problem: as for :func:`card_output_ready`.
+    :returns: the deck's own problems when it is incomplete, the planning
+        problem when it does not plan, and
+        :data:`OUTPUT_CHECK_FAILED_MESSAGE` -- after logging
+        ``card_output_check_failed`` -- when planning raised. Never an
+        empty string for a project that is not ready.
+    """
+    if project.card_deck is None:
+        return "Import card fronts before printing."
+    problems = card_output_problems(project.card_deck)
+    if problems:
+        return " ".join(problems)
+    try:
+        problem = plan_problem(project)
+    except Exception as exc:  # noqa: BLE001 -- logged; see card_output_ready
+        log_exception("card_output_check_failed", exc)
+        return OUTPUT_CHECK_FAILED_MESSAGE
+    return problem
 
 
 def card_output_ready(project, plan_problem) -> bool:
@@ -136,14 +205,7 @@ def card_output_ready(project, plan_problem) -> bool:
         be made is worse.
     :returns: ``True`` only when the deck is complete and plans cleanly.
     """
-    if project.card_deck is None or card_output_problems(project.card_deck):
-        return False
-    try:
-        problem = plan_problem(project)
-    except Exception as exc:  # noqa: BLE001 -- logged; see above
-        log_exception("card_output_check_failed", exc)
-        return False
-    return not problem
+    return not card_output_blocker(project, plan_problem)
 
 
 NO_DOCUMENT_MESSAGE = "Import a PDF or a folder of images to begin."
@@ -681,13 +743,16 @@ class MainWindow:
                 self._output_problem = " ".join(card_output_problems(project.card_deck))
             return plan
         except (ValueError, TypeError) as exc:
-            self._output_problem = str(exc)
+            self._output_problem = expected_problem_text(exc)
             return SheetPlan([], project.layout.paper, [])
 
     def _output_is_ready(self) -> bool:
         project = self.state.project
         if project.kind == "cards":
-            return card_output_ready(project, self._card_plan_problem)
+            # Kept on the window so Print can say what stopped it, rather
+            # than "Import a document" for a deck that is imported.
+            self._output_problem = card_output_blocker(project, self._card_plan_problem)
+            return not self._output_problem
         return bool(project.pages)
 
     def _card_plan_problem(self, project) -> str:
@@ -1864,7 +1929,9 @@ class MainWindow:
         which views a window has is the window's own business.
         ``layout_panel`` joined the list when the Crop & trim tab started
         compositing the document off-thread (N11), ``import_view`` when
-        quitting mid-import was found to run pdfium into teardown (B13).
+        quitting mid-import was found to run pdfium into teardown (B13),
+        ``cards_view`` when its jobs moved onto ``app/workers`` (H9) and
+        closing was found not to wait for them.
 
         :param timeout_ms: how long to wait per thread.
         :returns: nothing. Never raises -- see
@@ -1872,7 +1939,8 @@ class MainWindow:
         """
         self._stopping = True
         shutdown.stop_background_work(
-            (self.preview_view, self.arrange_view, self.layout_panel, self.import_view),
+            (self.preview_view, self.arrange_view, self.layout_panel, self.import_view,
+             self.cards_view),
             timeout_ms,
             jobs=list(self._jobs.values()),
             job_timeout_ms=EXPORT_SHUTDOWN_WAIT_MS,

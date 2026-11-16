@@ -32,6 +32,7 @@ from deckle.core.print_session import (
     SessionSummary,
     StaleSessionError,
     UnrecordedSheets,
+    result_failure_text,
 )
 from deckle.core.profiles import BUILTIN_PRESETS, PrinterProfile
 
@@ -911,7 +912,9 @@ class PrintDialog:
             return
         result = backend.submit_proof(self.plan, sheet_index, printer_name, PROOF_DPI)
         if result.error is not None:
-            self._show_offline_error(printer_name, result.error)
+            # Never `result.error` itself: `""` is still a failure, and the
+            # box would read "offline or unreachable:" and then nothing.
+            self._show_offline_error(printer_name, result_failure_text(result))
             return
         log_event("proof_requested", printer=printer_name, sheet=sheet_index)
         has_cards = any(

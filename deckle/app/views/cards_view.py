@@ -160,6 +160,20 @@ class CardsView:
         # An inline runner has already finished and cleared the request.
         if self._import_request is request:self._import_job=job
 
+    def cancel_background_work(self) -> None:
+        """Ask the import and thumbnail jobs to drop their results.
+
+        Called by :func:`deckle.app.shutdown.stop_background_work` before it
+        waits on this view's threads. Neither job has a cancellation point,
+        so this does not stop the work; it stops a job that finishes during
+        the close from delivering into a window that is going away.
+
+        :returns: nothing.
+        """
+        for job in (self._import_job, self._thumbnail_job):
+            if job is not None:
+                job.cancel.set()
+
     def import_fronts(self):
         from PySide6.QtWidgets import QFileDialog
         path=QFileDialog.getExistingDirectory(self.widget,"Import front images")

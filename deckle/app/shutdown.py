@@ -85,8 +85,8 @@ def stop_background_work(
     Both workers already support cancellation; they simply were never
     asked, and nobody waited.
 
-    :param views: the views to settle, each exposing ``_worker`` and/or a
-        ``widget``. Passed in rather than reached for, so a caller that
+    :param views: the views to settle, each exposing ``_worker``, a
+        ``cancel_background_work()`` method, and/or a ``widget``. Passed in rather than reached for, so a caller that
         grows a third background render source -- the layout panel's crop
         composite did, in N11 -- adds it at the call site instead of
         inside a tuple buried in a method. A view that is not on this list
@@ -109,6 +109,11 @@ def stop_background_work(
             worker = getattr(view, "_worker", None)
             if worker is not None:
                 worker.cancel.set()
+            # A view whose jobs are `deckle.app.workers.Job`s rather than a
+            # single `_worker` (the card view) cancels its own.
+            canceller = getattr(view, "cancel_background_work", None)
+            if canceller is not None:
+                canceller()
         except Exception as exc:  # pragma: no cover - defensive
             log_exception("shutdown_cancel_failed", exc)
 

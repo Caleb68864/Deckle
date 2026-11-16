@@ -378,6 +378,7 @@ class _StubWindow:
         self.layout_panel._worker = _FakeWorker()
         self.import_view = _FakeView(_FakeThread(), [])
         self.import_view._worker = _FakeWorker()
+        self.cards_view = _FakeView(_FakeThread(), [])
         self._jobs = {}
         self._printer_query = None
         self._stopping = False
