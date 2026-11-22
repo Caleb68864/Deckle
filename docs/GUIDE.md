@@ -1247,6 +1247,23 @@ directory. Double-clicking from Explorer works as-is.
 processes the PySide6 hooks. It builds from a clean `.buildenv` virtualenv,
 not from your interpreter, and gates on an audit of the produced artifact.
 
+### `run.sh` — the Linux dev launcher
+
+The same seven commands, spelled `./run.sh`:
+
+| | |
+|---|---|
+| `./run.sh` | Launch the GUI |
+| `./run.sh cli <args...>` | Headless CLI, arguments passed through |
+| `./run.sh test [args]` | pytest, arguments passed through, offscreen unless `QT_QPA_PLATFORM` is set |
+| `./run.sh deps` | Install or refresh dependencies — on a fresh clone, the one command to run first |
+| `./run.sh doctor` | Interpreter, dependency versions, the display Qt would use, and printers Qt can see (given ten seconds, so an unreachable network printer cannot hang it) |
+| `./run.sh docs` | Build the Sphinx API reference |
+| `./run.sh package` | Build `deckle` and `deckle-cli` into `dist/deckle`, audit them, then archive them as `dist/deckle-<version>-linux-<arch>.tar.gz` |
+
+The archive is written only after the audit passes, so a bundle that fails
+the licence check is never packaged for anyone to download.
+
 ---
 
 ## 9 · Troubleshooting

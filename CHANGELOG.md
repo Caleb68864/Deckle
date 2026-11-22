@@ -14,6 +14,11 @@ against a real printer.
 
 ### Added
 
+- **Linux packaging checked end to end.** `./run.sh package` built and audited a Linux
+  bundle and now archives it as a tarball after the audit passes. `./run.sh doctor`
+  no longer waits indefinitely on an unreachable network printer, and it reports the
+  display Qt would use.
+
 - **Save a folding dummy** (File menu): the open book's imposition with each page
   replaced by its number, ready to print on scrap and fold.
 

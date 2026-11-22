@@ -245,14 +245,17 @@ deliberate choice, not an oversight. The build runs from a clean `.buildenv`
 virtualenv and is gated on an audit of the produced artifact — see
 [Licensing](#licensing) for why that gate exists.
 
-Only Windows binaries have ever been built. PyInstaller cannot cross-compile,
-so a Linux build needs a Linux machine, and nobody has run one. macOS is not
-supported.
+PyInstaller cannot cross-compile, so a Linux build needs a Linux machine.
+macOS is not supported.
 
 On Linux, `./run.sh package` builds the same two-app bundle for the current
-machine into `dist/deckle/` and runs the artifact audit. The script creates a
-clean `.buildenv` for PyInstaller. Linux packaging has not been validated in
-CI, so inspect and test the resulting bundle before distributing it. Use
+machine into `dist/deckle/`, runs the artifact audit, and only then archives
+it as `dist/deckle-<version>-linux-<arch>.tar.gz`. The script creates a clean
+`.buildenv` for PyInstaller. It was built and audited on Linux on 2026-11-21:
+a 280 MB bundle that passed the licence and size gate, and whose
+`deckle-cli` ran standalone. Nobody has yet opened the bundled **GUI** on a
+Linux desktop, and the build is not run in CI, so try the window before
+distributing it. Use
 `./run.sh` to launch the working tree, `./run.sh test` to run tests, and
 `./run.sh help` to see the other development commands.
 
@@ -307,6 +310,7 @@ folder** are what a bug report is built from, and neither touches the network
        the reload instruction for pass 2 in plain words.
     3. docs/images/schedule.png -- a printed binding schedule sitting on a
        bench beside a folded signature. Photograph, not a screenshot.
+  Capture instructions: docs/images/README.md.
 -->
 
 ---
