@@ -744,6 +744,7 @@ class ArrangeView:
         self.list_widget.setContextMenuPolicy(_qt_custom_context_menu())
         self.list_widget.customContextMenuRequested.connect(self._on_context_menu)
         self.list_widget.currentRowChanged.connect(self._on_current_row_changed)
+        self.list_widget.itemSelectionChanged.connect(self._sync_selection_actions)
         self.list_widget.verticalScrollBar().valueChanged.connect(self._on_scrolled)
 
         self._QThread = QThread
@@ -780,7 +781,22 @@ class ArrangeView:
                 self.list_widget.addItem(item)
         finally:
             self.list_widget.blockSignals(False)
+        self._sync_selection_actions()
         self.request_visible_thumbnails(0)
+
+    def _sync_selection_actions(self) -> None:
+        """Enable the toolbar buttons only when they would do something.
+
+        Rotate, Skip and Remove act on the selection and return silently
+        without one; Skip range returns silently on an empty document. A
+        click that does nothing reads the same as one that failed.
+
+        :returns: nothing.
+        """
+        selected = bool(self.list_widget.selectedIndexes())
+        for button in (self.rotate_button, self.skip_button, self.remove_button):
+            button.setEnabled(selected)
+        self.skip_range_button.setEnabled(bool(self.state.project.pages))
 
     def request_visible_thumbnails(self, scroll_index: int) -> None:
         """Kick off a background thumbnail fetch for the visible window.

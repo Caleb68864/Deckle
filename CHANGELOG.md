@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- The page list's Rotate, Skip and Remove buttons are greyed out with nothing selected,
+  and Skip range with no pages.
+
 - A printer profile file that is not a profile (an empty list, `null`) is reported as
   unreadable instead of crashing `profile list` and the Print dialog.
 

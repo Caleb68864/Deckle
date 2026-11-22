@@ -802,3 +802,51 @@ def test_remove_with_nothing_selected_does_nothing():
 
     assert len(state.project.pages) == 3
     assert state.can_undo is False
+
+
+# -- BH10: the toolbar says when a button would do nothing ---------------
+
+
+def _toolbar(view):
+    return {name: getattr(view, name).isEnabled() for name in (
+        "rotate_button", "skip_button", "remove_button", "skip_range_button",
+        "insert_blank_button")}
+
+
+def test_selection_buttons_are_off_until_something_is_selected():
+    _state, view = _view(4)
+    view.list_widget.clearSelection()
+
+    state = _toolbar(view)
+    assert not state["rotate_button"] and not state["skip_button"] and not state["remove_button"]
+    assert state["skip_range_button"] and state["insert_blank_button"]
+
+    view.list_widget.item(2).setSelected(True)
+
+    state = _toolbar(view)
+    assert state["rotate_button"] and state["skip_button"] and state["remove_button"]
+
+
+def test_the_buttons_follow_the_selection_through_a_rebuild():
+    """refresh() clears the list and rotate reselects what it turned, so
+    the buttons must follow both: off with the clear, on with the reselect."""
+    _state, view = _view(4)
+    view.list_widget.item(1).setSelected(True)
+
+    view.rotate_selection()
+
+    assert [i.row() for i in view.list_widget.selectedIndexes()] == [1]
+    assert _toolbar(view)["rotate_button"]
+
+    view.refresh()
+
+    assert not _toolbar(view)["rotate_button"]
+
+
+def test_an_empty_document_offers_only_insert_blank():
+    _state, view = _view(0)
+
+    assert _toolbar(view) == {
+        "rotate_button": False, "skip_button": False, "remove_button": False,
+        "skip_range_button": False, "insert_blank_button": True,
+    }
