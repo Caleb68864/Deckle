@@ -58,3 +58,24 @@ def test_the_documented_ceiling_is_the_one_enforced():
     from deckle.cli.values import MAX_PREVIEW_DPI as enforced
 
     assert enforced == MAX_PREVIEW_DPI
+
+
+# -- BH12: two messages that pointed the wrong way -------------------------
+
+
+@pytest.mark.parametrize("flag", ["--gutter", "--margin-top", "--trim"])
+def test_a_negative_length_is_called_negative(capsys, flag):
+    """It used to say "expected a number optionally followed by a unit",
+    which `-1in` is."""
+    err = _refused(capsys, "export", SOURCE, "-o", "out.pdf", f"{flag}=-1in")
+    assert "cannot be negative" in err
+
+
+@pytest.mark.parametrize("command", [
+    ["export", SOURCE], ["impose", SOURCE], ["crop-preview", SOURCE],
+    ["dummy"], ["calibration-sheet"],
+])
+def test_an_empty_output_path_is_refused_by_name(capsys, command):
+    """`-o ''` reached the writer: "cannot write to : Device or resource busy"."""
+    err = _refused(capsys, *command, "-o", "  ")
+    assert "output path is empty" in err

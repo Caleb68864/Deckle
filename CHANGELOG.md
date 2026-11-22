@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- The command line says a negative length is negative, rather than that it is not a number,
+  and refuses an empty `-o` by name instead of reporting a device error.
+
 - Closing the window while *Measure crop from the ink* is running stops the measurement
   instead of leaving it rasterising pages while the app shuts down.
 

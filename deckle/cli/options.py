@@ -80,7 +80,8 @@ def _add_output_arg(
     :param help_text: the command's own wording, verbatim.
     """
     parser.add_argument(
-        "-o", "--output", required=required, default=None, help=help_text
+        "-o", "--output", required=required, default=None, help=help_text,
+        type=values._parse_output_path,
     )
 
 

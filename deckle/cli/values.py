@@ -56,6 +56,12 @@ def _parse_length_pt(value: str) -> float:
     number with no unit (``"18"``) is interpreted as points.
     """
     match = _LENGTH_RE.match(value)
+    if not match and value.strip().startswith("-") and _LENGTH_RE.match(value.strip()[1:]):
+        # "-1in" is a number followed by a unit; telling its author that a
+        # number was expected sent them looking for a typo that is not there.
+        raise argparse.ArgumentTypeError(
+            f"invalid length {value!r}: a length cannot be negative"
+        )
     if not match:
         raise argparse.ArgumentTypeError(
             f"invalid length {value!r}: expected a number optionally followed "
@@ -65,6 +71,23 @@ def _parse_length_pt(value: str) -> float:
     number, unit = match.groups()
     factor = _UNIT_TO_PT[unit.lower()] if unit else 1.0
     return float(number) * factor
+
+
+def _parse_output_path(value: str) -> str:
+    """An ``-o`` value, refused when it names nothing.
+
+    ``-o ''`` (an unset shell variable, usually) reached the writer and came
+    back as *"cannot write to : Device or resource busy"*.
+
+    :param value: the typed path.
+    :returns: it, unchanged.
+    :raises argparse.ArgumentTypeError: empty or only whitespace.
+    """
+    if not value.strip():
+        raise argparse.ArgumentTypeError(
+            "the output path is empty -- give a file name, such as booklet.pdf"
+        )
+    return value
 
 
 def _parse_paper(value: str) -> tuple[float, float]:
