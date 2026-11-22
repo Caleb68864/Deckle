@@ -188,6 +188,27 @@ def _hash_profile(profile: PrinterProfile) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _check_summary_types(summary: "SessionSummary") -> None:
+    """Refuse a summary whose fields are not what a state file writes.
+
+    :param summary: read straight off a state file's JSON.
+    :returns: nothing.
+    :raises TypeError: a field has the wrong JSON type. ``bool`` is refused
+        where a number is wanted, since JSON ``true`` reads as ``1``.
+    """
+    def number(value, kinds):
+        return isinstance(value, kinds) and not isinstance(value, bool)
+
+    if not (
+        isinstance(summary.session_id, str)
+        and isinstance(summary.printer_name, str)
+        and number(summary.started_at, (int, float))
+        and number(summary.pass_index, int)
+        and number(summary.sheet_cursor, int)
+    ):
+        raise TypeError(f"state file fields have the wrong types: {summary!r}")
+
+
 @dataclass(frozen=True)
 class SessionSummary:
     """A lightweight description of a resumable session, for a picker UI.
@@ -802,6 +823,12 @@ class PrintSession:
                     pass_index=data["pass_index"],
                     sheet_cursor=data["sheet_cursor"],
                 )
+                # Typed here, inside the `try`, because the sort below is
+                # not: one file whose `started_at` was a string (or null)
+                # beside one whose was a number made `sort` raise
+                # `TypeError` after the loop -- the never-raises promise
+                # broken again, and the print dialog unopenable again.
+                _check_summary_types(summary)
             except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
                 # Skipping is right -- one corrupt file must not hide every
                 # other resumable session. But a user whose state file was

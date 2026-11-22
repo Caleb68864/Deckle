@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- A damaged print-resume file with a mistyped field is skipped, instead of stopping the
+  Print dialog from opening.
+
 - The card layout panel has a tooltip on every control, offers centimetres like the book
   layout panel, and its labels match the rest of the app.
 
