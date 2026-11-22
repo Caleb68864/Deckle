@@ -713,11 +713,9 @@ def _split_paths(output: str, count: int) -> list[str]:
     :param count: how many signatures.
     :returns: ``<stem>-sig-NN<suffix>``, zero-padded so ``ls`` sorts them.
     """
-    path = Path(output)
-    return [
-        str(path.with_name(f"{path.stem}-sig-{n:02d}{path.suffix}"))
-        for n in range(1, count + 1)
-    ]
+    from deckle.core.outputs import signature_split_paths
+
+    return signature_split_paths(output, count)
 
 
 def _export_split(plan, args, profile, back_offset, offset_source) -> int:

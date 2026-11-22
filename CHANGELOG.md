@@ -14,6 +14,9 @@ against a real printer.
 
 ### Added
 
+- **Save signatures as separate PDFs** (File menu): one file per gathering, named as
+  `export --split` names them.
+
 - **A separate printer border for landscape sheets (F12 §B).** Edit profile... and
   `profile set --landscape-imageable-area` take the border measured on a landscape
   sheet, which folio uses. The preview's red guide, the clipping warnings and Use

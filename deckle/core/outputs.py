@@ -124,3 +124,24 @@ def describe_write_failure(out_path: str, exc: OSError) -> str:
     else:
         detail = f"{exc.strerror or exc}. Check the path, the drive, and free disk space."
     return f"cannot write to {out_path}: {detail}"
+
+
+def signature_split_paths(output: str, count: int) -> list[str]:
+    """The file for each signature when a job is written one per signature.
+
+    One rule for both front ends -- ``export --split`` and the app's *Save
+    signatures as separate PDFs...* -- so the two cannot name the same
+    gathering differently.
+
+    :param output: the path the user chose.
+    :param count: how many signatures.
+    :returns: ``<stem>-sig-NN<suffix>``, zero-padded so a file listing
+        sorts them in binding order.
+    """
+    from pathlib import Path
+
+    path = Path(output)
+    return [
+        str(path.with_name(f"{path.stem}-sig-{n:02d}{path.suffix}"))
+        for n in range(1, count + 1)
+    ]

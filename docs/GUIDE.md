@@ -368,7 +368,9 @@ python -m deckle.cli export book.pdf -o proof.pdf --gutter 0.75in --sheets 0 --r
 
 `--signature N` exports one gathering, counting from 1 as the schedule does, and
 `--split` writes every gathering to its own file (`out-sig-01.pdf`,
-`out-sig-02.pdf`, ...). Neither combines with `--sheets`.
+`out-sig-02.pdf`, ...). Neither combines with `--sheets`. In the app,
+**File > Save signatures as separate PDFs...** does what `--split` does, with
+the same file names.
 
 `--sheets` takes single numbers, comma lists and inclusive ranges — `0`,
 `2,0`, `0,2-4`. Asking for a sheet the document does not have is an error, not

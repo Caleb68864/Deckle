@@ -26,7 +26,11 @@ import os
 
 from deckle.core.diagnostics import log_event, log_exception
 from deckle.core.export import export
-from deckle.core.outputs import describe_write_failure, output_path_problem
+from deckle.core.outputs import (
+    describe_write_failure,
+    output_path_problem,
+    signature_split_paths,
+)
 from deckle.core.printing import pass_export
 from deckle.core.cards import project_has_content, project_source_pages, card_output_problems
 
@@ -304,3 +308,92 @@ def export_single_pass(window) -> None:
         on_done,
         on_error,
     )
+
+
+NO_SIGNATURES_MESSAGE = (
+    "This document has no signatures to save separately -- choose "
+    "Signatures (folio) on the Layout panel first."
+)
+
+
+def save_signatures_as(window) -> None:
+    """Write each signature to its own PDF, as ``export --split`` does.
+
+    The bench works one gathering at a time, and a stack of files that
+    matches the stack of gatherings is how Bookbinder JS hands a job over.
+    The CLI could do it (F12 §A); the app could not, and the owner's rule
+    of 2026-09-11 says what one front end can do the other should. The
+    output-commands question was decided by agent 2026-11-21 (owner may
+    revisit): *in scope*.
+
+    Files are named by :func:`deckle.core.outputs.signature_split_paths`,
+    the CLI's own rule, and every one is checked before the first is
+    written, so a run that would fail on file 9 fails before file 1.
+
+    :param window: the main window.
+    :returns: nothing. Every outcome is reported in the status bar.
+    """
+    from PySide6.QtWidgets import QFileDialog
+
+    if not _output_ready(window):
+        window.status_bar.showMessage(NOTHING_TO_EXPORT_MESSAGE)
+        return
+    plan = window.preview_view.plan
+    if not plan.signatures:
+        window.status_bar.showMessage(NO_SIGNATURES_MESSAGE)
+        return
+    if _export_running(window):
+        return
+
+    sources = project_source_pages(window.state.project)
+    start_dir = os.path.dirname(sources[0].ref.path) or os.getcwd() if sources else os.getcwd()
+    path, _ = QFileDialog.getSaveFileName(
+        window.window,
+        "Save signatures as separate PDFs (each name gets -sig-01, -sig-02...)",
+        os.path.join(start_dir, window.suggested_export_name()),
+        "PDF files (*.pdf)",
+    )
+    if not path:
+        return
+    if not path.lower().endswith(".pdf"):
+        path += ".pdf"
+
+    paths = signature_split_paths(path, len(plan.signatures))
+    for target in paths:
+        problem = next(
+            (p for p in (output_path_problem(target, s.ref.path) for s in sources) if p),
+            None,
+        )
+        if problem is not None:
+            window.status_bar.showMessage(problem)
+            log_event("output_path_rejected", path=target, detail=problem)
+            return
+
+    window.status_bar.showMessage(
+        f"Exporting {len(paths)} signature(s) to {os.path.basename(paths[0])}..."
+    )
+    written: list[str] = []
+
+    def write_all() -> None:
+        for target, signature in zip(paths, plan.signatures):
+            export(plan, target, sheets=list(signature.sheet_indices))
+            written.append(target)
+
+    def on_done() -> None:
+        window.status_bar.showMessage(
+            f"Saved {len(paths)} signature(s): {os.path.basename(paths[0])} "
+            f"to {os.path.basename(paths[-1])}"
+        )
+        log_event("signatures_exported", path=path, files=len(paths))
+
+    def on_error(exc: Exception) -> None:
+        failed = paths[len(written)]
+        done = f" ({len(written)} of {len(paths)} written first)" if written else ""
+        if isinstance(exc, OSError):
+            window.status_bar.showMessage(describe_write_failure(failed, exc) + done)
+            log_exception("output_write_failed", exc, path=failed)
+            return
+        window.status_bar.showMessage(unexpected_failure_message(exc) + done)
+        log_exception("export_failed", exc, path=failed)
+
+    _start_export(window, write_all, on_done, on_error)
