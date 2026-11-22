@@ -135,6 +135,8 @@ against a real printer.
 
 ### Fixed
 
+- The card list's Remove, Move and Rotate buttons are greyed out when they would do nothing.
+
 - Moving through the card layout boxes without changing them no longer adds undo steps,
   clears redo, marks the project unsaved, or (in mm and inches) nudges the stored size.
 

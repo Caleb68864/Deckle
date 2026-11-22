@@ -116,6 +116,7 @@ class CardsView:
         self.table.reorder_requested.connect(self._reorder_rows)
         self.table.verticalScrollBar().valueChanged.connect(lambda *_: self._request_thumbnails())
         self.table.currentCellChanged.connect(lambda *_:(self._request_thumbnails(),self._show_selected_faces()))
+        self.table.itemSelectionChanged.connect(self._sync_selection_actions)
         self.refresh()
 
     @property
@@ -317,7 +318,7 @@ class CardsView:
         from PySide6.QtWidgets import QTableWidgetItem, QSpinBox
         deck=self.deck
         if deck is None:
-            self.table.setRowCount(0); self.shared_label.setText(""); self.count_label.setText(""); return
+            self.table.setRowCount(0); self.shared_label.setText(""); self.count_label.setText(""); self._sync_selection_actions(); return
         self.mode.blockSignals(True); self.mode.setCurrentIndex(0 if deck.back_mode=="individual" else 1); self.mode.blockSignals(False)
         labels={a.id:a.label for a in deck.assets}
         self.shared_label.setText("Shared: "+labels.get(deck.shared_back.asset_id,"No shared back") if deck.shared_back else "No shared back selected")
@@ -333,10 +334,27 @@ class CardsView:
         self.table.blockSignals(False)
         active=sum(card.copies for card in deck.cards if not card.skipped)
         self.count_label.setText(f"{len(deck.cards)} entr{'y' if len(deck.cards)==1 else 'ies'} · {active} active card{'s' if active!=1 else ''}")
-        self.rotate_back_button.setEnabled(deck.back_mode!="shared" or deck.shared_back is not None)
         self.match_name_button.setEnabled(deck.back_mode=="individual")
         self.match_order_button.setEnabled(deck.back_mode=="individual")
+        self._sync_selection_actions()
         self._request_thumbnails()
+
+    def _sync_selection_actions(self):
+        """Enable the row buttons only when they would do something.
+
+        Each of them returns silently without a selection, and Move up/down
+        without exactly one selected card that has somewhere to go, so a
+        click that did nothing was indistinguishable from one that failed.
+        """
+        deck=self.deck
+        rows=sorted({i.row() for i in self.table.selectionModel().selectedRows()}) if deck is not None else []
+        count=len(deck.cards) if deck is not None else 0
+        selected=bool(rows)
+        self.remove_button.setEnabled(selected)
+        self.rotate_front_button.setEnabled(selected)
+        self.rotate_back_button.setEnabled(selected and (deck.back_mode!="shared" or deck.shared_back is not None))
+        self.up_button.setEnabled(len(rows)==1 and rows[0]>0)
+        self.down_button.setEnabled(len(rows)==1 and rows[0]<count-1)
 
     def _request_thumbnails(self):
         deck=self.deck

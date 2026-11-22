@@ -114,3 +114,64 @@ def test_a_real_edit_still_lands_and_is_one_undo_step(app):
     assert state.can_undo
     state.undo()
     assert state.project.card_deck.settings.width_pt == 180.0
+
+
+# -- BH6: the row buttons say when they would do nothing -----------------
+
+
+def _three_card_view():
+    from dataclasses import replace
+
+    project = fixture_project()
+    deck = project.card_deck
+    one = deck.cards[0]
+    cards = (one, replace(one, id="two"), replace(one, id="three"))
+    state = AppState(replace(project, card_deck=replace(deck, cards=cards)),
+                     project_path="/tmp/card-ui.deckle", timer_factory=Timer)
+    return CardsView(state, on_change=lambda: None)
+
+
+def _enabled(view):
+    return {name: getattr(view, name).isEnabled() for name in (
+        "remove_button", "rotate_front_button", "rotate_back_button", "up_button", "down_button")}
+
+
+def test_with_nothing_selected_the_row_buttons_are_off(app):
+    view = _three_card_view()
+    view.table.clearSelection()
+
+    assert not any(_enabled(view).values())
+
+
+@pytest.mark.parametrize("row,up,down", [(0, False, True), (1, True, True), (2, True, False)])
+def test_move_is_offered_only_where_the_card_can_go(app, row, up, down):
+    view = _three_card_view()
+    view.table.selectRow(row)
+
+    state = _enabled(view)
+    assert state["remove_button"] and state["rotate_front_button"] and state["rotate_back_button"]
+    assert (state["up_button"], state["down_button"]) == (up, down)
+
+
+def test_move_is_off_with_two_cards_selected_because_it_moves_one(app):
+    from PySide6.QtCore import QItemSelectionModel
+
+    view = _three_card_view()
+    view.table.selectRow(0)
+    view.table.selectionModel().select(
+        view.table.model().index(1, 0),
+        QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+    )
+
+    state = _enabled(view)
+    assert state["remove_button"]
+    assert not state["up_button"] and not state["down_button"]
+
+
+def test_a_move_keeps_the_buttons_true_to_the_new_row(app):
+    view = _three_card_view()
+    view.table.selectRow(1)
+    view.move(1)
+
+    assert view.table.selectionModel().selectedRows()[0].row() == 2
+    assert not view.down_button.isEnabled() and view.up_button.isEnabled()
