@@ -251,7 +251,7 @@ def _panel(qapp, monkeypatch, insets=((1.0, 2.0, 3.0, 4.0), None), runner=run_in
     from deckle.core import render
     from deckle.core.models import LayoutSettings, Project, SourcePage, SourceRef
 
-    def _measure(pages):
+    def _measure(pages, **_kw):
         return insets
 
     monkeypatch.setattr(render, "auto_crop_insets", _measure)
@@ -289,7 +289,7 @@ def test_auto_crop_failure_is_said_and_gives_the_button_back(qapp, monkeypatch):
     panel = _panel(qapp, monkeypatch)
     from deckle.core import render
 
-    def _boom(pages):
+    def _boom(pages, **_kw):
         raise OSError("source moved")
 
     monkeypatch.setattr(render, "auto_crop_insets", _boom)

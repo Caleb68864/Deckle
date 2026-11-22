@@ -353,7 +353,8 @@ clips look safe.
 
 The desktop app has the same numbers on its **Crop & trim** tab — eight spin
 boxes, odd and even pages separately, and a **Measure crop from the ink**
-button that does what `--auto-crop` does. What it does not have is an
+button that does what `--auto-crop` does, with a **Keep back from the ink**
+box above it that does what `--auto-crop-margin` does. What it does not have is an
 interactive editor: there is no picture in the app to drag a rectangle on. So
 this is still a composite you look at, then numbers you type — into the tab or
 into a `--crop`, whichever you are already in.

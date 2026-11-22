@@ -14,6 +14,10 @@ against a real printer.
 
 ### Added
 
+- **Keep back from the ink, in the app.** The Crop & trim tab has the margin
+  `--auto-crop-margin` sets, read by *Measure crop from the ink*. Until now the
+  app always measured with none.
+
 - **A registration target you read numbers off (F3).** The calibration sheet's
   backs now carry two numbered millimetre scales, and its fronts a plain heavy
   cross. Held to a light, back towards you, the cross lands on the two numbers

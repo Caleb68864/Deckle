@@ -1330,6 +1330,28 @@ CONTROLS: tuple[Control, ...] = (
         for parity in ("odd", "even")
         for index, edge in enumerate(("left", "bottom", "right", "top"))
     ),
+    # Not stored in the project, like the weight boxes: it says how to
+    # measure, and only the insets the measurement produces are kept --
+    # exactly as `--auto-crop-margin` is consumed by `--auto-crop` and
+    # never written to the `.deckle`. Read when the button is clicked, so
+    # changing it does nothing until then, and is not an undo step.
+    Control(
+        name="auto_crop_margin_spinbox",
+        kind="length",
+        tab="crop",
+        label="Keep back from the ink:",
+        handler="_on_auto_crop_margin_changed",
+        cap_pt=72.0,
+        decimals=3,
+        step_pt=1.0,
+        tooltip=(
+            "How much room 'Measure crop from the ink' leaves outside the "
+            "ink it finds, on every edge. The measurement is taken off a "
+            "low-resolution raster, so a descender or a hairline rule can "
+            "fall just outside it; this buys that back. The same as "
+            "--auto-crop-margin on the command line. 0 crops to the ink."
+        ),
+    ),
     Control(
         name="auto_crop_button",
         kind="action",
@@ -3133,6 +3155,9 @@ class LayoutPanel:
         pages = list(state.project.pages)
         if not pages:
             return
+        # Read now, on the GUI thread, not inside the job: the box can be
+        # nudged while the measurement runs.
+        margin_pt = self.auto_crop_margin_spinbox.points()
         self.auto_crop_button.setEnabled(False)
         self.status_message.emit(f"Measuring the ink on {len(pages)} page(s)...")
 
@@ -3142,11 +3167,19 @@ class LayoutPanel:
             self.status_message.emit(f"Could not measure the ink: {exc}")
 
         self._auto_crop_job = self._job_runner(
-            lambda _cancel: auto_crop_insets(pages),
+            lambda _cancel: auto_crop_insets(pages, margin_pt=margin_pt),
             lambda insets: self._on_auto_crop_done(state, pages, insets),
             on_error,
             self.widget,
         )
+
+    def _on_auto_crop_margin_changed(self, _points: float) -> None:
+        """Nothing to do yet: the margin is read when the ink is measured.
+
+        :param _points: the new margin, ignored here.
+        :returns: nothing. Deliberately not a project change -- the crop
+            it leads to is, once Measure is clicked.
+        """
 
     def _on_auto_crop_done(self, state, pages, insets) -> None:
         """Fill the crop boxes, unless the document moved on underneath.
