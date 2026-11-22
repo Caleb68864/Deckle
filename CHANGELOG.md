@@ -146,6 +146,9 @@ against a real printer.
 
 ### Fixed
 
+- The File menu's Alt-key letters no longer clash. Alt+F then P prints, and Import PDF
+  is now Alt+F then I.
+
 - The Binding edge tooltip and `--binding-edge` help say what the setting means under
   signatures (reading direction), not only what it does to the gutter.
 
