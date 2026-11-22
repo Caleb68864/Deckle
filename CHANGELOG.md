@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- A card size so small that thousands fit on a sheet is refused with a message
+  instead of freezing the app while every empty slot is planned.
+
 - A project file missing its paper, gutter or binding edge is reported as an incomplete
   project, naming the field, instead of crashing the command line with a traceback.
 

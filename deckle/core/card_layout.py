@@ -57,6 +57,16 @@ def card_grid(settings, paper_pt: tuple[float, float]) -> CardGrid:
     rows = math.floor((usable_h + settings.gap_y_pt + _TOL) / (ch + settings.gap_y_pt))
     if columns < 1 or rows < 1:
         raise ValueError("no card fits on this sheet with the current size, margins, border, bleed, and cut marks")
+    # The plan holds a slot for every place on the sheet, front and back,
+    # whether or not a card is in it. A 1pt card on letter is 484,704 slots
+    # -- thirteen seconds and a quarter of a gigabyte to impose one card --
+    # and the size box goes down to 0.001pt, where it never finishes. No
+    # sheet can be filled past the copy limit anyway, so that is the bound.
+    if columns * rows > MAX_ACTIVE_COPIES:
+        raise ValueError(
+            f"cards this small fit {columns * rows:,} on a sheet, more than the "
+            f"{MAX_ACTIVE_COPIES:,} Deckle can print at once; make the cards larger"
+        )
     grid_w = columns * cw + (columns - 1) * settings.gap_x_pt
     grid_h = rows * ch + (rows - 1) * settings.gap_y_pt
     return CardGrid(columns, rows, columns * rows, ((W - grid_w) / 2, (H - grid_h) / 2), (cw, ch))

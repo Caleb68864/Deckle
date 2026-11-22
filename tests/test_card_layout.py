@@ -1,3 +1,5 @@
+import pytest
+
 from deckle.core.card_layout import _cut_marks, card_grid, impose_cards
 from deckle.core.models import *
 
@@ -56,3 +58,30 @@ def test_500_card_shared_back_smoke_has_no_missing_slots():
     assert all(len(sheet.front.pages) == len(sheet.back.pages) == 6 for sheet in plan.sheets)
     assert sum(page.card is not None for sheet in plan.sheets for page in sheet.front.pages) == 500
     assert sum(page.card is not None for sheet in plan.sheets for page in sheet.back.pages) == 500
+
+
+def test_a_card_too_small_to_be_a_card_is_refused_not_imposed_forever():
+    """BH2. The size box goes down to 0.001pt. Every slot on the sheet gets
+    an OutputPage, filled or not, so a 1pt card took 13s and 240MB to impose
+    a single card on letter, and 0.1pt never finished -- on the GUI thread,
+    through the preview and the Print button's readiness check."""
+    import time
+
+    settings = CardSettings(2, 2, 0, 0, 0, 0, False, 0, 0, cut_marks=False)
+    deck = CardDeck((asset("A"),), (CardEntry("A", CardFace("A"), CardFace("A")),), settings)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="make the cards larger"):
+        card_grid(settings, (612, 792))
+    with pytest.raises(ValueError, match="make the cards larger"):
+        impose_cards(deck, (612, 792))
+    assert time.monotonic() - started < 2
+
+
+def test_the_smallest_grid_the_copy_limit_allows_still_imposes():
+    """The bound is the copy limit, not a guess at what a card is: a grid of
+    exactly that many slots is still planned."""
+    from deckle.core.cards import MAX_ACTIVE_COPIES
+
+    settings = CardSettings(6.12, 7.92, 0, 0, 0, 0, False, 0, 0, cut_marks=False)
+    grid = card_grid(settings, (612, 792))
+    assert grid.capacity == MAX_ACTIVE_COPIES
