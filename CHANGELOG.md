@@ -151,6 +151,9 @@ against a real printer.
 
 ### Fixed
 
+- Tests: fixed an intermittent crash at the end of a run (exit 134), caused by a thumbnail
+  render thread outliving its test.
+
 - An inserted blank shows in the page list as "page 2 (blank page)" rather than
   "page 2 _blank".
 

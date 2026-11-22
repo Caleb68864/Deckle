@@ -42,6 +42,7 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
+import sys
 import tempfile
 import threading
 
@@ -118,6 +119,73 @@ def _no_autosave_timer_outlives_its_test():
     """
     yield
     cancel_pending_autosave_timers()
+
+
+def settle_qt_threads(timeout_ms: int = 10000) -> int:
+    """Wait for every ``QThread`` still running under a top-level widget.
+
+    The views parent their render threads to their own widget (see
+    ``deckle.app.shutdown.live_threads``), and the app waits for them in
+    ``MainWindow.stop_background_work`` when it closes. A test that builds
+    an ``ArrangeView`` and simply ends does neither. The view's thumbnail
+    render keeps running, the widget lives on in the module-level
+    ``QApplication``, and at interpreter exit PySide deletes the
+    application, the widget, and the thread inside pdfium with it. Qt
+    answers ``QThread: Destroyed while thread is still running`` with a
+    fatal abort: exit 134, after every test had passed. It hit about one
+    run in five of ``test_blank_insertion.py``, ``test_gui_workflow.py``
+    and ``test_arrange_reorder.py`` together, depending only on whether
+    the last view's render had finished.
+
+    A no-op until something has imported Qt, so a Qt-free test pays
+    nothing.
+
+    :param timeout_ms: how long to wait for each thread.
+    :returns: how many threads were still running, so a check can prove
+        this has teeth.
+    """
+    if "PySide6.QtWidgets" not in sys.modules:
+        return 0
+    from PySide6.QtCore import QThread
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        return 0
+    running = 0
+    for widget in app.topLevelWidgets():
+        for thread in widget.findChildren(QThread):
+            if thread.isRunning():
+                running += 1
+                thread.wait(timeout_ms)
+    return running
+
+
+@pytest.fixture(autouse=True)
+def _no_qt_thread_outlives_its_test():
+    """See :func:`settle_qt_threads`."""
+    yield
+    settle_qt_threads()
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Say so if a render thread is still running when the session ends.
+
+    The autouse fixture should have left none. If one survives, it is the
+    thread that would abort the process at exit, and a message here names
+    the cause where a bare exit 134 names nothing.
+    """
+    leaked = settle_qt_threads(timeout_ms=30000)
+    if leaked:
+        print(f"\nconftest: {leaked} QThread(s) were still running at session end "
+              "and were waited for; a test is not settling its views.", file=sys.stderr)
+
+
+@pytest.fixture
+def qt_thread_settler():
+    """:func:`settle_qt_threads`, for a test that checks it (see
+    :func:`cancel_autosave_timers` for why it is a fixture)."""
+    return settle_qt_threads
 
 
 @pytest.fixture
