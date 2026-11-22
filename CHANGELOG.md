@@ -151,6 +151,9 @@ against a real printer.
 
 ### Fixed
 
+- Card artwork more than 14400 pixels on a side is scaled to fit a PDF page instead of
+  being stored at a tenth of its real size.
+
 - Every control in the app has a tooltip, including the crop boxes, zoom buttons, card
   list, calibration wizard and custom paper dialog.
 - Pressing Enter in the Print dialog no longer opens Edit profile... (and does not start

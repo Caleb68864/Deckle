@@ -17,6 +17,7 @@ from deckle.core.loader import (
     _scan_image_dir, _single_image_pdf_or_raise, import_store_dir, load_pdf,
 )
 from deckle.core.models import CardAsset, LayoutWarning
+from deckle.core.paper import MAX_PAPER_PT
 from deckle.core.paths import atomic_output
 
 
@@ -73,7 +74,12 @@ def import_card_images(paths: Sequence[str]) -> CardImportResult:
     os.makedirs(store, exist_ok=True)
     assets = []
     for path, original_hash, pdf_bytes in prepared:
-        key = hashlib.sha256((original_hash + ":card-import-v1").encode("ascii")).hexdigest()
+        # A new name only for the images whose conversion changed, so an
+        # oversized image imported before the fix is converted again rather
+        # than served from the store at a tenth of its size, while every
+        # other stored card keeps its file.
+        version = "card-import-v2-fit" if _too_large_for_one_point_per_pixel(path) else "card-import-v1"
+        key = hashlib.sha256((original_hash + ":" + version).encode("ascii")).hexdigest()
         target = os.path.join(store, f"card-{key}.pdf")
         if not os.path.exists(target) or not _is_valid_one_page_pdf(target):
             with atomic_output(target) as temporary:
@@ -96,12 +102,34 @@ def import_card_images(paths: Sequence[str]) -> CardImportResult:
     return CardImportResult(tuple(assets))
 
 
-def _card_pdf_bytes(path: str) -> bytes:
-    """Convert at 72 pixels per inch so image DPI never changes artwork aspect/size."""
+def _card_pixel_size(path: str) -> tuple[int, int]:
+    """The image's upright size in pixels, EXIF orientation applied."""
     with Image.open(path) as image:
         width, height = image.size
         orientation = image.getexif().get(274, 1)
     if orientation in (5, 6, 7, 8): width, height = height, width
+    return width, height
+
+
+def _too_large_for_one_point_per_pixel(path: str) -> bool:
+    """Whether :func:`_card_pdf_bytes` has to scale this image down."""
+    return max(_card_pixel_size(path)) > MAX_PAPER_PT
+
+
+def _card_pdf_bytes(path: str) -> bytes:
+    """Convert at 72 pixels per inch so image DPI never changes artwork aspect/size."""
+    width, height = _card_pixel_size(path)
+    # One point per pixel, so artwork wider or taller than a PDF page may
+    # be (14400pt) needs scaling first. Left to img2pdf, it wrote the page
+    # with /UserUnit 10, which nothing else in Deckle reads: a 15000px-wide
+    # image came back as a 1500pt page, a tenth of its size, by an accident
+    # of which library honours what. Scaled here instead, keeping the
+    # aspect -- the only thing a card fit uses -- so the page Deckle stores
+    # is the size it says it is.
+    longest = max(width, height)
+    if longest > MAX_PAPER_PT:
+        factor = MAX_PAPER_PT / longest
+        width, height = width * factor, height * factor
     with open(path, "rb") as stream: raw = stream.read()
     layout = img2pdf.get_layout_fun(pagesize=(float(width), float(height)), fit=img2pdf.FitMode.into)
     try:
