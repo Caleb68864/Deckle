@@ -237,6 +237,11 @@ class ImportView:
         layout = QHBoxLayout(self.widget)
         self.import_pdf_button = QPushButton("Import PDF...", self.widget)
         self.import_images_button = QPushButton("Import Images...", self.widget)
+        self.import_pdf_button.setToolTip("Open a PDF to impose (Ctrl+I).")
+        self.import_images_button.setToolTip(
+            "Open a folder of scans, one image per page, in natural filename "
+            "order (Ctrl+Shift+I)."
+        )
         # Unchecked is the old behaviour, and stays the default: an import
         # that silently appended to a document the user thought it was
         # replacing would be its own kind of surprise. Checked is what makes

@@ -151,6 +151,11 @@ against a real printer.
 
 ### Fixed
 
+- Every control in the app has a tooltip, including the crop boxes, zoom buttons, card
+  list, calibration wizard and custom paper dialog.
+- Pressing Enter in the Print dialog no longer opens Edit profile... (and does not start
+  printing either).
+
 - The File menu's Alt-key letters no longer clash. Alt+F then P prints, and Import PDF
   is now Alt+F then I.
 

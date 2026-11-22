@@ -639,6 +639,10 @@ class PreviewView:
         self.sheet_spinbox.setMinimum(0)
         self.sheet_spinbox.setMaximum(max(0, len(plan.sheets) - 1))
         self.sheet_spinbox.setValue(self.sheet_index)
+        self.sheet_spinbox.setToolTip(
+            "Which sheet to show, counting from 0 as the schedule, the warnings "
+            "and the Print dialog's Sheets box do."
+        )
 
         # Jumping to the ends is what a binder actually does: the first and
         # last sheets are the ones that carry the cover and the final leaf,
@@ -672,6 +676,10 @@ class PreviewView:
         self.actual_button = QPushButton("100%", self.widget)
         self.zoom_out_button = QPushButton("-", self.widget)
         self.zoom_in_button = QPushButton("+", self.widget)
+        self.fit_button.setToolTip("Fit the whole sheet in the window (Ctrl+0)")
+        self.actual_button.setToolTip("Show the sheet at actual size (Ctrl+1)")
+        self.zoom_out_button.setToolTip("Zoom out (Ctrl+-)")
+        self.zoom_in_button.setToolTip("Zoom in (Ctrl++)")
         self.zoom_label = QLabel("Fit", self.widget)
         for w in (
             self.zoom_out_button, self.zoom_in_button,

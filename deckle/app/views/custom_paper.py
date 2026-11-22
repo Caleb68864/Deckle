@@ -42,12 +42,15 @@ class CustomPaperDialog:
         form = QFormLayout(self.widget)
 
         self.unit_combo = QComboBox(self.widget)
+        self.unit_combo.setToolTip("The unit the width and height are typed in.")
         self.unit_combo.addItems(list(LENGTH_UNITS))
         self.unit_combo.setCurrentText(unit)
         form.addRow("Units:", self.unit_combo)
 
         self.width_spin = QDoubleSpinBox(self.widget)
         self.height_spin = QDoubleSpinBox(self.widget)
+        self.width_spin.setToolTip("Width of the sheet.")
+        self.height_spin.setToolTip("Height of the sheet.")
         self._unit = unit
         for spin, points, label in (
             (self.width_spin, paper[0], "Width:"),
