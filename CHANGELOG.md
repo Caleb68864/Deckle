@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- A printer profile file that is not a profile (an empty list, `null`) is reported as
+  unreadable instead of crashing `profile list` and the Print dialog.
+
 - A damaged print-resume file with a mistyped field is skipped, instead of stopping the
   Print dialog from opening.
 
