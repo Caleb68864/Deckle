@@ -112,6 +112,58 @@ class PrinterProfile:
     so rather than implying it fixes all misregistration.
     """
 
+    landscape_imageable_area_pt: tuple[float, float, float, float] | None = None
+    """The imageable area when the sheet is landscape, or ``None``.
+
+    ``imageable_area_pt`` is one border for every sheet, measured however
+    the operator measured it -- in practice portrait, the way a letter
+    sheet is held. Folio feeds landscape, and a printer's unprintable
+    border is usually different on the leading edge, so a landscape job
+    does not simply get the same four numbers turned round. ``None`` means
+    "not measured", and every consumer then uses ``imageable_area_pt``
+    exactly as it did before this field existed.
+
+    Stored in the same frame as ``imageable_area_pt``: ``(left, top,
+    right, bottom)`` margins of the sheet **as drawn landscape**, the way
+    the preview shows it. Not a transposition and not a guess -- the only
+    way to fill it in is to print a landscape sheet and measure it.
+
+    F12 §B. Decided by agent 2026-11-21 (owner may revisit): optional,
+    default ``None``, and omitted from the saved file and the resume
+    digest while ``None``, so a profile that never uses it is written,
+    read and resumed byte-for-byte as before.
+    """
+
+    def imageable_area_for(
+        self, paper_pt: tuple[float, float]
+    ) -> tuple[float, float, float, float]:
+        """The imageable area for a sheet of this shape.
+
+        :param paper_pt: the sheet as ``(width, height)`` in points.
+        :returns: the landscape measurement for a landscape sheet when one
+            was taken, otherwise ``imageable_area_pt``. A square sheet is
+            portrait: ``width > height`` is strict, as
+            ``layout_panel.paper_is_landscape`` is.
+        """
+        if paper_pt[0] > paper_pt[1] and self.landscape_imageable_area_pt is not None:
+            return self.landscape_imageable_area_pt
+        return self.imageable_area_pt
+
+    def stored_fields(self) -> dict:
+        """The fields as they are written to disk.
+
+        ``asdict`` without ``landscape_imageable_area_pt`` while it is
+        ``None``: a profile that never measured landscape is written exactly
+        as a build without the field wrote it, so an older build reading it
+        back has nothing to drop and say it dropped.
+
+        :returns: the JSON-ready mapping.
+        """
+        fields = asdict(self)
+        if fields.get("landscape_imageable_area_pt") is None:
+            fields.pop("landscape_imageable_area_pt", None)
+        return fields
+
     def save(self, name: str) -> None:
         """Persist this profile as JSON, keyed by printer ``name``.
 
@@ -135,7 +187,7 @@ class PrinterProfile:
         # already, so naming `imageable_area_pt` here did nothing the
         # encoder was not doing anyway -- and naming one field on the way
         # out is what made it look correct to name one field on the way in.
-        write_text_atomic(path, json.dumps(asdict(self), indent=2))
+        write_text_atomic(path, json.dumps(self.stored_fields(), indent=2))
 
     @classmethod
     def load(cls, name: str) -> "PrinterProfile":

@@ -14,6 +14,11 @@ against a real printer.
 
 ### Added
 
+- **A separate printer border for landscape sheets (F12 §B).** Edit profile... and
+  `profile set --landscape-imageable-area` take the border measured on a landscape
+  sheet, which folio uses. The preview's red guide, the clipping warnings and Use
+  printer margins follow it. Profiles that do not set it are unchanged on disk.
+
 - **Keep back from the ink, in the app.** The Crop & trim tab has the margin
   `--auto-crop-margin` sets, read by *Measure crop from the ink*. Until now the
   app always measured with none.

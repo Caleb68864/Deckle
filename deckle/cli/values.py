@@ -347,6 +347,27 @@ def _parse_imageable_area(value: str) -> tuple[float, float, float, float]:
     return _parse_four_insets(value, "imageable-area", "left, top, right, bottom")
 
 
+#: What ``--landscape-imageable-area none`` parses to: "forget it", as
+#: distinct from the flag's ``None`` default, "do not touch it".
+CLEAR_LANDSCAPE_AREA = "none"
+
+
+def _parse_landscape_imageable_area(value: str):
+    """``--landscape-imageable-area``: four margins as ``--imageable-area``
+    takes them, measured on a landscape sheet -- or ``none`` to forget a
+    landscape measurement and fall back to the one border.
+
+    :param value: the typed value.
+    :returns: the four margins, or :data:`CLEAR_LANDSCAPE_AREA`.
+    :raises argparse.ArgumentTypeError: as ``--imageable-area``.
+    """
+    if value.strip().lower() == CLEAR_LANDSCAPE_AREA:
+        return CLEAR_LANDSCAPE_AREA
+    return _parse_four_insets(
+        value, "landscape-imageable-area", "left, top, right, bottom"
+    )
+
+
 def _parse_index_selection(
     value: str, *, noun: str, example: str, offset: int = 0
 ) -> list[int]:

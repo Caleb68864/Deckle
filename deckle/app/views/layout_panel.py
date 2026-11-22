@@ -2817,7 +2817,9 @@ class LayoutPanel:
         profile = getattr(self, "profile", None)
         if profile is None:
             return
-        inset = imageable_inset_pt(profile.imageable_area_pt)
+        inset = imageable_inset_pt(
+            profile.imageable_area_for(self.state.project.layout.paper)
+        )
         # Set every margin, regardless of link state -- the printer's dead
         # border applies to all four edges, so a partial application would
         # leave some edge still unprintable. One mutation, because one click

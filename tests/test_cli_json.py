@@ -56,6 +56,8 @@ PROFILE_FIELD_KEYS = {
     "calibration_version",
     "back_offset_x_pt",
     "back_offset_y_pt",
+    # F12 §B, 2026-11-21: additive, and null when never measured.
+    "landscape_imageable_area_pt",
 }
 
 INFO_KEYS = ENVELOPE | {

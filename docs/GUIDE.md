@@ -673,6 +673,16 @@ draws that border in solid red, and a `clipped_by_imageable_area` warning
 names it specifically. If you see it, move your margins out; do not expect the
 printer to shrink the book for you.
 
+**Landscape sheets can have their own border.** Most printers leave a different
+strip on the edge that feeds first, so a border measured on a portrait sheet is
+not simply the same four numbers turned round for a folio job on landscape
+paper. Measure a sheet printed landscape and enter it under **Edit profile...**
+(tick *Landscape sheets have their own border*), or with `deckle-cli profile
+set NAME --landscape-imageable-area L,T,R,B`. Until you do, landscape jobs use
+the one border. A **measured** printer on a landscape job shows a
+`landscape_imageable_unverified` note beside each sheet as a reminder. A
+built-in preset does not, because its 18pt is a stand-in either way.
+
 > Check it once, on your own printer. In the app, tick **Proof sheet only —
 > one sheet with a ruler** in the Print dialog and press Print: one sheet
 > comes out with a ruler of known length across it, and nothing else is
@@ -1174,6 +1184,7 @@ hide the built-in everywhere without removing it.
 | `--reverse-stack` / `--no-reverse-stack` | Whether the printed stack must be turned over before the back pass. Two flags rather than one, so "set this to false" is sayable and distinct from "leave it alone". |
 | `--back-offset X,Y` | The registration correction — how far back-side content moves so it lands behind its front. **The correction applied, not the error measured**: a back sitting 3pt left of where it belongs is corrected with `3,0`. Constant offset only, never skew or scale. |
 | `--imageable-area L,T,R,B` | The printer's non-printable border as four margins. **Note the order differs from `--crop`'s** — this one is left, top, right, bottom, matching how the profile file stores it. |
+| `--landscape-imageable-area L,T,R,B` | The border measured on a **landscape** sheet, same order. Used for landscape jobs such as folio; `none` forgets it, and landscape jobs go back to the one border. |
 | `--force` | Apply a change to a saved calibration. |
 
 `calibrated_at` is left alone by `set`. It records when a calibration *run*

@@ -705,6 +705,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     profile_set_parser.add_argument(
+        "--landscape-imageable-area", dest="landscape_imageable_area",
+        type=values._parse_landscape_imageable_area, default=None,
+        metavar="L,T,R,B",
+        help=(
+            "the border measured on a LANDSCAPE sheet, in the same order, for a "
+            "printer whose leading-edge border differs when the paper is turned. "
+            "Used for landscape jobs such as folio; 'none' forgets it"
+        ),
+    )
+    profile_set_parser.add_argument(
         "--force", action="store_true",
         help=(
             "apply a change to a saved calibration. Without it the change is "

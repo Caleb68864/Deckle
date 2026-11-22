@@ -1465,3 +1465,10 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
 - Why not `Qt.BlockingQueuedConnection`: a job blocked that way cannot be released, and closing, which waits for the job, would wait on a question nobody can answer. `GuiCaller` waits on an event and gives up when the job is cancelled.
 - Cancel means "stop after the chunk in the printer": a chunk has no cancellation point, and the state file already makes the run resumable from there. Closing waits up to two minutes for it, as an export does.
 - Commit: on `fix/b17-print-off-gui-thread`.
+
+## 2026-11-21 — F12 §B: landscape sheets get their own printer border (decided by agent; owner may revisit)
+- Decision: the spec's design, made conservative. `PrinterProfile.landscape_imageable_area_pt`, optional and `None` by default; `imageable_area_for(paper_pt)` picks it for a landscape sheet and falls back to `imageable_area_pt` otherwise. Under the 2026-11-21 standing order, a product choice with a recommended option is implemented rather than left waiting.
+- Why it is safe to take back: while the field is `None` a profile is written without the key and digests as before (`PrinterProfile.stored_fields`), so neither a saved calibration nor an interrupted print run notices the upgrade. Deleting the field again would only drop a number the user typed.
+- The one departure from the spec: `landscape_imageable_unverified` fires only for a measured profile (`calibrated_at` set). A built-in preset's flat 18pt is a guess in both orientations; flagging every uncalibrated folio job would make the badge noise.
+- Not done: the calibration wizard does not measure the landscape border, and nothing here says what any real printer's border is. Both need paper (F4).
+- Commit: on `feat/decided-items-2026-11-21`.
