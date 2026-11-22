@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- Moving through the card layout boxes without changing them no longer adds undo steps,
+  clears redo, marks the project unsaved, or (in mm and inches) nudges the stored size.
+
 - `crop-preview --dpi` takes 1 to 600 and says so, rather than passing 0 or a negative
   to the renderer for a confusing error, or a huge value that ran out of memory.
 - `--sewing-stations` refuses a negative count instead of quietly dropping the marks.

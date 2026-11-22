@@ -60,3 +60,57 @@ def test_layout_panel_units_border_toggle_and_capacity(app):
 def test_incomplete_card_project_is_saveable_but_not_output_ready():
     assert not _project_output_ready(fixture_project(False))
     assert _project_output_ready(fixture_project(True))
+
+
+# -- BH5: leaving a box is not an edit ------------------------------------
+
+
+def _number_boxes(panel):
+    return list(panel._boxes.items())
+
+
+@pytest.mark.parametrize("unit", ["pt", "mm", "in"])
+def test_tabbing_through_the_card_boxes_changes_nothing(app, unit):
+    """Qt fires editingFinished on focus-out. It used to re-apply every box:
+    an undo step each, the redo stack wiped, and an untouched project marked
+    unsaved, so closing the window asked to save it."""
+    state = AppState(fixture_project(), project_path="/tmp/card-ui.deckle", timer_factory=Timer)
+    panel = CardLayoutPanel(state, on_change=lambda: None)
+    panel.unit.setCurrentText(unit)
+    before = state.project
+
+    for _key, box in _number_boxes(panel):
+        box.editingFinished.emit()
+
+    assert state.project is before
+    assert not state.can_undo
+    assert not state.dirty
+
+
+def test_leaving_a_box_in_mm_does_not_round_the_stored_length(app):
+    """100pt shows as 35.278mm; writing that back was 100.0006pt."""
+    from dataclasses import replace
+
+    project = fixture_project()
+    deck = project.card_deck
+    project = replace(project, card_deck=replace(deck, settings=replace(deck.settings, width_pt=100.0)))
+    state = AppState(project, project_path="/tmp/card-ui.deckle", timer_factory=Timer)
+    panel = CardLayoutPanel(state, on_change=lambda: None)
+    panel.unit.setCurrentText("mm")
+
+    panel.width_pt.editingFinished.emit()
+
+    assert state.project.card_deck.settings.width_pt == 100.0
+
+
+def test_a_real_edit_still_lands_and_is_one_undo_step(app):
+    state = AppState(fixture_project(), project_path="/tmp/card-ui.deckle", timer_factory=Timer)
+    panel = CardLayoutPanel(state, on_change=lambda: None)
+
+    panel.width_pt.setValue(144.0)
+    panel.width_pt.editingFinished.emit()
+
+    assert state.project.card_deck.settings.width_pt == 144.0
+    assert state.can_undo
+    state.undo()
+    assert state.project.card_deck.settings.width_pt == 180.0

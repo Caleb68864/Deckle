@@ -13,7 +13,7 @@ class CardLayoutPanel:
         self.widget=QWidget(parent); form=QFormLayout(self.widget); d=state.project.card_deck.settings if state.project.card_deck else CardSettings()
         self.error=QLabel(""); self.error.setWordWrap(True); self.error.setStyleSheet("color: #b00020"); form.addRow(self.error)
         def number(label,key,value,minimum=0.0,maximum=5000.0):
-            box=QDoubleSpinBox(self.widget); box.setRange(minimum,maximum); box.setDecimals(3); box.setSingleStep(1); box.setValue(value); box.setSuffix(" pt"); box.editingFinished.connect(lambda k=key,b=box:self.set_value(k,b.value()*self._factor())); label_widget=QLabel(label,self.widget); form.addRow(label_widget,box); setattr(self,key,box); self._boxes[key]=box; self._labels[key]=(label_widget,label)
+            box=QDoubleSpinBox(self.widget); box.setRange(minimum,maximum); box.setDecimals(3); box.setSingleStep(1); box.setValue(value); box.setSuffix(" pt"); box.editingFinished.connect(lambda k=key,b=box:self._commit(k,b)); label_widget=QLabel(label,self.widget); form.addRow(label_widget,box); setattr(self,key,box); self._boxes[key]=box; self._labels[key]=(label_widget,label)
         self.unit=QComboBox(); self.unit.addItems(["pt","mm","in"]); self.unit.currentTextChanged.connect(self._unit_changed); form.addRow("Length units",self.unit)
         self.paper=QComboBox(); self.paper.addItem("Letter portrait",(612.0,792.0)); self.paper.addItem("Letter landscape",(792.0,612.0)); self.paper.addItem("A4 portrait",(595.275590551,841.88976378)); self.paper.addItem("A4 landscape",(841.88976378,595.275590551)); self.paper.currentIndexChanged.connect(self.set_paper); form.addRow("Sheet",self.paper)
         number("Finished width (pt)","width_pt",d.width_pt,0.001); number("Finished height (pt)","height_pt",d.height_pt,0.001)
@@ -35,6 +35,20 @@ class CardLayoutPanel:
         for key,box in self._boxes.items():
             box.blockSignals(True); box.setValue(getattr(self.state.project.card_deck.settings,key)/factor); box.setSuffix(" "+unit); box.blockSignals(False)
             label,original=self._labels[key]; label.setText(original.replace("(pt)",f"({unit})"))
+
+    def _commit(self,key,box):
+        """Apply a box the user has left, if they changed what it shows.
+
+        Qt fires ``editingFinished`` when focus merely leaves a box, so
+        tabbing through the panel used to re-apply every value. In a unit
+        other than points that was not even harmless: the box holds the
+        stored length rounded to three decimals, so leaving a 100pt card
+        width in mm wrote back 35.278mm, which is 100.0006pt.
+        """
+        stored=getattr(self.state.project.card_deck.settings,key)
+        if round(stored/self._factor(),box.decimals())==box.value():
+            return
+        self.set_value(key,box.value()*self._factor())
 
     def set_value(self,key,value):
         try:
