@@ -324,14 +324,14 @@ class LayoutWarning:
         "grain_direction",
         # Emitted by `loader.load_image_dir` and, until 2026-09-11, absent
         # from this list -- so the one kind a *user* sees most often was
-        # the one the contract did not admit. Its opposite number,
-        # `landscape_imageable_unverified`, was declared here and emitted
-        # by nothing: it was specified for a v2 that would compare a
-        # portrait-measured `imageable_area_pt` against landscape paper,
-        # and a `PrinterProfile` holds one border for both orientations,
-        # so no code here can produce it. Declaring it cost a reader the
-        # belief that Deckle warns about something it cannot see.
+        # the one the contract did not admit.
         "skipped_non_image_files",
+        # Removed by B31 (2026-09-11) because a `PrinterProfile` then held
+        # one border for both orientations, so nothing could emit it.
+        # Back with F12 §B, which gave the profile a landscape border:
+        # emitted by `preview_view.landscape_imageable_warnings` for a
+        # measured printer, landscape paper, and no landscape measurement.
+        "landscape_imageable_unverified",
     ]
     detail: str
 

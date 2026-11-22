@@ -194,11 +194,54 @@ def warnings_for_plan(plan: SheetPlan, profile: PrinterProfile) -> dict[int, lis
         by_sheet.setdefault(warning.sheet_index, []).append(warning)
     for sheet in plan.sheets:
         for warning in clipping_warnings_for_sheet(
-            sheet, plan.paper_pt, profile.imageable_area_pt,
+            sheet, plan.paper_pt, profile.imageable_area_for(plan.paper_pt),
             (profile.back_offset_x_pt, profile.back_offset_y_pt),
         ):
             by_sheet.setdefault(warning.sheet_index, []).append(warning)
+    for warning in landscape_imageable_warnings(plan, profile):
+        by_sheet.setdefault(warning.sheet_index, []).append(warning)
     return by_sheet
+
+
+#: Shown beside every sheet of a job F12 §B's warning applies to.
+LANDSCAPE_IMAGEABLE_DETAIL = (
+    "This sheet is landscape and the printer's border was measured for one "
+    "orientation only. The unprintable strip on the leading edge is usually "
+    "different the other way round, so the red guide may be off on one edge. "
+    "Measure a landscape sheet and enter it under Edit profile..., or leave "
+    "extra margin."
+)
+
+
+def landscape_imageable_warnings(
+    plan: SheetPlan, profile: PrinterProfile
+) -> list[LayoutWarning]:
+    """``landscape_imageable_unverified`` for each sheet it applies to.
+
+    Only for a **measured** profile (``calibrated_at`` set): a built-in
+    preset's flat 18pt is a stand-in in both orientations, and saying so on
+    every landscape sheet of every uncalibrated job would teach people to
+    ignore the badge. Decided by agent 2026-11-21 (owner may revisit).
+
+    :param plan: the imposed plan.
+    :param profile: the printer profile in use.
+    :returns: one warning per sheet, or none.
+    """
+    width, height = plan.paper_pt
+    if not (
+        width > height
+        and profile.calibrated_at
+        and profile.landscape_imageable_area_pt is None
+    ):
+        return []
+    return [
+        LayoutWarning(
+            sheet_index=sheet.index,
+            kind="landscape_imageable_unverified",
+            detail=LANDSCAPE_IMAGEABLE_DETAIL,
+        )
+        for sheet in plan.sheets
+    ]
 
 
 def badge_text(warnings: Sequence[LayoutWarning]) -> str:
@@ -992,7 +1035,10 @@ class PreviewView:
             painter.setPen(imageable)
             painter.drawRect(
                 to_image_rect(
-                    imageable_rect_pt(self.plan.paper_pt, self.profile.imageable_area_pt)
+                    imageable_rect_pt(
+                        self.plan.paper_pt,
+                        self.profile.imageable_area_for(self.plan.paper_pt),
+                    )
                 )
             )
 

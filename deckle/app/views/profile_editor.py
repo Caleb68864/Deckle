@@ -40,6 +40,7 @@ def profile_from_fields(
     back_offset_pt: tuple[float, float],
     imageable_area_pt: tuple[float, float, float, float],
     calibrated_at: str,
+    landscape_imageable_area_pt: tuple[float, float, float, float] | None = None,
 ) -> PrinterProfile:
     """A profile from edited values.
 
@@ -58,6 +59,9 @@ def profile_from_fields(
     :param back_offset_pt: ``(x, y)``, signed.
     :param imageable_area_pt: ``(left, top, right, bottom)`` margins.
     :param calibrated_at: the timestamp to record if this counts as a new edit.
+    :param landscape_imageable_area_pt: the border measured on a landscape
+        sheet, or ``None`` for "not measured" (F12 §B). A border, like
+        ``imageable_area_pt``, so typing it keeps a measurement measured.
     :returns: the new profile.
     """
     behaviour = {
@@ -73,6 +77,7 @@ def profile_from_fields(
         base,
         **behaviour,
         imageable_area_pt=imageable_area_pt,
+        landscape_imageable_area_pt=landscape_imageable_area_pt,
         back_offset_x_pt=back_offset_pt[0],
         back_offset_y_pt=back_offset_pt[1],
         calibrated_at=base.calibrated_at if measured else calibrated_at,
@@ -203,6 +208,29 @@ class ProfileEditorDialog:
             self.imageable_spins[edge] = spin
             form.addRow(f"Imageable {edge}:", spin)
 
+        # F12 §B: a second border, for landscape sheets, off by default.
+        self.landscape_check = QCheckBox(
+            "Landscape sheets have their own border", self.widget
+        )
+        self.landscape_check.setToolTip(
+            "Tick this if you measured the border on a sheet printed landscape, "
+            "as folio uses, and it differs from the one above -- most printers "
+            "leave a different strip on the edge that feeds first. Unticked, "
+            "landscape jobs use the border above."
+        )
+        form.addRow(self.landscape_check)
+        self.landscape_spins = {}
+        for edge in BORDER_EDGES:
+            spin = length(
+                0.0,
+                MAX_BORDER_PT,
+                "On a landscape sheet, as the preview shows it: how far in from "
+                "that edge your printer can actually print.",
+            )
+            self.landscape_spins[edge] = spin
+            form.addRow(f"Landscape {edge}:", spin)
+        self.landscape_check.toggled.connect(self._sync_landscape_spins)
+
         self.status_label = QLabel("", self.widget)
         self.status_label.setWordWrap(True)
         form.addRow(self.status_label)
@@ -235,6 +263,19 @@ class ProfileEditorDialog:
         self.back_offset_y_spin.setValue(profile.back_offset_y_pt)
         for edge, value in zip(BORDER_EDGES, profile.imageable_area_pt):
             self.imageable_spins[edge].setValue(value)
+        landscape = profile.landscape_imageable_area_pt
+        self.landscape_check.setChecked(landscape is not None)
+        for edge, value in zip(BORDER_EDGES, landscape or profile.imageable_area_pt):
+            self.landscape_spins[edge].setValue(value)
+        self._sync_landscape_spins()
+
+    def _sync_landscape_spins(self, *_args) -> None:
+        """The landscape boxes are only live while the box is ticked.
+
+        :returns: nothing.
+        """
+        for spin in self.landscape_spins.values():
+            spin.setEnabled(self.landscape_check.isChecked())
 
     def _on_preset_changed(self, _index: int) -> None:
         """Load a preset's values, or put the original ones back.
@@ -266,6 +307,20 @@ class ProfileEditorDialog:
                 "Those imageable margins leave no printable area on a Letter sheet."
             )
             return False
+        landscape = None
+        if self.landscape_check.isChecked():
+            boxes = self.landscape_spins
+            # Against Letter turned landscape: the same smallest sheet.
+            if (
+                boxes["left"].value() + boxes["right"].value() >= SMALLEST_SHEET_PT[1]
+                or boxes["top"].value() + boxes["bottom"].value() >= SMALLEST_SHEET_PT[0]
+            ):
+                self.status_label.setText(
+                    "Those landscape margins leave no printable area on a "
+                    "landscape Letter sheet."
+                )
+                return False
+            landscape = tuple(boxes[edge].value() for edge in BORDER_EDGES)
         profile = profile_from_fields(
             base=self._base,
             flip_axis=self.flip_axis_combo.currentText(),
@@ -275,6 +330,7 @@ class ProfileEditorDialog:
             back_offset_pt=(self.back_offset_x_spin.value(), self.back_offset_y_spin.value()),
             imageable_area_pt=tuple(spins[edge].value() for edge in BORDER_EDGES),
             calibrated_at=self._now(),
+            landscape_imageable_area_pt=landscape,
         )
         try:
             self._save(profile, self._printer_name)

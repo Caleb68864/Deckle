@@ -67,7 +67,7 @@ from deckle.core.report import (
 )
 from deckle.core.schedule import build_schedule, format_schedule_text
 
-from deckle.cli import report
+from deckle.cli import report, values
 
 
 
@@ -713,11 +713,9 @@ def _split_paths(output: str, count: int) -> list[str]:
     :param count: how many signatures.
     :returns: ``<stem>-sig-NN<suffix>``, zero-padded so ``ls`` sorts them.
     """
-    path = Path(output)
-    return [
-        str(path.with_name(f"{path.stem}-sig-{n:02d}{path.suffix}"))
-        for n in range(1, count + 1)
-    ]
+    from deckle.core.outputs import signature_split_paths
+
+    return signature_split_paths(output, count)
 
 
 def _export_split(plan, args, profile, back_offset, offset_source) -> int:
@@ -1339,6 +1337,15 @@ def _cmd_profile_show(args: argparse.Namespace) -> int:
         f"imageable area (margins, pt): left {left:g}, top {top:g}, "
         f"right {right:g}, bottom {bottom:g}"
     )
+    landscape = profile.landscape_imageable_area_pt
+    if landscape is None:
+        print("landscape imageable area: not measured -- landscape jobs use the one above")
+    else:
+        l_left, l_top, l_right, l_bottom = landscape
+        print(
+            f"landscape imageable area (margins, pt): left {l_left:g}, top {l_top:g}, "
+            f"right {l_right:g}, bottom {l_bottom:g}"
+        )
     print(
         f"back offset: {profile.back_offset_x_pt:+g}, "
         f"{profile.back_offset_y_pt:+g}pt -- the correction applied, not the "
@@ -1372,6 +1379,11 @@ def _profile_changes(args: argparse.Namespace) -> dict:
             changes[field] = value
     if args.back_offset is not None:
         changes["back_offset_x_pt"], changes["back_offset_y_pt"] = args.back_offset
+    landscape = getattr(args, "landscape_imageable_area", None)
+    if landscape is not None:
+        changes["landscape_imageable_area_pt"] = (
+            None if landscape == values.CLEAR_LANDSCAPE_AREA else landscape
+        )
     return changes
 
 
@@ -1448,7 +1460,7 @@ def _cmd_profile_set(args: argparse.Namespace) -> int:
             print(
                 f"error: nothing to change. Give at least one of --flip-axis, "
                 "--output-face, --feed-edge, --reverse-stack/--no-reverse-stack, "
-                "--back-offset or --imageable-area.",
+                "--back-offset, --imageable-area or --landscape-imageable-area.",
                 file=sys.stderr,
             )
             return 1

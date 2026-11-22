@@ -244,6 +244,10 @@ def profile_fields(profile: PrinterProfile) -> dict:
         "feed_edge": profile.feed_edge,
         "reverse_stack": profile.reverse_stack,
         "imageable_area_pt": list(profile.imageable_area_pt),
+        "landscape_imageable_area_pt": (
+            None if profile.landscape_imageable_area_pt is None
+            else list(profile.landscape_imageable_area_pt)
+        ),
         "calibrated_at": profile.calibrated_at,
         "calibration_version": profile.calibration_version,
         "back_offset_x_pt": profile.back_offset_x_pt,

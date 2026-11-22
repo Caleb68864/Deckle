@@ -156,7 +156,10 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",
-        help="which edge the gutter shifts toward (default: left)",
+        help="which edge the book is bound on (default: left). One page per "
+        "side, the gutter shifts toward it; under --fold-scheme folio the fold "
+        "is the spine, and it sets reading direction: left reads left to "
+        "right, right reads right to left",
     )
     parser.add_argument(
         "--slack-to", dest="slack_to", choices=["gutter", "outer", "split"],
@@ -702,6 +705,16 @@ def build_parser() -> argparse.ArgumentParser:
             "the printer's non-printable border as four margins -- left, top, "
             "right, bottom. Note the order differs from --crop's, matching how "
             "the profile stores it"
+        ),
+    )
+    profile_set_parser.add_argument(
+        "--landscape-imageable-area", dest="landscape_imageable_area",
+        type=values._parse_landscape_imageable_area, default=None,
+        metavar="L,T,R,B",
+        help=(
+            "the border measured on a LANDSCAPE sheet, in the same order, for a "
+            "printer whose leading-edge border differs when the paper is turned. "
+            "Used for landscape jobs such as folio; 'none' forgets it"
         ),
     )
     profile_set_parser.add_argument(

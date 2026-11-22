@@ -863,7 +863,7 @@ class MainWindow:
         # have to be unavailable at the same moments -- a greyed button
         # beside a live menu item is the app disagreeing with itself.
         self._set_gated_actions("document", has_pages)
-        for action_name in ("save_pdf", "export_single_pass"):
+        for action_name in ("save_pdf", "export_single_pass", "save_signatures"):
             action = self.menu_actions.get(action_name)
             if action is not None: action.setEnabled(output_ready)
         # Opening is always available; saving needs something to save.
@@ -1837,6 +1837,20 @@ class MainWindow:
         :returns: nothing. See :func:`deckle.app.exporting.save_pdf_as`.
         """
         exporting.save_pdf_as(self)
+
+    def save_folding_dummy(self) -> None:
+        """Write this book's imposition with page numbers for pages.
+
+        :returns: nothing. See :func:`deckle.app.exporting.save_folding_dummy_as`.
+        """
+        exporting.save_folding_dummy_as(self)
+
+    def save_signatures(self) -> None:
+        """Write each signature to its own PDF.
+
+        :returns: nothing. See :func:`deckle.app.exporting.save_signatures_as`.
+        """
+        exporting.save_signatures_as(self)
 
     def export_single_pass(self) -> None:
         """Write one pass -- fronts or backs -- as its own PDF.

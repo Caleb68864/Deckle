@@ -14,6 +14,17 @@ against a real printer.
 
 ### Added
 
+- **Save a folding dummy** (File menu): the open book's imposition with each page
+  replaced by its number, ready to print on scrap and fold.
+
+- **Save signatures as separate PDFs** (File menu): one file per gathering, named as
+  `export --split` names them.
+
+- **A separate printer border for landscape sheets (F12 §B).** Edit profile... and
+  `profile set --landscape-imageable-area` take the border measured on a landscape
+  sheet, which folio uses. The preview's red guide, the clipping warnings and Use
+  printer margins follow it. Profiles that do not set it are unchanged on disk.
+
 - **Keep back from the ink, in the app.** The Crop & trim tab has the margin
   `--auto-crop-margin` sets, read by *Measure crop from the ink*. Until now the
   app always measured with none.
@@ -134,6 +145,9 @@ against a real printer.
   including a *Measure crop from the ink* button.
 
 ### Fixed
+
+- The Binding edge tooltip and `--binding-edge` help say what the setting means under
+  signatures (reading direction), not only what it does to the gutter.
 
 - An image too large for the image library to open safely is reported by name, with
   what to do, instead of ending the command with a traceback.

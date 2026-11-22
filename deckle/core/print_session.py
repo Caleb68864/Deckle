@@ -184,7 +184,11 @@ def _hash_profile(profile: PrinterProfile) -> str:
     :param profile: the printer profile the run is being driven under.
     :returns: the first 16 hex characters of the profile digest.
     """
-    payload = json.dumps(asdict(profile), sort_keys=True, default=list)
+    # `stored_fields`, not `asdict`: a field added with a `None` default
+    # (F12 §B's landscape border) must not change the digest of every
+    # existing profile, or upgrading Deckle would make every interrupted
+    # run refuse to resume.
+    payload = json.dumps(profile.stored_fields(), sort_keys=True, default=list)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 

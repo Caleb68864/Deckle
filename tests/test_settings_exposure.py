@@ -109,6 +109,9 @@ EXEMPT: dict[str, str] = {
     "--reverse-stack": "calibration; see --back-offset",
     "--no-reverse-stack": "calibration; see --back-offset",
     "--imageable-area": "calibration; see --back-offset",
+    # F12 §B. Reachable in the app, in the Print dialog's Edit profile...
+    # with the other borders -- just not on the layout panel this walks.
+    "--landscape-imageable-area": "calibration; in Edit profile..., with --imageable-area",
     # Managing the profile store rather than describing a printer.
     "--from": "which built-in a new profile starts from; the app picks one",
     "--force": "guard on overwriting a hand-measured calibration, not a setting",

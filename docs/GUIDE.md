@@ -368,7 +368,9 @@ python -m deckle.cli export book.pdf -o proof.pdf --gutter 0.75in --sheets 0 --r
 
 `--signature N` exports one gathering, counting from 1 as the schedule does, and
 `--split` writes every gathering to its own file (`out-sig-01.pdf`,
-`out-sig-02.pdf`, ...). Neither combines with `--sheets`.
+`out-sig-02.pdf`, ...). Neither combines with `--sheets`. In the app,
+**File > Save signatures as separate PDFs...** does what `--split` does, with
+the same file names.
 
 `--sheets` takes single numbers, comma lists and inclusive ranges — `0`,
 `2,0`, `0,2-4`. Asking for a sheet the document does not have is an error, not
@@ -467,6 +469,12 @@ tell you, since 6 and 9 are each other rotated and 8 is its own rotation.
 The numbers go on a synthetic *source* which then runs through the ordinary
 import-impose-export path, so what you are checking is the real pipeline and
 not a parallel "test mode" that could disagree with it.
+
+In the app, **File > Save a folding dummy...** does both steps for the book you
+have open: the same page list (blanks stay blank, skipped pages stay skipped)
+and the same layout, with each page replaced by its number, imposed and saved
+ready to print. Page rotations and crops are left out, since they were set for
+your scan and would turn or cut the numbers.
 
 For reference, the imposed faces of an eight-page folio come out:
 
@@ -672,6 +680,16 @@ Deckle tells you before the paper is spent rather than after — the preview
 draws that border in solid red, and a `clipped_by_imageable_area` warning
 names it specifically. If you see it, move your margins out; do not expect the
 printer to shrink the book for you.
+
+**Landscape sheets can have their own border.** Most printers leave a different
+strip on the edge that feeds first, so a border measured on a portrait sheet is
+not simply the same four numbers turned round for a folio job on landscape
+paper. Measure a sheet printed landscape and enter it under **Edit profile...**
+(tick *Landscape sheets have their own border*), or with `deckle-cli profile
+set NAME --landscape-imageable-area L,T,R,B`. Until you do, landscape jobs use
+the one border. A **measured** printer on a landscape job shows a
+`landscape_imageable_unverified` note beside each sheet as a reminder. A
+built-in preset does not, because its 18pt is a stand-in either way.
 
 > Check it once, on your own printer. In the app, tick **Proof sheet only —
 > one sheet with a ruler** in the Print dialog and press Print: one sheet
@@ -1174,6 +1192,7 @@ hide the built-in everywhere without removing it.
 | `--reverse-stack` / `--no-reverse-stack` | Whether the printed stack must be turned over before the back pass. Two flags rather than one, so "set this to false" is sayable and distinct from "leave it alone". |
 | `--back-offset X,Y` | The registration correction — how far back-side content moves so it lands behind its front. **The correction applied, not the error measured**: a back sitting 3pt left of where it belongs is corrected with `3,0`. Constant offset only, never skew or scale. |
 | `--imageable-area L,T,R,B` | The printer's non-printable border as four margins. **Note the order differs from `--crop`'s** — this one is left, top, right, bottom, matching how the profile file stores it. |
+| `--landscape-imageable-area L,T,R,B` | The border measured on a **landscape** sheet, same order. Used for landscape jobs such as folio; `none` forgets it, and landscape jobs go back to the one border. |
 | `--force` | Apply a change to a saved calibration. |
 
 `calibrated_at` is left alone by `set`. It records when a calibration *run*
