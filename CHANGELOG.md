@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- An image too large for the image library to open safely is reported by name, with
+  what to do, instead of ending the command with a traceback.
+
 - The command line says a negative length is negative, rather than that it is not a number,
   and refuses an empty `-o` by name instead of reporting a device error.
 

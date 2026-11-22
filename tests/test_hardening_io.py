@@ -621,3 +621,41 @@ def test_a_healthy_image_directory_still_imports_silently(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "page count: 2" in out
     assert "layout warnings: none" in out
+
+
+# --- BH13: an image too large for Pillow to open -------------------------
+
+
+def _oversized_folder(tmp_path, monkeypatch):
+    """A real decompression-bomb refusal without writing 400 megapixels:
+    lower the limit instead. Pillow refuses above twice it."""
+    from PIL import Image
+
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)
+    source = tmp_path / "scans"
+    source.mkdir()
+    Image.new("RGB", (100, 140), "white").save(source / "poster.png")
+    return source
+
+
+def test_an_image_too_large_to_open_is_a_load_error_not_a_traceback(tmp_path, monkeypatch):
+    """`DecompressionBombError` is not an `OSError`, so the corrupt-image
+    handler let it through: a 20000x20000 scan printed a Pillow traceback."""
+    source = _oversized_folder(tmp_path, monkeypatch)
+
+    with pytest.raises(CorruptImageError) as exc_info:
+        load_image_dir(str(source))
+
+    assert exc_info.value.path == str(source / "poster.png")
+    assert "too large to open safely" in str(exc_info.value)
+
+
+def test_the_cli_says_so(tmp_path, monkeypatch, capsys):
+    source = _oversized_folder(tmp_path, monkeypatch)
+
+    code = main(["info", str(source)])
+
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "too large to open safely" in err
+    assert "Scale it down" in err
