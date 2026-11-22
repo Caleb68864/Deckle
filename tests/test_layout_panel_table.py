@@ -289,6 +289,13 @@ def test_every_length_on_the_table_reconverts_on_a_unit_change(unit, panel):
     )
     panel.state._project = replace(panel.state.project, layout=loaded)
     panel.refresh_from_project()
+    # A length the project does not hold -- the auto-crop margin -- has
+    # only the panel to remember it, so it has to survive the switch too.
+    unheld = {}
+    for spec in CONTROLS:
+        if spec.kind == "length" and spec.displayed(loaded) is None:
+            unheld[spec.name] = 4.25
+            panel.controls[spec.name].set_points(4.25)
 
     panel.unit_combo.setCurrentText(unit)
 
@@ -296,6 +303,11 @@ def test_every_length_on_the_table_reconverts_on_a_unit_change(unit, panel):
         if spec.kind != "length":
             continue
         box = panel.controls[spec.name]
+        if spec.name in unheld:
+            assert box.points() == pytest.approx(unheld[spec.name], abs=0.01), (
+                f"{spec.name} was not reconverted into {unit}"
+            )
+            continue
         points = spec.displayed(panel.state.project.layout)
         assert box.value() == pytest.approx(
             round(from_points(points, unit), box.decimals())
