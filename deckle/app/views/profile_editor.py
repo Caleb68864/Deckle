@@ -151,6 +151,10 @@ class ProfileEditorDialog:
         form.addRow("Printer:", QLabel(printer_name or "(no printer selected)", self.widget))
 
         self.preset_combo = QComboBox(self.widget)
+        self.preset_combo.setToolTip(
+            "Fill the form from a built-in profile. Nothing is saved until you "
+            "press Save."
+        )
         self.preset_combo.addItem("(keep these values)", None)
         for name in self._presets:
             self.preset_combo.addItem(name, name)

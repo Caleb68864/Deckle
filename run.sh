@@ -82,19 +82,23 @@ for name in ("pikepdf", "pypdfium2", "img2pdf", "natsort", "Pillow", "PySide6"):
         version = "not installed"
     print("  ", name.ljust(12), version)
 
-try:
-    from PySide6.QtPrintSupport import QPrinterInfo
-    printers = QPrinterInfo.availablePrinters()
-except Exception as exc:
-    print("[deckle] Qt printer discovery failed:", exc)
-else:
-    print("[deckle] printers visible to Qt:")
-    if printers:
-        for printer in printers:
-            print("  ", printer.printerName())
-    else:
-        print("   none found")
 PY
+        # On Linux "the GUI will not start" is nearly always a missing
+        # display, so say which one Qt would find.
+        printf '[deckle] display: DISPLAY=%s WAYLAND_DISPLAY=%s\n' \
+            "${DISPLAY:-(unset)}" "${WAYLAND_DISPLAY:-(unset)}"
+        # Bounded, unlike run.bat's: enumerating printers blocks per
+        # unreachable network printer until it times out, which once cost
+        # 81 minutes (docs/decisions.md, 2026-08-04). Offscreen, so the
+        # probe needs no display of its own.
+        printf '[deckle] printers visible to Qt:\n'
+        if ! QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" timeout 10 "$PYTHON" -c '
+from PySide6.QtPrintSupport import QPrinterInfo
+printers = QPrinterInfo.availablePrinters()
+print("   none found") if not printers else [print("  ", p.printerName()) for p in printers]
+'; then
+            printf '   printer query timed out or failed (see docs/decisions.md, 2026-08-04)\n'
+        fi
         ;;
     docs)
         require_python
@@ -116,7 +120,13 @@ PY
         "$BUILD_PYTHON" -m PyInstaller --noconfirm --distpath dist --workpath build/pyinstaller packaging/deckle.spec
         printf '[deckle] auditing the built bundle...\n'
         QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}" "$PYTHON" -m pytest tests/test_packaging_audit.py -q
+        # Archived only after the audit passes, so an artifact that fails
+        # the licence gate is never packaged for anyone to download.
+        VERSION="$("$PYTHON" -c 'import deckle; print(deckle.__version__)')"
+        ARCHIVE="dist/deckle-${VERSION}-linux-$(uname -m).tar.gz"
+        tar -czf "$ARCHIVE" -C dist deckle
         printf '[deckle] wrote dist/deckle/deckle and dist/deckle/deckle-cli\n'
+        printf '[deckle] wrote %s\n' "$ARCHIVE"
         printf '[deckle] Linux packaging has not been previously validated in CI. Check the audited bundle before distributing it.\n'
         ;;
     -h|--help|help)

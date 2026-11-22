@@ -708,7 +708,15 @@ class ArrangeView:
 
         toolbar = QHBoxLayout()
         self.rotate_button = QPushButton("Rotate", self.widget)
+        self.rotate_button.setToolTip(
+            "Turn the selected pages a quarter turn clockwise (R). Four presses "
+            "bring a page back upright."
+        )
         self.skip_button = QPushButton("Skip", self.widget)
+        self.skip_button.setToolTip(
+            "Leave the selected pages out of the book, or bring skipped ones "
+            "back (S). They stay in the list."
+        )
         self.skip_range_button = QPushButton("Skip range...", self.widget)
         self.skip_range_button.setToolTip(
             "Mark a range of pages skipped in one go -- 1-6, 309-312.\n\n"
@@ -719,6 +727,10 @@ class ArrangeView:
             "Skipped pages stay in the list and can be brought back."
         )
         self.insert_blank_button = QPushButton("Insert Blank", self.widget)
+        self.insert_blank_button.setToolTip(
+            "Add a blank page, asking where -- for a page that must start on "
+            "the right, or a leaf left empty on purpose."
+        )
         self.remove_button = QPushButton("Remove", self.widget)
         self.remove_button.setToolTip(
             "Delete the selected pages from the project.\n\n"

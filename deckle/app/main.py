@@ -235,6 +235,10 @@ UNTITLED_PROJECT_NAME = "This document"
 """What the prompts call a project that has never been saved."""
 
 
+SAVE_PDF_TOOLTIP = (
+    "Write the imposed sheets the preview shows to a PDF, at actual size (Ctrl+E)."
+)
+
 SAVE_PROJECT_TOOLTIP = (
     "Save this job as a .deckle project so you can come back to it.\n\n"
     "Saves straight back to the project's own file; a job that has never "
@@ -871,7 +875,9 @@ class MainWindow:
         self.save_project_button.setToolTip(
             SAVE_PROJECT_TOOLTIP if has_pages else NOTHING_TO_SAVE_MESSAGE
         )
-        self.save_pdf_button.setToolTip("" if has_pages else NOTHING_TO_EXPORT_MESSAGE)
+        self.save_pdf_button.setToolTip(
+            SAVE_PDF_TOOLTIP if has_pages else NOTHING_TO_EXPORT_MESSAGE
+        )
         self.layout_panel.set_document_loaded(has_pages)
         if hasattr(self, "_sync_kind_views"): self._sync_kind_views()
         self.cards_view.refresh() if hasattr(self, "cards_view") else None

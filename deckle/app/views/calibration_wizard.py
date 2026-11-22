@@ -185,6 +185,9 @@ class CalibrationWizard:
         printer_row.addWidget(QLabel("Printer:", self.widget))
         self.printer_combo = QComboBox(self.widget)
         self.printer_combo.setEditable(True)
+        self.printer_combo.setToolTip(
+            "The printer being calibrated. The profile is saved under this name."
+        )
         self.printer_combo.addItems(list(printer_names))
         if printer_name:
             self.printer_combo.setCurrentText(printer_name)
@@ -217,6 +220,10 @@ class CalibrationWizard:
             if key in _PRINT_ORIENTATION_OF:
                 orientation = _PRINT_ORIENTATION_OF[key]
                 button = QPushButton(f"Open the {orientation} document", page)
+                button.setToolTip(
+                    f"Open the {orientation} calibration sheet in your PDF viewer, "
+                    "to print it at actual size, both sides."
+                )
                 button.clicked.connect(lambda _=False, o=orientation: self._open_sheet(o))
                 self.open_buttons[orientation] = button
                 layout.addWidget(button)
@@ -229,6 +236,7 @@ class CalibrationWizard:
                     # Nothing preselected: a default is an answer the operator
                     # did not give, and this is the record of what they saw.
                     combo.setCurrentIndex(-1)
+                    combo.setToolTip(label)
                     combo.currentIndexChanged.connect(lambda _=0: self._sync_buttons())
                     question = QLabel(label, page)
                     question.setWordWrap(True)
@@ -243,6 +251,10 @@ class CalibrationWizard:
                     spin.setDecimals(2)
                     spin.setRange(0.0, MAX_BORDER_PT)
                     spin.setSuffix(" pt")
+                    spin.setToolTip(
+                        f"How far in from the {edge.lower()} edge of the printed "
+                        "sheet the printer could print, measured with a ruler."
+                    )
                     form.addRow(f"{edge}:", spin)
                     self.border_spins[edge] = spin
                 layout.addLayout(form)
@@ -318,6 +330,11 @@ class CalibrationWizard:
         self.registration_check = QCheckBox(
             "I read the registration scales on sheet 1", page
         )
+        self.registration_check.setToolTip(
+            "Tick once you have held sheet 1 to the light and read where the "
+            "front's cross lands on the back's two scales. Unticked, the saved "
+            "offsets are kept."
+        )
         layout.addWidget(self.registration_check)
         form = QFormLayout()
         self.registration_spins = {}
@@ -328,6 +345,10 @@ class CalibrationWizard:
             spin.setRange(-float(REGISTRATION_SCALE_MM), float(REGISTRATION_SCALE_MM))
             spin.setSuffix(" mm")
             spin.setEnabled(False)
+            spin.setToolTip(
+                f"The number the cross lands on, on the {'left-right' if axis == 'X' else 'up-down'} "
+                "scale, sign included. It is the correction as read."
+            )
             form.addRow(label, spin)
             self.registration_spins[axis] = spin
         layout.addLayout(form)

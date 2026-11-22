@@ -591,6 +591,10 @@ class PrintDialog:
         printer_row = QHBoxLayout()
         printer_row.addWidget(QLabel("Printer:", self.widget))
         self.printer_combo = QComboBox(self.widget)
+        self.printer_combo.setToolTip(
+            "The printer to send the job to. Its saved calibration, if it has "
+            "one, decides the reload instructions."
+        )
         names = list(printer_names) if printer_names is not None else _available_printer_names()
         self.printer_combo.addItems(names)
         preselected = select_preselected_printer(
@@ -628,6 +632,10 @@ class PrintDialog:
         self.printer_combo.currentTextChanged.connect(self._sync_profile_choices)
 
         self.test_first_checkbox = QCheckBox("Test one sheet first", self.widget)
+        self.test_first_checkbox.setToolTip(
+            "Print the first sheet, both sides, and ask whether it came out "
+            "right before printing the rest."
+        )
         layout.addWidget(self.test_first_checkbox)
 
         # The only actual-size check Deckle offers. Sheets print at actual
@@ -684,7 +692,20 @@ class PrintDialog:
         layout.addWidget(self.status_label)
 
         self.print_button = QPushButton("Print", self.widget)
+        self.print_button.setToolTip(
+            "Start the job. Deckle tells you when to turn the stack over for "
+            "the backs, and can resume if it is interrupted."
+        )
         self.print_button.clicked.connect(self.start_print)
+        # Enter does nothing here, on purpose. With no default button, a
+        # QDialog makes its first auto-default push button the default when
+        # shown -- *Edit profile...* -- so typing a sheet range and pressing
+        # Enter opened the profile editor. Making Print the default instead
+        # would put paper through the printer on a keystroke meant to finish
+        # typing. Both are clicked, never entered.
+        for button in (self.edit_profile_button, self.print_button):
+            button.setAutoDefault(False)
+            button.setDefault(False)
         layout.addWidget(self.print_button)
 
         #: The subset the box names, ``None`` for all of them.

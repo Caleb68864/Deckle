@@ -1073,6 +1073,11 @@ def _crop_control(parity: str, edge: str, index: int) -> Control:
         decimals=3,
         handler="_on_crop_changed",
         error_prefix="Crop",
+        tooltip=(
+            f"How much to cut off the {edge} edge of every {parity}-numbered "
+            "page before it is placed. Odd and even are separate because a "
+            "scan's gutter swaps sides every leaf. 0 cuts nothing."
+        ),
     )
 
 
@@ -1593,6 +1598,7 @@ CONTROLS: tuple[Control, ...] = (
         tab="signature",
         text="Use it",
         handler="_on_apply_suggestion",
+        tooltip="Set the sheets per signature to the suggestion beside it.",
     ),
     Control(
         name="signature_lengths_edit",

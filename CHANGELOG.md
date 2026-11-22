@@ -14,6 +14,11 @@ against a real printer.
 
 ### Added
 
+- **Linux packaging checked end to end.** `./run.sh package` built and audited a Linux
+  bundle and now archives it as a tarball after the audit passes. `./run.sh doctor`
+  no longer waits indefinitely on an unreachable network printer, and it reports the
+  display Qt would use.
+
 - **Save a folding dummy** (File menu): the open book's imposition with each page
   replaced by its number, ready to print on scrap and fold.
 
@@ -145,6 +150,14 @@ against a real printer.
   including a *Measure crop from the ink* button.
 
 ### Fixed
+
+- Every control in the app has a tooltip, including the crop boxes, zoom buttons, card
+  list, calibration wizard and custom paper dialog.
+- Pressing Enter in the Print dialog no longer opens Edit profile... (and does not start
+  printing either).
+
+- The File menu's Alt-key letters no longer clash. Alt+F then P prints, and Import PDF
+  is now Alt+F then I.
 
 - The Binding edge tooltip and `--binding-edge` help say what the setting means under
   signatures (reading direction), not only what it does to the gutter.

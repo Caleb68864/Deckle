@@ -54,7 +54,7 @@ def _bundle_present() -> bool:
 
 requires_bundle = pytest.mark.skipif(
     not _bundle_present(),
-    reason="no built bundle in dist/deckle -- run `run.bat package` first",
+    reason="no built bundle in dist/deckle -- run `run.bat package` (Windows) or `./run.sh package` (Linux) first",
 )
 
 
@@ -138,7 +138,7 @@ def test_both_executables_are_produced():
 
 
 def test_every_script_the_spec_builds_from_exists():
-    """The spec names two entry points. Both have to be real files.
+    r"""The spec names two entry points. Both have to be real files.
 
     This needs no bundle, deliberately -- it is the one check in this file
     that runs in an ordinary `pytest` and therefore on every push.
