@@ -2457,6 +2457,22 @@ class LayoutPanel:
         """The current composite worker, for ``stop_background_work``."""
         return self._composite_worker
 
+    def cancel_background_work(self) -> None:
+        """Cancel the ink measurement, for ``stop_background_work``.
+
+        The composite is cancelled through :attr:`_worker`. The measurement
+        behind *Measure crop from the ink* is a ``workers.Job`` instead, and
+        it rasterises every page: closing the window during one on a long
+        scan waited out the timeout and then left a thread inside pdfium
+        running into interpreter teardown, the crash shutdown exists to
+        prevent. Its result is dropped, as any cancelled job's is.
+
+        :returns: nothing.
+        """
+        job = self._auto_crop_job
+        if job is not None:
+            job.cancel.set()
+
     def _schedule_composite(self) -> None:
         """Redraw the composite shortly, cancelling any pending redraw.
 
@@ -3167,7 +3183,7 @@ class LayoutPanel:
             self.status_message.emit(f"Could not measure the ink: {exc}")
 
         self._auto_crop_job = self._job_runner(
-            lambda _cancel: auto_crop_insets(pages, margin_pt=margin_pt),
+            lambda cancel: auto_crop_insets(pages, margin_pt=margin_pt, cancel=cancel),
             lambda insets: self._on_auto_crop_done(state, pages, insets),
             on_error,
             self.widget,

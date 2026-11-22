@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- Closing the window while *Measure crop from the ink* is running stops the measurement
+  instead of leaving it rasterising pages while the app shuts down.
+
 - The page list's Rotate, Skip and Remove buttons are greyed out with nothing selected,
   and Skip range with no pages.
 
