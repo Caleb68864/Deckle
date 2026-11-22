@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- The card layout panel has a tooltip on every control, offers centimetres like the book
+  layout panel, and its labels match the rest of the app.
+
 - The card list's Remove, Move and Rotate buttons are greyed out when they would do nothing.
 
 - Moving through the card layout boxes without changing them no longer adds undo steps,

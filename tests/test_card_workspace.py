@@ -175,3 +175,32 @@ def test_a_move_keeps_the_buttons_true_to_the_new_row(app):
 
     assert view.table.selectionModel().selectedRows()[0].row() == 2
     assert not view.down_button.isEnabled() and view.up_button.isEnabled()
+
+
+# -- BH7: the card panel explains itself, and offers cm --------------------
+
+
+def test_every_card_layout_control_has_a_tooltip(app):
+    from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox
+
+    state = AppState(fixture_project(), project_path="/tmp/card-ui.deckle", timer_factory=Timer)
+    panel = CardLayoutPanel(state, on_change=lambda: None)
+
+    controls = [w for kind in (QCheckBox, QComboBox, QDoubleSpinBox)
+                for w in panel.widget.findChildren(kind)]
+    assert len(controls) >= 13
+    assert [w for w in controls if not w.toolTip()] == []
+
+
+def test_card_lengths_can_be_read_in_centimetres(app):
+    state = AppState(fixture_project(), project_path="/tmp/card-ui.deckle", timer_factory=Timer)
+    panel = CardLayoutPanel(state, on_change=lambda: None)
+
+    panel.unit.setCurrentText("cm")
+
+    assert panel.unit.currentText() == "cm"
+    assert panel.width_pt.value() == pytest.approx(6.35)
+    assert panel._labels["width_pt"][0].text() == "Finished width (cm):"
+    panel.width_pt.setValue(7.0)
+    panel.width_pt.editingFinished.emit()
+    assert state.project.card_deck.settings.width_pt == pytest.approx(7.0 * 72 / 2.54)
