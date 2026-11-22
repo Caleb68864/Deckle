@@ -134,7 +134,7 @@ def test_a_blank_is_named_in_the_page_list():
         view.list_widget.item(i).text() for i in range(view.list_widget.count())
     ]
     assert labels[0] == "page 1"
-    assert labels[1] == "page 2 _blank"
+    assert labels[1] == "page 2 (blank page)"
     assert labels[2] == "page 3"
 
 
@@ -151,7 +151,7 @@ def test_a_skipped_blank_says_both_things():
     view = ArrangeView(AppState(project), choose_blank_position=lambda c: None)
     view.refresh()
 
-    assert view.list_widget.item(0).text() == "page 1 _blank (skipped)"
+    assert view.list_widget.item(0).text() == "page 1 (blank page, skipped)"
 
 
 # -- the marker itself ---------------------------------------------------
@@ -331,3 +331,19 @@ def test_a_blank_gets_a_white_thumbnail_rather_than_failing_the_window(narrow_bo
         "thumbnail -- indistinguishable from one still loading"
     )
     assert set(blank.rgba) == {255}, "a blank sheet should look blank, not black"
+
+
+def test_no_page_label_reads_like_an_identifier():
+    """"page 2 _blank" leaked a code-ish token into the page list."""
+    from dataclasses import replace
+
+    from deckle.app.views.arrange_view import ArrangeView
+
+    project = insert_blank(_project(3), 1)
+    project = replace(project, pages=[replace(p, skipped=(i == 1)) for i, p in enumerate(project.pages)])
+    view = ArrangeView(AppState(project), choose_blank_position=lambda choices: None)
+    view.refresh()
+
+    labels = [view.list_widget.item(i).text() for i in range(view.list_widget.count())]
+    assert labels[1] == "page 2 (blank page, skipped)"
+    assert not any("_" in label for label in labels)

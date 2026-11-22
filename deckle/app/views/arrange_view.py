@@ -779,14 +779,14 @@ class ArrangeView:
         try:
             self.list_widget.clear()
             for i, page in enumerate(self.state.project.pages):
-                label = f"page {i + 1}"
-                if is_blank_page(page):
-                    # Named, not just empty-looking: a blank thumbnail and
-                    # a missing thumbnail look identical while one is still
-                    # rendering, and only one of them is deliberate.
-                    label += " _blank"
-                if page.skipped:
-                    label += " (skipped)"
+                # Named, not just empty-looking: a blank thumbnail and a
+                # missing thumbnail look identical while one is still
+                # rendering, and only one of them is deliberate. It read
+                # "page 2 _blank", like an identifier leaking into the UI.
+                notes = (["blank page"] if is_blank_page(page) else []) + (
+                    ["skipped"] if page.skipped else []
+                )
+                label = f"page {i + 1}" + (f" ({', '.join(notes)})" if notes else "")
                 item = QListWidgetItem(label)
                 # Its identity, so the order after a drop can be read back.
                 item.setData(_page_index_role(), i)

@@ -151,6 +151,12 @@ against a real printer.
 
 ### Fixed
 
+- An inserted blank shows in the page list as "page 2 (blank page)" rather than
+  "page 2 _blank".
+
+- Card artwork more than 14400 pixels on a side is scaled to fit a PDF page instead of
+  being stored at a tenth of its real size.
+
 - Every control in the app has a tooltip, including the crop boxes, zoom buttons, card
   list, calibration wizard and custom paper dialog.
 - Pressing Enter in the Print dialog no longer opens Edit profile... (and does not start
