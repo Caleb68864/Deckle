@@ -140,6 +140,9 @@ against a real printer.
 
 ### Fixed
 
+- The Binding edge tooltip and `--binding-edge` help say what the setting means under
+  signatures (reading direction), not only what it does to the gutter.
+
 - An image too large for the image library to open safely is reported by name, with
   what to do, instead of ending the command with a traceback.
 

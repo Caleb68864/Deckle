@@ -1472,3 +1472,9 @@ One sentence: *"the spec tree is a dated record — banner it and check the path
 - The one departure from the spec: `landscape_imageable_unverified` fires only for a measured profile (`calibrated_at` set). A built-in preset's flat 18pt is a guess in both orientations; flagging every uncalibrated folio job would make the badge noise.
 - Not done: the calibration wizard does not measure the landscape border, and nothing here says what any real printer's border is. Both need paper (F4).
 - Commit: on `feat/decided-items-2026-11-21`.
+
+## 2026-11-21 — F12 §D: `binding_edge` stays one field; its two meanings are said aloud (decided by agent; owner may revisit)
+- Decision: no `reading_direction` split and no `.deckle` migration. The conservative option of the two the design offered. It keeps every saved project byte-identical and leaves the split available later.
+- What the design worried about was confusion, and the confusion was in the wording: the app's tooltip claimed the field always moves the gutter, and the CLI's help named the gutter only. Under folio the fold is the spine and the field sets reading direction. Both now give both meanings.
+- Watch: F7 (quarto) and F8 (French fold) are the schemes that would overload it further, and both wait on F4. Revisit then.
+- Commit: on `feat/decided-items-2026-11-21`.

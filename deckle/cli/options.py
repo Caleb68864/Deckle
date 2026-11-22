@@ -156,7 +156,10 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--binding-edge", choices=["left", "right"], default="left",
-        help="which edge the gutter shifts toward (default: left)",
+        help="which edge the book is bound on (default: left). One page per "
+        "side, the gutter shifts toward it; under --fold-scheme folio the fold "
+        "is the spine, and it sets reading direction: left reads left to "
+        "right, right reads right to left",
     )
     parser.add_argument(
         "--slack-to", dest="slack_to", choices=["gutter", "outer", "split"],

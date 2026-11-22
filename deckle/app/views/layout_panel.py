@@ -1488,8 +1488,13 @@ CONTROLS: tuple[Control, ...] = (
         tooltip=(
             "Which edge the book is bound on. Left is conventional for "
             "left-to-right languages; right suits Arabic, Hebrew, or "
-            "Japanese tate-gaki. This mirrors which side the gutter "
-            "falls on for every page."
+            "Japanese tate-gaki.\n\n"
+            "One page per side: it mirrors which side the gutter falls on "
+            "for every page.\n\n"
+            "Signatures (folio): the fold is the spine, so there is no "
+            "gutter to move. Here it decides which way the book reads -- "
+            "left-bound opens left to right, right-bound right to left -- "
+            "and so which half of each sheet every page lands on."
         ),
     ),
     Control(
