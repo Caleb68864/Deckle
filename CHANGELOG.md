@@ -135,6 +135,9 @@ against a real printer.
 
 ### Fixed
 
+- A project file missing its paper, gutter or binding edge is reported as an incomplete
+  project, naming the field, instead of crashing the command line with a traceback.
+
 - Importing the same image folder again reuses the stored PDF. The stored file's name
   depended on the time of the import, so each later import kept another full copy.
   Copies already in the store are left alone.

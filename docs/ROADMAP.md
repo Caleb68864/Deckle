@@ -427,6 +427,16 @@ against the pre-fix tree and failed there.
 
 ---
 
+## 5b. Bug hunt, 2026-11-21
+
+Branch `fix/bug-hunt-2026-11-21`, off `main` after F14 merged (PR #7). With every open row above gated on paper, a printer or the owner, a hunt for defects an agent can prove: layout and card math at the extremes, damaged and odd PDFs, project load round-trips (fuzzed with hypothesis), off-thread jobs, and CLI argument validation. Each fix has a test run against the pre-fix tree, where it failed.
+
+| ID | Finding | Status |
+|---|---|---|
+| **BH1** ✅ | **A `.deckle` whose `layout` lacked `paper`, `gutter_pt` or `binding_edge` crashed the CLI with a traceback.** Found by fuzzing `load_project` with hypothesis over every key of a real project (3000 mutations): every other change raised `OSError`, `ValueError` or `KeyError`, the three callers answer. These three fields have no default, so the dataclass constructor raised `TypeError` and `deckle-cli info` printed it raw. `layout_from_dict` now raises `KeyError('layout.<field>')`, so the CLI says *"it is missing 'layout.binding_edge' and so is not a complete Deckle project"*, as it does for a missing `pages`. `tests/test_project_file_shape.py::test_a_layout_missing_a_required_field_says_which`, `::test_the_cli_reports_a_missing_layout_field_without_a_traceback` (6 cases, all fail before). | Fixed |
+
+---
+
 ## 6. A suggested order
 
 Not a commitment; a starting point for the conversation.

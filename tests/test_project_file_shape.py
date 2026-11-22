@@ -199,3 +199,46 @@ def test_a_well_formed_project_is_unaffected(tmp_path):
 
     assert project.pages == ()
     assert project.layout.paper == (792.0, 612.0)
+
+
+# -- a layout missing a field that has no default ---------------------------
+#
+# Found by fuzzing `load_project` with hypothesis (2026-11-21): every other
+# mutation of a real project raised OSError, ValueError or KeyError, the
+# three the callers answer. Deleting `paper`, `gutter_pt` or `binding_edge`
+# from `layout` reached the dataclass constructor and came out as a
+# TypeError, which `deckle-cli info` printed as a traceback.
+
+REQUIRED_LAYOUT_FIELDS = ["paper", "gutter_pt", "binding_edge"]
+
+
+def _project_without(field: str) -> str:
+    layout = {"paper": [792.0, 612.0], "gutter_pt": 36.0, "binding_edge": "left"}
+    del layout[field]
+    return json.dumps({"version": 1, "pages": [], "layout": layout, "printer": None})
+
+
+@pytest.mark.parametrize("field", REQUIRED_LAYOUT_FIELDS)
+def test_a_layout_missing_a_required_field_says_which(tmp_path, field):
+    path = _write(tmp_path, _project_without(field))
+
+    with pytest.raises(KeyError) as caught:
+        load_project(path, check_sources=False)
+
+    assert f"layout.{field}" in str(caught.value)
+
+
+@pytest.mark.parametrize("field", REQUIRED_LAYOUT_FIELDS)
+def test_the_cli_reports_a_missing_layout_field_without_a_traceback(tmp_path, field):
+    path = _write(tmp_path, _project_without(field))
+
+    result = subprocess.run(
+        [sys.executable, "-m", "deckle.cli", "info", path],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        cwd=REPO,
+    )
+
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    assert f"layout.{field}" in result.stderr
+    assert "not a complete Deckle project" in result.stderr

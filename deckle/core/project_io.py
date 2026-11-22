@@ -381,6 +381,8 @@ def layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
     :param data: the stored ``layout`` object.
     :returns: the settings.
     :raises ValueError: a stored value does not satisfy its field's type.
+    :raises KeyError: a field with no default is absent -- not a complete
+        project, the same answer as a missing ``pages``.
     """
     known = {f.name for f in dataclasses.fields(LayoutSettings)}
     kwargs = {k: v for k, v in data.items() if k in known}
@@ -399,6 +401,20 @@ def layout_from_dict(data: dict[str, Any]) -> LayoutSettings:
     # saved by any earlier build would simply not open. Mapped rather than
     # dropped: the two meant the same thing, so this loses nothing, which
     # is exactly when a silent migration is allowed.
+    # A field with no default is not drift a missing key can be forgiven
+    # for: there is no value to fall back to. Left to the constructor it
+    # arrived as a `TypeError` ("__init__() missing 1 required positional
+    # argument"), which the CLI printed as a traceback. It is the same
+    # problem as a missing `pages` -- not a complete Deckle project -- so it
+    # raises the same `KeyError` every caller already answers.
+    required = [
+        f.name for f in dataclasses.fields(LayoutSettings)
+        if f.default is dataclasses.MISSING
+        and f.default_factory is dataclasses.MISSING
+        and f.name not in kwargs
+    ]
+    if required:
+        raise KeyError(", ".join(repr(f"layout.{name}") for name in required))
     if kwargs.get("landscape_policy") == "letterbox":
         kwargs["landscape_policy"] = "scale"
 
