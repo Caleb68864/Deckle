@@ -574,3 +574,26 @@ def test_recovered_work_can_be_declared_unsaved():
     assert state.dirty is False
     state.mark_unsaved()
     assert state.dirty is True
+
+
+# -- BH5: a change that changes nothing is not a step ---------------------
+
+
+def test_a_mutation_that_changes_nothing_leaves_both_stacks_and_the_save_alone():
+    """Every view commits through `mutate`, and some commit on focus-out.
+    An equal project pushed an undo step, wiped redo, and -- `dirty` being
+    identity -- marked a saved project unsaved."""
+    from dataclasses import replace
+
+    state = AppState(_make_project(), timer_factory=_ImmediateTimer)
+    state.mutate(lambda p: replace(p, layout=replace(p.layout, gutter_pt=9.0)))
+    state.undo()
+    state.mark_saved()
+    saved = state.project
+
+    state.mutate(lambda p: replace(p, layout=replace(p.layout)))
+
+    assert state.project is saved
+    assert not state.dirty
+    assert not state.can_undo
+    assert state.can_redo

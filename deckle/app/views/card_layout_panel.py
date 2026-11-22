@@ -5,6 +5,39 @@ from deckle.core.models import CardSettings
 from deckle.core.card_layout import card_grid_summary
 
 
+#: Points per unit, in the order the unit list offers them -- the same four
+#: units the book layout panel offers, so cm is not a book-only unit.
+UNIT_FACTORS = {"pt": 1.0, "mm": 72.0 / 25.4, "cm": 72.0 / 2.54, "in": 72.0}
+
+#: What each control is for. Every control has one: the panel's labels are
+#: terse ("Black beyond cut"), and the only explanation it gave was one
+#: hint line under the border boxes.
+TOOLTIPS = {
+    "unit": "The unit every length here is typed in. Sizes are stored in points, so "
+            "switching re-displays the same card -- it never changes it.",
+    "paper": "The sheet the cards are printed on. The grid is centred on it.",
+    "width_pt": "The card's finished width, after cutting -- 2.5in (180pt) for a poker card.",
+    "height_pt": "The card's finished height, after cutting -- 3.5in (252pt) for a poker card.",
+    "margin_x_pt": "Kept clear at the left and right edges of the sheet, where most "
+                   "printers cannot print.",
+    "margin_y_pt": "Kept clear at the top and bottom edges of the sheet, where most "
+                   "printers cannot print.",
+    "gap_x_pt": "Space between neighbouring cards across the sheet. 0 shares one cut "
+                "between them.",
+    "gap_y_pt": "Space between neighbouring cards down the sheet. 0 shares one cut "
+                "between them.",
+    "fit": "Fit entire image shows all of the artwork and may leave bands at two edges. "
+           "Fill (crop) covers the card and trims what overhangs.",
+    "border": "Draw a black frame around every card face, inside and beyond the cut, so "
+              "a cut that wanders slightly still lands on black.",
+    "border_width_pt": "How far the black frame reaches inside the cut line. The artwork "
+                       "is fitted inside it.",
+    "bleed_pt": "How far the black reaches beyond the cut line, to cover a cut or a "
+                "back that lands slightly off.",
+    "cut_marks": "Short lines just outside each card's corners, to cut along.",
+}
+
+
 class CardLayoutPanel:
     def __init__(self,state,parent=None,on_change=None):
         from PySide6.QtWidgets import (QCheckBox,QComboBox,QDoubleSpinBox,QFormLayout,QLabel,QWidget)
@@ -13,28 +46,42 @@ class CardLayoutPanel:
         self.widget=QWidget(parent); form=QFormLayout(self.widget); d=state.project.card_deck.settings if state.project.card_deck else CardSettings()
         self.error=QLabel(""); self.error.setWordWrap(True); self.error.setStyleSheet("color: #b00020"); form.addRow(self.error)
         def number(label,key,value,minimum=0.0,maximum=5000.0):
-            box=QDoubleSpinBox(self.widget); box.setRange(minimum,maximum); box.setDecimals(3); box.setSingleStep(1); box.setValue(value); box.setSuffix(" pt"); box.editingFinished.connect(lambda k=key,b=box:self.set_value(k,b.value()*self._factor())); label_widget=QLabel(label,self.widget); form.addRow(label_widget,box); setattr(self,key,box); self._boxes[key]=box; self._labels[key]=(label_widget,label)
-        self.unit=QComboBox(); self.unit.addItems(["pt","mm","in"]); self.unit.currentTextChanged.connect(self._unit_changed); form.addRow("Length units",self.unit)
-        self.paper=QComboBox(); self.paper.addItem("Letter portrait",(612.0,792.0)); self.paper.addItem("Letter landscape",(792.0,612.0)); self.paper.addItem("A4 portrait",(595.275590551,841.88976378)); self.paper.addItem("A4 landscape",(841.88976378,595.275590551)); self.paper.currentIndexChanged.connect(self.set_paper); form.addRow("Sheet",self.paper)
-        number("Finished width (pt)","width_pt",d.width_pt,0.001); number("Finished height (pt)","height_pt",d.height_pt,0.001)
-        number("Side margins (pt)","margin_x_pt",d.margin_x_pt); number("Top/bottom margins (pt)","margin_y_pt",d.margin_y_pt)
-        number("Horizontal gap (pt)","gap_x_pt",d.gap_x_pt); number("Vertical gap (pt)","gap_y_pt",d.gap_y_pt)
-        self.fit=QComboBox(); self.fit.addItem("Fit entire image","contain"); self.fit.addItem("Fill (crop)","cover"); self.fit.setCurrentIndex(0 if d.fit=="contain" else 1); self.fit.currentIndexChanged.connect(lambda:self.set_value("fit",self.fit.currentData())); form.addRow("Image fit",self.fit)
-        self.border=QCheckBox("Black border"); self.border.setChecked(d.border_enabled); self.border.toggled.connect(lambda v:self.set_value("border_enabled",v)); form.addRow(self.border)
-        number("Inside cut border (pt)","border_width_pt",d.border_width_pt); number("Black beyond cut (pt)","bleed_pt",d.bleed_pt)
-        self.cut_marks=QCheckBox("Cut marks"); self.cut_marks.setChecked(d.cut_marks); self.cut_marks.toggled.connect(lambda v:self.set_value("cut_marks",v)); form.addRow(self.cut_marks)
+            box=QDoubleSpinBox(self.widget); box.setToolTip(TOOLTIPS[key]); box.setRange(minimum,maximum); box.setDecimals(3); box.setSingleStep(1); box.setValue(value); box.setSuffix(" pt"); box.editingFinished.connect(lambda k=key,b=box:self._commit(k,b)); label_widget=QLabel(label,self.widget); form.addRow(label_widget,box); setattr(self,key,box); self._boxes[key]=box; self._labels[key]=(label_widget,label)
+        self.unit=QComboBox(); self.unit.addItems(list(UNIT_FACTORS)); self.unit.setToolTip(TOOLTIPS["unit"]); self.unit.currentTextChanged.connect(self._unit_changed); form.addRow("Length units:",self.unit)
+        self.paper=QComboBox(); self.paper.addItem("Letter portrait",(612.0,792.0)); self.paper.addItem("Letter landscape",(792.0,612.0)); self.paper.addItem("A4 portrait",(595.275590551,841.88976378)); self.paper.addItem("A4 landscape",(841.88976378,595.275590551)); self.paper.setToolTip(TOOLTIPS["paper"]); self.paper.currentIndexChanged.connect(self.set_paper); form.addRow("Sheet:",self.paper)
+        number("Finished width (pt):","width_pt",d.width_pt,0.001); number("Finished height (pt):","height_pt",d.height_pt,0.001)
+        number("Side margins (pt):","margin_x_pt",d.margin_x_pt); number("Top/bottom margins (pt):","margin_y_pt",d.margin_y_pt)
+        number("Horizontal gap (pt):","gap_x_pt",d.gap_x_pt); number("Vertical gap (pt):","gap_y_pt",d.gap_y_pt)
+        self.fit=QComboBox(); self.fit.addItem("Fit entire image","contain"); self.fit.addItem("Fill (crop)","cover"); self.fit.setCurrentIndex(0 if d.fit=="contain" else 1); self.fit.setToolTip(TOOLTIPS["fit"]); self.fit.currentIndexChanged.connect(lambda:self.set_value("fit",self.fit.currentData())); form.addRow("Image fit:",self.fit)
+        self.border=QCheckBox("Black border"); self.border.setToolTip(TOOLTIPS["border"]); self.border.setChecked(d.border_enabled); self.border.toggled.connect(lambda v:self.set_value("border_enabled",v)); form.addRow(self.border)
+        number("Inside cut border (pt):","border_width_pt",d.border_width_pt); number("Black beyond cut (pt):","bleed_pt",d.bleed_pt)
+        self.cut_marks=QCheckBox("Cut marks"); self.cut_marks.setToolTip(TOOLTIPS["cut_marks"]); self.cut_marks.setChecked(d.cut_marks); self.cut_marks.toggled.connect(lambda v:self.set_value("cut_marks",v)); form.addRow(self.cut_marks)
         self.hint=QLabel("Black beyond the cut helps cover small front/back shifts. More allowance may fit fewer cards on a sheet."); self.hint.setWordWrap(True); form.addRow(self.hint)
-        self.capacity=QLabel(""); form.addRow("Sheet capacity",self.capacity)
+        self.capacity=QLabel(""); form.addRow("Sheet capacity:",self.capacity)
         self.refresh()
 
     def _factor(self):
-        return {"pt":1.0,"mm":72.0/25.4,"in":72.0}[self.unit.currentText()]
+        return UNIT_FACTORS[self.unit.currentText()]
 
     def _unit_changed(self,unit):
         factor=self._factor()
         for key,box in self._boxes.items():
             box.blockSignals(True); box.setValue(getattr(self.state.project.card_deck.settings,key)/factor); box.setSuffix(" "+unit); box.blockSignals(False)
             label,original=self._labels[key]; label.setText(original.replace("(pt)",f"({unit})"))
+
+    def _commit(self,key,box):
+        """Apply a box the user has left, if they changed what it shows.
+
+        Qt fires ``editingFinished`` when focus merely leaves a box, so
+        tabbing through the panel used to re-apply every value. In a unit
+        other than points that was not even harmless: the box holds the
+        stored length rounded to three decimals, so leaving a 100pt card
+        width in mm wrote back 35.278mm, which is 100.0006pt.
+        """
+        stored=getattr(self.state.project.card_deck.settings,key)
+        if round(stored/self._factor(),box.decimals())==box.value():
+            return
+        self.set_value(key,box.value()*self._factor())
 
     def set_value(self,key,value):
         try:

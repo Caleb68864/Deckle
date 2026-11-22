@@ -179,6 +179,7 @@ class PrinterProfile:
         :returns: the profile.
         :raises OSError: no profile is stored for that printer.
         :raises json.JSONDecodeError: the stored file is not valid JSON.
+        :raises ValueError: the stored file is JSON but not an object.
         :raises deckle.core.schema.StoredValueError: a stored value is not
             one this build can honour, or a field this build cannot
             supply for itself is absent. A ``ValueError``, so a caller
@@ -203,6 +204,18 @@ class PrinterProfile:
             if legacy.exists():
                 path = legacy
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            # Valid JSON that is not an object -- `null`, `[]`, a bare
+            # string -- went straight to `data.get` and raised
+            # `AttributeError`, which no caller catches: `profile list`
+            # printed a traceback and the Print dialog would not open.
+            # A `ValueError` is what every caller already answers for a
+            # profile it cannot read.
+            raise ValueError(
+                f"printer profile {path} holds {type(data).__name__ if data is not None else 'null'} "
+                "rather than a profile object, so it cannot be read. Delete it, "
+                "or recalibrate to write a new one"
+            )
         _warn_if_newer_profile(name, data.get("version"))
         known = {field.name for field in dataclasses.fields(cls)}
         kwargs = {key: value for key, value in data.items() if key in known}

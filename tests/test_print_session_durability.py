@@ -258,3 +258,37 @@ def test_printer_and_save_failures_are_both_said(torn_write):
         assert session._save() is False
     assert session.last_error.startswith("the printer went away. Also:")
     assert "resume point" in session.last_error
+
+
+# -- BH8: one mistyped field in one file broke the whole listing ----------
+
+
+def _state_file(name: str, **overrides) -> None:
+    import os
+
+    data = {"session_id": name, "printer_name": "P", "started_at": 1000.0,
+            "pass_index": 0, "sheet_cursor": 0}
+    data.update(overrides)
+    directory = os.environ["DECKLE_SESSION_STATE_DIR"]
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, f"{name}.json"), "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+@pytest.mark.parametrize("bad", [
+    pytest.param({"started_at": "yesterday"}, id="started-at-string"),
+    pytest.param({"started_at": None}, id="started-at-null"),
+    pytest.param({"pass_index": "0"}, id="pass-index-string"),
+    pytest.param({"sheet_cursor": True}, id="cursor-boolean"),
+    pytest.param({"session_id": 7}, id="id-number"),
+])
+def test_a_mistyped_state_file_is_skipped_not_raised(bad):
+    """`list_resumable` promises never to raise, and the print dialog calls
+    it with no `try`. The keys were checked; the types were not, and the
+    newest-first sort after the loop compared a string with a float."""
+    _state_file("good", started_at=2000.0)
+    _state_file("bad", **bad)
+
+    summaries = PrintSession.list_resumable()
+
+    assert [s.session_id for s in summaries] == ["good"]

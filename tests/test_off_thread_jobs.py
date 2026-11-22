@@ -681,3 +681,74 @@ def test_the_real_window_opens_a_project_through_a_real_thread(tmp_path, probe_e
         "pages": 2,
         "says_opened": True,
     }
+
+
+# -- BH11: closing during "Measure crop from the ink" ----------------------
+
+
+def _scan_pages(n):
+    from deckle.core.models import SourcePage, SourceRef
+
+    return [
+        SourcePage(
+            ref=SourceRef(path="b.pdf", page_index=i, sha256="a" * 64,
+                          width_pt=400.0, height_pt=600.0),
+            rotate_deg=0, skipped=False,
+        )
+        for i in range(n)
+    ]
+
+
+def test_the_measurement_stops_at_the_next_page_once_cancelled(monkeypatch):
+    """It rasterises every page and had no way to be told to stop."""
+    from deckle.core import render
+
+    cancel = threading.Event()
+    measured = []
+
+    def _bbox(ref, dpi):
+        measured.append(ref.page_index)
+        if len(measured) == 3:
+            cancel.set()
+        return (10.0, 10.0, 390.0, 590.0)
+
+    monkeypatch.setattr(render, "ink_bbox", _bbox)
+
+    result = render.auto_crop_insets(_scan_pages(300), cancel=cancel)
+
+    assert measured == [0, 1, 2]
+    assert result == (None, None)
+
+
+def test_the_panel_hands_the_job_its_cancel_and_shutdown_sets_it(qapp, monkeypatch):
+    from deckle.app.shutdown import stop_background_work
+    from deckle.core import render
+
+    seen = {}
+
+    def _measure(pages, **kwargs):
+        seen.update(kwargs)
+        return (1.0, 2.0, 3.0, 4.0), None
+
+    held = []
+
+    def _hold(fn, on_done, on_error, parent):
+        job = Job(fn)
+        held.append(job)
+        return job
+
+    panel = _panel(qapp, monkeypatch, runner=_hold)
+    monkeypatch.setattr(render, "auto_crop_insets", _measure)
+    panel._on_auto_crop()
+    job = held[0]
+
+    stop_background_work((panel,), 10)
+
+    assert job.cancel.is_set()
+    job.run()  # a cancelled job does not call fn at all
+    assert seen == {}
+
+    # And when it does run, the event it gets is the job's own.
+    live = Job(job._fn)
+    live.run()
+    assert seen["cancel"] is live.cancel

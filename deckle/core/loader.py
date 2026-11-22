@@ -657,6 +657,17 @@ def _image_dpi_or_raise(image_path: str) -> tuple[float, float] | None:
     """
     try:
         return _image_dpi(image_path)
+    except Image.DecompressionBombError as exc:
+        # Not an OSError, so it used to escape as a traceback. It is not
+        # damage either: Pillow refuses to open anything over twice its
+        # pixel limit (about 179 million) in case it was built to exhaust
+        # memory, and a very large scan trips it honestly.
+        raise CorruptImageError(
+            image_path,
+            f"cannot read the image {image_path}: it is too large to open "
+            f"safely ({exc}). Scale it down, or scan at a lower resolution, "
+            "then import the folder again.",
+        ) from exc
     except OSError as exc:
         # Covers Pillow's UnidentifiedImageError (an OSError subclass) as
         # well as genuine read failures.

@@ -80,7 +80,8 @@ def _add_output_arg(
     :param help_text: the command's own wording, verbatim.
     """
     parser.add_argument(
-        "-o", "--output", required=required, default=None, help=help_text
+        "-o", "--output", required=required, default=None, help=help_text,
+        type=values._parse_output_path,
     )
 
 
@@ -234,7 +235,7 @@ def _add_layout_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
-        "--sewing-stations", type=int, default=3,
+        "--sewing-stations", type=values._parse_station_count, default=3,
         help="number of sewing station marks per signature, under --fold-scheme folio (default: 3)",
     )
     parser.add_argument(
@@ -492,7 +493,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     preview_parser.add_argument(
-        "--dpi", type=int, default=72,
+        "--dpi", type=values._parse_dpi, default=72,
         help="rasterisation resolution (default: 72)",
     )
     preview_parser.add_argument(

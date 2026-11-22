@@ -562,6 +562,7 @@ def auto_crop_insets(
     margin_pt: float = 0.0,
     dpi: int = 36,
     split_parity: bool = True,
+    cancel: threading.Event | None = None,
 ) -> tuple[Insets | None, Insets | None]:
     """Derive crop insets from where the ink actually is.
 
@@ -596,6 +597,12 @@ def auto_crop_insets(
         alternates sides, so one answer cannot fit both. ``False``
         measures the document as a whole and returns it as the odd value
         with ``None`` for even.
+    :param cancel: optional event, checked before each page is
+        rasterised. A set event returns ``(None, None)`` at once -- the
+        "nothing measured" answer, which a caller dropping a cancelled
+        result never reads. Without it, closing the window during a
+        measurement of a long scan could only wait, and then abandon a
+        thread still inside pdfium to interpreter teardown.
     :returns: ``(odd, even)`` insets, either of which is ``None`` when
         nothing was measurable -- a document with no ink is not cropped,
         because "content touches every edge" and "there is no content" are
@@ -603,6 +610,8 @@ def auto_crop_insets(
     """
     groups: dict[bool, list[Insets]] = {True: [], False: []}
     for page in pages:
+        if cancel is not None and cancel.is_set():
+            return None, None
         if page.skipped or is_blank_page(page):
             continue
         ref = page.ref

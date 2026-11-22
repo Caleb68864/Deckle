@@ -682,10 +682,20 @@ class AppState:
         :raises Exception: whatever ``fn`` raises, unchanged and with no
             snapshot pushed -- a mutation that fails must not leave a
             half-applied state on the undo stack.
+
+        **A change that changes nothing is not a step.** When ``fn``
+        returns a project equal to the current one, the current object is
+        kept and neither stack is touched. Card settings commit on
+        ``editingFinished``, which Qt also fires when focus merely leaves a
+        box, so tabbing through the card panel pushed an undo step per box,
+        wiped the redo stack, and -- because :attr:`dirty` is identity --
+        marked an untouched project unsaved, so closing asked to save it.
         """
         with self._lock:
             previous = self._project
             new_project = fn(previous)
+            if new_project is previous or new_project == previous:
+                return previous
             self._undo_stack.append(previous)
             self._redo_stack.clear()
             self._project = new_project

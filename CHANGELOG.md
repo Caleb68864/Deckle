@@ -135,6 +135,42 @@ against a real printer.
 
 ### Fixed
 
+- An image too large for the image library to open safely is reported by name, with
+  what to do, instead of ending the command with a traceback.
+
+- The command line says a negative length is negative, rather than that it is not a number,
+  and refuses an empty `-o` by name instead of reporting a device error.
+
+- Closing the window while *Measure crop from the ink* is running stops the measurement
+  instead of leaving it rasterising pages while the app shuts down.
+
+- The page list's Rotate, Skip and Remove buttons are greyed out with nothing selected,
+  and Skip range with no pages.
+
+- A printer profile file that is not a profile (an empty list, `null`) is reported as
+  unreadable instead of crashing `profile list` and the Print dialog.
+
+- A damaged print-resume file with a mistyped field is skipped, instead of stopping the
+  Print dialog from opening.
+
+- The card layout panel has a tooltip on every control, offers centimetres like the book
+  layout panel, and its labels match the rest of the app.
+
+- The card list's Remove, Move and Rotate buttons are greyed out when they would do nothing.
+
+- Moving through the card layout boxes without changing them no longer adds undo steps,
+  clears redo, marks the project unsaved, or (in mm and inches) nudges the stored size.
+
+- `crop-preview --dpi` takes 1 to 600 and says so, rather than passing 0 or a negative
+  to the renderer for a confusing error, or a huge value that ran out of memory.
+- `--sewing-stations` refuses a negative count instead of quietly dropping the marks.
+
+- A card size so small that thousands fit on a sheet is refused with a message
+  instead of freezing the app while every empty slot is planned.
+
+- A project file missing its paper, gutter or binding edge is reported as an incomplete
+  project, naming the field, instead of crashing the command line with a traceback.
+
 - Importing the same image folder again reuses the stored PDF. The stored file's name
   depended on the time of the import, so each later import kept another full copy.
   Copies already in the store are left alone.

@@ -440,3 +440,30 @@ def test_imageable_area_is_stored_in_the_order_the_profile_uses(config_home, cap
     assert PrinterProfile.load("Office LaserJet").imageable_area_pt == (
         1.0, 2.0, 3.0, 4.0
     )
+
+
+# -- BH9: a profile file that is JSON but not an object -------------------
+
+
+@pytest.mark.parametrize("body", ["null", "[]", '"a string"', "3"])
+def test_a_profile_file_that_is_not_an_object_is_a_readable_failure(config_home, body):
+    """Found fuzzing `PrinterProfile.load` with hypothesis: `data.get` on a
+    list or `None` raised AttributeError, which no caller catches."""
+    _create("Office")
+    saved_profiles()["Office"].write_text(body, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a profile object|rather than a profile object"):
+        PrinterProfile.load("Office")
+
+
+@pytest.mark.parametrize("command", [["profile", "list"], ["profile", "show", "Office"]])
+def test_the_cli_reports_it_instead_of_a_traceback(config_home, capsys, command):
+    _create("Office")
+    saved_profiles()["Office"].write_text("null", encoding="utf-8")
+
+    code = main(command)
+
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
+    assert "rather than a profile object" in out.out + out.err
+    assert code in (0, 1)
