@@ -470,6 +470,12 @@ The numbers go on a synthetic *source* which then runs through the ordinary
 import-impose-export path, so what you are checking is the real pipeline and
 not a parallel "test mode" that could disagree with it.
 
+In the app, **File > Save a folding dummy...** does both steps for the book you
+have open: the same page list (blanks stay blank, skipped pages stay skipped)
+and the same layout, with each page replaced by its number, imposed and saved
+ready to print. Page rotations and crops are left out, since they were set for
+your scan and would turn or cut the numbers.
+
 For reference, the imposed faces of an eight-page folio come out:
 
 ```

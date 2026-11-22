@@ -136,6 +136,7 @@ MENUS: tuple[Menu, ...] = (
             MenuItem("&Calibrate a printer...", "calibrate_printer"),
             MenuItem("Save one &pass as PDF...", "export_single_pass", gate="document"),
             MenuItem("Save si&gnatures as separate PDFs...", "save_signatures", gate="document"),
+            MenuItem("Save a &folding dummy...", "save_folding_dummy", gate="document"),
             MenuItem(
                 "P&rint...", "print_document", ("Ctrl+P",),
                 gate="document+printer",

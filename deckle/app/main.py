@@ -1838,6 +1838,13 @@ class MainWindow:
         """
         exporting.save_pdf_as(self)
 
+    def save_folding_dummy(self) -> None:
+        """Write this book's imposition with page numbers for pages.
+
+        :returns: nothing. See :func:`deckle.app.exporting.save_folding_dummy_as`.
+        """
+        exporting.save_folding_dummy_as(self)
+
     def save_signatures(self) -> None:
         """Write each signature to its own PDF.
 

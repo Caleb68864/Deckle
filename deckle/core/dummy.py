@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import pikepdf
 
+from dataclasses import replace
+
+from deckle.core.models import Project, SourcePage, is_blank_page
 from deckle.core.paper import LETTER_PT
 from deckle.core.paths import atomic_output
 from pikepdf import Name
@@ -140,3 +143,44 @@ def make_numbered_pdf(
             pdf.save(scratch)
     finally:
         pdf.close()
+
+
+def stand_in_size(project: Project) -> tuple[float, float]:
+    """The page size a folding dummy for ``project`` should have.
+
+    :param project: the book being stood in for.
+    :returns: the first real page's size -- page size feeds the scale the
+        imposer picks, so a dummy should match the source -- or letter for
+        a document of nothing but blanks.
+    """
+    for page in project.pages:
+        if not is_blank_page(page):
+            return (page.ref.width_pt, page.ref.height_pt)
+    return LETTER_PT
+
+
+def stand_in_project(project: Project, numbered: list[SourcePage]) -> Project:
+    """``project`` with every real page replaced by a numbered one.
+
+    The app's *Save a folding dummy...*: the same page list, the same
+    layout, so the dummy folds exactly as this book will -- with the
+    numbers in place of the text. Page ``i`` of the list becomes numbered
+    page ``i + 1``. Inserted blanks stay blank and skipped pages stay
+    skipped, because both decide where everything else lands.
+
+    Two things are deliberately not carried over. A page's rotation: the
+    numbers are drawn upright, and a turn meant to right an upside-down
+    scan would turn them over instead. The crop: it was measured against
+    the scan's ink, and on a numbered page it could crop the number away.
+
+    :param project: the book.
+    :param numbered: at least ``len(project.pages)`` pages from
+        :func:`make_numbered_pdf`, in order.
+    :returns: the stand-in project, never saved.
+    """
+    pages = [
+        page if is_blank_page(page) else SourcePage(numbered[i].ref, 0, page.skipped)
+        for i, page in enumerate(project.pages)
+    ]
+    layout = replace(project.layout, crop_odd_pt=None, crop_even_pt=None)
+    return replace(project, pages=pages, layout=layout)

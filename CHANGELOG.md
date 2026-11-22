@@ -14,6 +14,9 @@ against a real printer.
 
 ### Added
 
+- **Save a folding dummy** (File menu): the open book's imposition with each page
+  replaced by its number, ready to print on scrap and fold.
+
 - **Save signatures as separate PDFs** (File menu): one file per gathering, named as
   `export --split` names them.
 
