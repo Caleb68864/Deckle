@@ -151,6 +151,9 @@ against a real printer.
 
 ### Fixed
 
+- An inserted blank shows in the page list as "page 2 (blank page)" rather than
+  "page 2 _blank".
+
 - Card artwork more than 14400 pixels on a side is scaled to fit a PDF page instead of
   being stored at a tenth of its real size.
 

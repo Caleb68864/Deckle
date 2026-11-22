@@ -95,7 +95,7 @@ def test_thumbnails_actually_reach_the_screen(report):
 
 
 def test_a_blank_is_named_and_does_not_break_the_window(report):
-    assert report["labels"][1] == "page 2 _blank"
+    assert report["labels"][1] == "page 2 (blank page)"
     assert report["page_count"] == 2, "the import itself is unchanged"
 
 
