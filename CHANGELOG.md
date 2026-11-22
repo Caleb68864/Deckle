@@ -135,6 +135,10 @@ against a real printer.
 
 ### Fixed
 
+- `crop-preview --dpi` takes 1 to 600 and says so, rather than passing 0 or a negative
+  to the renderer for a confusing error, or a huge value that ran out of memory.
+- `--sewing-stations` refuses a negative count instead of quietly dropping the marks.
+
 - A card size so small that thousands fit on a sheet is refused with a message
   instead of freezing the app while every empty slot is planned.
 

@@ -151,6 +151,53 @@ def _parse_paper_weight(text: str) -> tuple[float, str]:
     )
 
 
+#: The finest ``crop-preview --dpi`` accepted. The composite is a picture
+#: someone looks at, and its buffers grow with the square of this: letter at
+#: 600 dpi is already 5100x6600 pixels per page, while 100000 was killed by
+#: the kernel for want of memory.
+MAX_PREVIEW_DPI = 600
+
+
+def _parse_dpi(value: str) -> int:
+    """A ``--dpi`` value, refused here rather than deep in the rasteriser.
+
+    ``0`` used to surface as *"Crop exceeds page dimensions"* and ``-1`` as
+    *"Width and height must be >= 0"*, both from pdfium about a picture the
+    user never mentioned, and ``100000`` ran out of memory.
+
+    :param value: the typed number.
+    :returns: dots per inch, from 1 to :data:`MAX_PREVIEW_DPI`.
+    :raises argparse.ArgumentTypeError: not a whole number in that range.
+    """
+    text = value.strip()
+    if not text.isdigit() or not 1 <= int(text) <= MAX_PREVIEW_DPI:
+        raise argparse.ArgumentTypeError(
+            f"invalid dpi {value!r}: expected a whole number from 1 to "
+            f"{MAX_PREVIEW_DPI}"
+        )
+    return int(text)
+
+
+def _parse_station_count(value: str) -> int:
+    """A ``--sewing-stations`` count: zero for none, never negative.
+
+    ``-3`` used to be accepted, written into the ``.deckle`` and then read
+    as "no stations" by every consumer -- a typo that silently removed the
+    sewing marks rather than saying anything.
+
+    :param value: the typed number.
+    :returns: the count.
+    :raises argparse.ArgumentTypeError: not a whole number, or negative.
+    """
+    text = value.strip()
+    if not text.isdigit():
+        raise argparse.ArgumentTypeError(
+            f"invalid sewing stations {value!r}: expected a whole number of "
+            "stations, 0 for none"
+        )
+    return int(text)
+
+
 def _parse_signature_lengths(value: str) -> tuple[int, ...]:
     """A ``--signatures`` value as the sheet count of each gathering.
 
